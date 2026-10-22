@@ -10,7 +10,10 @@ import java.util.Map;
 final class Invitation {
     final String endpoint;
     final String secret;
-    private Invitation(String endpoint, String secret) { this.endpoint = endpoint; this.secret = secret; }
+    final String authKey;
+    final long expiresAt;
+    final String fingerprint;
+    private Invitation(String endpoint, String secret, String authKey, long expiresAt, String fingerprint) { this.endpoint = endpoint; this.secret = secret; this.authKey = authKey; this.expiresAt = expiresAt; this.fingerprint = fingerprint; }
 
     static Invitation parse(String text) throws Exception {
         if (text == null || text.length() > 2048) throw new IllegalArgumentException("配对链接无效");
@@ -23,10 +26,22 @@ final class Invitation {
             String key = URLDecoder.decode(pair[0], "UTF-8");
             if (fields.put(key, URLDecoder.decode(pair[1], "UTF-8")) != null) throw new IllegalArgumentException("配对字段重复");
         }
-        if (fields.size() != 3 || !"1".equals(fields.get("v")) || !fields.containsKey("endpoint") || !fields.containsKey("invitation")) throw new IllegalArgumentException("配对版本不兼容");
+        boolean bootstrap = "2".equals(fields.get("v"));
+        boolean direct = "3".equals(fields.get("v"));
+        if ((!bootstrap && !direct && !"1".equals(fields.get("v"))) || fields.size() != (bootstrap ? 5 : direct ? 4 : 3) || !fields.containsKey("endpoint") || !fields.containsKey("invitation")) throw new IllegalArgumentException("配对版本不兼容");
+        String fingerprint = direct ? fields.get("fingerprint") : null;
+        if (direct && (fingerprint == null || !fingerprint.matches("[a-f0-9]{64}"))) throw new IllegalArgumentException("电脑指纹无效");
+        String authKey = null; long expiresAt = 0;
+        if (bootstrap) {
+            authKey = fields.get("authKey");
+            String expiry = fields.get("expiresAt");
+            if (authKey == null || !authKey.matches("tskey-auth-[A-Za-z0-9_-]{20,200}") || expiry == null || !expiry.matches("[0-9]{13}")) throw new IllegalArgumentException("入网邀请无效");
+            expiresAt = Long.parseLong(expiry);
+            if (expiresAt <= System.currentTimeMillis() || expiresAt > System.currentTimeMillis() + 180000) throw new IllegalArgumentException("入网邀请已过期或手机时间不正确，请重新生成");
+        }
         URI endpoint = new URI(fields.get("endpoint"));
         String host = endpoint.getHost();
-        if (!"http".equals(endpoint.getScheme()) || endpoint.getUserInfo() != null || endpoint.getPort() < 1 || endpoint.getPort() > 65535 || !"".equals(endpoint.getPath()) || endpoint.getRawQuery() != null || endpoint.getFragment() != null || host == null) throw new IllegalArgumentException("电脑地址无效");
+        if (!(direct ? "https" : "http").equals(endpoint.getScheme()) || endpoint.getUserInfo() != null || endpoint.getPort() < 1 || endpoint.getPort() > 65535 || !"".equals(endpoint.getPath()) || endpoint.getRawQuery() != null || endpoint.getFragment() != null || host == null) throw new IllegalArgumentException("电脑地址无效");
         String[] parts = host.split("\\.", -1);
         if (parts.length != 4) throw new IllegalArgumentException("只允许 TS 网络地址");
         int[] octets = new int[4];
@@ -34,10 +49,12 @@ final class Invitation {
             octets[i] = Integer.parseInt(parts[i]);
             if (!Integer.toString(octets[i]).equals(parts[i]) || octets[i] < 0 || octets[i] > 255) throw new IllegalArgumentException("电脑地址无效");
         }
-        if (octets[0] != 100 || octets[1] < 64 || octets[1] > 127) throw new IllegalArgumentException("只允许 TS 网络地址");
+        boolean tailnet = octets[0] == 100 && octets[1] >= 64 && octets[1] <= 127;
+        boolean lan = octets[0] == 10 || (octets[0] == 172 && octets[1] >= 16 && octets[1] <= 31) || (octets[0] == 192 && octets[1] == 168);
+        if (!tailnet && !(direct && lan)) throw new IllegalArgumentException("只允许局域网或 TS 网络地址");
         String secret = fields.get("invitation");
         if (!secret.matches("[a-f0-9]{64}")) throw new IllegalArgumentException("邀请无效");
-        return new Invitation(endpoint.toString(), secret);
+        return new Invitation(endpoint.toString(), secret, authKey, expiresAt, fingerprint);
     }
 
     static String credential() { byte[] bytes = new byte[32]; new SecureRandom().nextBytes(bytes); return hex(bytes); }

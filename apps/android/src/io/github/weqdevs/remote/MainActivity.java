@@ -1,8 +1,6 @@
 package io.github.weqdevs.remote;
 
 import android.app.Activity;
-import android.content.ClipData;
-import android.content.ClipboardManager;
 import android.content.Intent;
 import android.content.res.Configuration;
 import android.graphics.Color;
@@ -38,17 +36,26 @@ public final class MainActivity extends Activity {
     private volatile Future<?> closing;
     private boolean enabled, online, busy, paired, visible;
     private String loginURL, endpoint, token, claimID;
+    private String fingerprint;
+    private boolean restoring;
     private long expiresAt;
     private String testControl;
+    private String networkDirectory;
+    private Invitation enrolling;
+    private long enrollmentDeadline;
+    private View setupView;
+    android.webkit.WebView webView;
     TextView networkState, computerState, detail, error;
     EditText invitation;
-    Button networkButton, pairButton, verifyButton, loginButton, disconnectButton;
+    Button pairButton, verifyButton, disconnectButton;
     private LinearLayout pairSection;
     private final Runnable networkPoll = new Runnable() { public void run() { refreshNetwork(); } };
     private final Runnable approvalPoll = new Runnable() { public void run() { pollApproval(); } };
+    private final Runnable reconnectPoll = () -> { if (visible && !busy && webView == null && claimID == null) restoreComputer(); };
 
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved);
+        go.Seq.setContext(getApplicationContext());
         if (BuildConfig.TESTING && getIntent().getBooleanExtra("isolated_ts_test", false)) {
             String control = getIntent().getStringExtra("test_control");
             try {
@@ -57,13 +64,20 @@ public final class MainActivity extends Activity {
             } catch (Exception ignored) { }
         }
         buildUI();
+        if (!BuildConfig.TESTING) getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE);
+        invitation.setSaveEnabled(false);
+        if (testControl == null) {
+            String selected = getPreferences(MODE_PRIVATE).getString("networkState", "");
+            if (selected.matches("enrolled-[a-f0-9]{64}")) networkDirectory = new java.io.File(new java.io.File(getNoBackupFilesDir(), "tailnet"), selected).getAbsolutePath();
+        }
         if (getIntent().getData() != null) invitation.setText(getIntent().getData().toString());
         if (testControl != null) { invitation.setText(getIntent().getStringExtra("test_invitation")); enabled = true; }
     }
 
     @Override protected void onResume() {
         super.onResume(); visible = true;
-        if (enabled && node == null) startNetwork();
+        if (!BuildConfig.TESTING && invitation.length() > 0) { main.post(this::pair); return; }
+        if (node == null && !busy && !restoreComputer() && enabled) startNetwork();
     }
     @Override protected void onStop() {
         visible = false;
@@ -77,12 +91,13 @@ public final class MainActivity extends Activity {
     }
     @Override protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
-        if (intent.getData() != null) invitation.setText(intent.getData().toString());
+        if (intent.getData() != null) { invitation.setText(intent.getData().toString()); main.post(this::pair); }
     }
 
     private void buildUI() {
         boolean dark = (getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES;
         ScrollView scroll = new ScrollView(this);
+        setupView = scroll;
         LinearLayout content = new LinearLayout(this); content.setOrientation(LinearLayout.VERTICAL);
         int pad = dp(22); content.setPadding(pad, pad, pad, pad);
         scroll.setBackgroundColor(dark ? Color.rgb(18, 20, 22) : Color.rgb(249, 250, 251));
@@ -92,27 +107,17 @@ public final class MainActivity extends Activity {
             content.setPadding(pad + bars.left, pad + bars.top, pad + bars.right, pad + bars.bottom); return insets;
         });
         TextView title = text("WeQ Remote", 28); title.setTypeface(null, android.graphics.Typeface.BOLD); content.addView(title);
-        section(content, "网络");
-        if (testControl != null) content.addView(text("本机 TS 集成测试", 12));
-        networkState = text("App 内网络：未启动", 16); content.addView(networkState);
-        networkButton = button("连接网络", () -> { if (enabled) stopNetwork(true); else { enabled = true; startNetwork(); } }); content.addView(networkButton);
-        loginButton = button("登录 Tailscale", () -> { if (loginURL != null) startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(loginURL))); }); loginButton.setVisibility(View.GONE); content.addView(loginButton);
+        networkState = text("App 内网络：未启动", 16);
         pairSection = new LinearLayout(this); pairSection.setOrientation(LinearLayout.VERTICAL); content.addView(pairSection);
         section(pairSection, "配对电脑");
-        invitation = new EditText(this); invitation.setHint("配对链接"); invitation.setTextSize(14); invitation.setMaxLines(3); invitation.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE | android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS); invitation.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO); pairSection.addView(invitation);
+        invitation = new EditText(this); invitation.setHint("配对链接"); invitation.setTextSize(14); invitation.setSingleLine(true); invitation.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_URI | android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS); invitation.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_GO); invitation.setOnEditorActionListener((view, action, event) -> { if (action == android.view.inputmethod.EditorInfo.IME_ACTION_GO) { pair(); return true; } return false; }); invitation.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO); pairSection.addView(invitation);
         LinearLayout actions = new LinearLayout(this); pairSection.addView(actions);
         actions.addView(button("扫码", () -> startActivityForResult(new Intent(this, ScannerActivity.class), 7)), new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
-        actions.addView(button("粘贴链接", () -> {
-            ClipboardManager clipboard = (ClipboardManager)getSystemService(CLIPBOARD_SERVICE);
-            ClipData clip = clipboard.getPrimaryClip();
-            if (clip != null && clip.getItemCount() > 0) { CharSequence value = clip.getItemAt(0).getText(); if (value != null && value.length() <= 2048) invitation.setText(value); }
-        }), new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
-        pairButton = button("配对电脑", this::pair); pairSection.addView(pairButton);
-        section(content, "电脑");
+        pairButton = button("连接", this::pair); actions.addView(pairButton, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
         computerState = text("未配对", 20); content.addView(computerState);
         detail = text("", 14); detail.setPadding(0, dp(10), 0, dp(10)); content.addView(detail);
         verifyButton = button("验证连通", this::verify); verifyButton.setVisibility(View.GONE); content.addView(verifyButton);
-        disconnectButton = button("断开电脑", () -> { clearComputer(); render(); }); disconnectButton.setVisibility(View.GONE); content.addView(disconnectButton);
+        disconnectButton = button("删除电脑", () -> { ConnectionStore.delete(this); Androidnet.clearWebCache(); stopNetwork(true); }); disconnectButton.setVisibility(View.GONE); content.addView(disconnectButton);
         error = text("", 14); error.setTextColor(dark ? Color.rgb(255, 160, 150) : Color.rgb(170, 35, 30)); error.setPadding(0, dp(12), 0, 0); content.addView(error);
         invitation.addTextChangedListener(new android.text.TextWatcher() {
             public void beforeTextChanged(CharSequence s, int start, int count, int after) { }
@@ -132,15 +137,19 @@ public final class MainActivity extends Activity {
     private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
 
     private void render() {
-        networkButton.setText(enabled ? "断开网络" : "连接网络");
-        pairButton.setEnabled(online && !busy && claimID == null && invitation.length() > 0);
-        verifyButton.setVisibility(paired ? View.VISIBLE : View.GONE); verifyButton.setEnabled(!busy);
+        computerState.setVisibility(busy || paired || claimID != null ? View.VISIBLE : View.GONE);
+        detail.setVisibility(detail.length() > 0 ? View.VISIBLE : View.GONE);
+        pairButton.setEnabled(!busy && claimID == null && invitation.length() > 0);
+        pairButton.setVisibility(invitation.length() > 0 ? View.VISIBLE : View.GONE);
+        verifyButton.setVisibility(paired && BuildConfig.TESTING ? View.VISIBLE : View.GONE); verifyButton.setEnabled(!busy);
         disconnectButton.setVisibility(paired || claimID != null ? View.VISIBLE : View.GONE);
         pairSection.setVisibility(paired || claimID != null ? View.GONE : View.VISIBLE);
-        loginButton.setVisibility(loginURL != null && enabled ? View.VISIBLE : View.GONE);
     }
 
     private void startNetwork() {
+        startNetwork(null);
+    }
+    private void startNetwork(String authKey) {
         if (busy || node != null || !visible) return;
         busy = true; error.setText(""); networkState.setText("App 内网络：正在连接"); render();
         final int revision = generation;
@@ -151,13 +160,14 @@ public final class MainActivity extends Activity {
                 go.Seq.setContext(getApplicationContext());
                 Androidnet.setInterfaces(interfaceSnapshot());
                 if (revision != generation || !visible) return;
-                String directory = new java.io.File(getNoBackupFilesDir(), testControl == null ? "tailnet" : "tailnet-integration").getAbsolutePath();
-                Client client = testControl == null ? Androidnet.newClient(directory) : Androidnet.newTestClient(directory, testControl);
+                String base = new java.io.File(getNoBackupFilesDir(), testControl == null ? "tailnet" : "tailnet-integration").getAbsolutePath();
+                String directory = authKey != null ? Androidnet.authStateDir(base, authKey) : networkDirectory != null ? networkDirectory : base;
+                Client client = testControl != null ? Androidnet.newTestClient(directory, testControl) : authKey != null ? Androidnet.newEnrolledClient(directory, authKey) : Androidnet.newClient(directory);
                 main.post(() -> {
                     if (revision != generation || !visible) { closeClient(client); return; }
-                    node = client; busy = false; refreshNetwork();
+                    networkDirectory = directory; node = client; busy = false; refreshNetwork();
                 });
-            } catch (Exception e) { main.post(() -> { if (revision == generation) { busy = false; enabled = false; error.setText("网络启动失败，请重试"); networkState.setText("App 内网络：未启动"); render(); } }); }
+            } catch (Exception e) { main.post(() -> { if (revision == generation) { enrolling = null; busy = false; enabled = false; error.setText("网络启动失败，请重新生成一次性 Key 后重试"); networkState.setText("App 内网络：未启动"); render(); } }); }
         });
     }
     private void refreshNetwork() {
@@ -171,10 +181,19 @@ public final class MainActivity extends Activity {
                     if (revision != generation) return;
                     online = "Running".equals(state); loginURL = safeLogin(auth);
                     networkState.setText("App 内网络：" + (online ? "已连接" : "NeedsMachineAuth".equals(state) ? "等待网络管理员批准" : loginURL != null ? "等待网络登录" : "正在连接"));
+                    if (restoring && online) { busy = false; verify(); return; }
+                    if (restoring && loginURL != null) { stopNetwork(true); error.setText("网络授权需更新，请在电脑重新生成配对码"); return; }
+                    if (enrolling != null) {
+                        if (online) { Invitation link = enrolling; enrolling = null; getPreferences(MODE_PRIVATE).edit().putString("networkState", new java.io.File(networkDirectory).getName()).apply(); claim(link); return; }
+                        if (SystemClock.elapsedRealtime() >= enrollmentDeadline || System.currentTimeMillis() >= enrolling.expiresAt || loginURL != null || "NeedsMachineAuth".equals(state)) {
+                            stopNetwork(true); error.setText("入网未完成，请检查 Key 是否已使用、过期或需要管理员批准，再重新生成邀请"); return;
+                        }
+                        busy = true;
+                    }
                     render();
                     if (!online && loginURL == null) main.postDelayed(networkPoll, 1500);
                 });
-            } catch (Exception e) { main.post(() -> { if (revision == generation) { online = false; error.setText("网络状态读取失败，请重新连接"); render(); } }); }
+            } catch (Exception e) { main.post(() -> { if (revision == generation) { stopNetwork(true); error.setText("网络状态读取失败，请重新连接"); render(); } }); }
         });
     }
     private String safeLogin(String value) {
@@ -197,7 +216,8 @@ public final class MainActivity extends Activity {
     }
     private void stopNetwork(boolean disable) {
         generation++; if (disable) enabled = false;
-        main.removeCallbacks(networkPoll); main.removeCallbacks(approvalPoll);
+        enrolling = null; invitation.setText("");
+        main.removeCallbacks(networkPoll); main.removeCallbacks(approvalPoll); main.removeCallbacks(reconnectPoll);
         Client previous = node; node = null; online = false; loginURL = null; busy = false;
         clearComputer(); networkState.setText(enabled ? "App 内网络：已暂停" : "App 内网络：未启动"); render();
         if (previous != null) closeClient(previous);
@@ -207,16 +227,57 @@ public final class MainActivity extends Activity {
         catch (java.util.concurrent.RejectedExecutionException stopped) { Thread cleanup = new Thread(client::close, "weq-network-close"); cleanup.setDaemon(true); cleanup.start(); }
     }
     private void clearComputer() {
+        closeWeb();
         generation++;
-        main.removeCallbacks(approvalPoll); endpoint = null; token = null; claimID = null; paired = false;
+        main.removeCallbacks(approvalPoll); endpoint = null; token = null; fingerprint = null; claimID = null; paired = false; restoring = false;
         computerState.setText("未配对"); detail.setText(""); error.setText(""); busy = false;
     }
     private void pair() {
-        if (!online || busy || node == null) return;
+        if (busy) return;
         try {
             Invitation link = Invitation.parse(invitation.getText().toString());
+            if (link.fingerprint != null) { startDirect(link.endpoint, link.fingerprint, () -> claim(link)); return; }
+            if (link.authKey != null) {
+                if (testControl != null) throw new Exception("测试网络不接受正式入网密钥");
+                        if (!visible || link.expiresAt <= System.currentTimeMillis()) { invitation.setText(""); error.setText("邀请已过期，请重新生成"); return; }
+                        stopNetwork(true); enabled = true; enrolling = link; enrollmentDeadline = SystemClock.elapsedRealtime() + 45000;
+                        startNetwork(link.authKey);
+                return;
+            }
+            claim(link);
+        } catch (Exception e) { error.setText("配对链接无效或已过期，请重新生成；旧版邀请需先连接网络"); }
+    }
+    private void startDirect(String address, String pin, Runnable next) {
+        stopNetwork(true); busy = true; final int revision = generation; render();
+        worker.execute(() -> {
+            try {
+                Client client = Androidnet.newDirectClient(address, pin);
+                main.post(() -> {
+                    if (revision != generation || !visible) { closeClient(client); return; }
+                    node = client; fingerprint = pin; online = true; busy = false; next.run();
+                });
+            } catch (Exception e) { fail(revision, "无法创建连接，请重新扫描二维码"); }
+        });
+    }
+    private boolean restoreComputer() {
+        if (testControl != null || invitation.length() > 0) return false;
+        try {
+            JSONObject saved = ConnectionStore.load(this);
+            if (saved == null) return false;
+            String address = saved.getString("endpoint"), credential = saved.getString("token"), pin = saved.optString("fingerprint", "");
+            if (!credential.matches("[a-f0-9]{64}")) throw new Exception("电脑凭据无效");
+            Runnable resume = () -> { endpoint = address; token = credential; paired = true; restoring = true; computerState.setText("正在连接电脑"); verify(); };
+            if (!pin.isEmpty()) startDirect(address, pin, resume);
+            else { endpoint = address; token = credential; paired = true; restoring = true; enabled = true; startNetwork(); }
+            return true;
+        } catch (Exception e) { error.setText("无法读取保存的电脑凭据，请重新配对"); return false; }
+    }
+    private void claim(Invitation link) {
+        if (!online || node == null) { error.setText("此邀请不含入网密钥，请先连接电脑所在的网络"); return; }
+        try {
             endpoint = link.endpoint; token = Invitation.credential();
-            JSONObject body = new JSONObject().put("invitation", link.secret).put("name", "WeQ Remote Android").put("tokenHash", Invitation.hash(token));
+            invitation.setText("");
+            JSONObject body = new JSONObject().put("invitation", link.secret).put("name", "WeQ Remote Android").put("tokenHash", Invitation.hash(token)).put("scope", "web:access");
             busy = true; error.setText(""); render();
             final Client client = node; final int revision = generation; final String address = endpoint;
             worker.execute(() -> {
@@ -232,7 +293,7 @@ public final class MainActivity extends Activity {
                     });
                 } catch (Exception e) { fail(revision, e.getMessage()); }
             });
-        } catch (Exception e) { error.setText(e.getMessage()); }
+        } catch (Exception e) { error.setText("配对失败，请重试"); }
     }
     private void pollApproval() {
         if (claimID == null || node == null || paired) return;
@@ -241,8 +302,11 @@ public final class MainActivity extends Activity {
         worker.execute(() -> {
             try {
                 JSONObject approval = response(client.request(address, "/v1/pair/" + id, "GET", credential, ""));
-                if (!id.equals(approval.getString("id")) || !"status:read".equals(approval.getString("scope"))) throw new Exception("电脑返回了不兼容的数据");
-                main.post(() -> { if (revision != generation || !id.equals(claimID)) return; if (approval.optBoolean("approved")) { paired = true; verify(); } else main.postDelayed(approvalPoll, 1500); });
+                if (!id.equals(approval.getString("id")) || !"web:access".equals(approval.getString("scope"))) throw new Exception("电脑返回了不兼容的数据，请升级电脑端");
+                main.post(() -> { if (revision != generation || !id.equals(claimID)) return; if (approval.optBoolean("approved")) {
+                    try { if (!BuildConfig.TESTING || fingerprint != null) ConnectionStore.save(this, endpoint, token, fingerprint); paired = true; openWeb(); }
+                    catch (Exception e) { fail(revision, "无法保存电脑凭据，请重试"); }
+                } else main.postDelayed(approvalPoll, 1500); });
             } catch (Exception e) { fail(revision, e.getMessage()); }
         });
     }
@@ -256,9 +320,69 @@ public final class MainActivity extends Activity {
                 JSONObject status = response(client.request(address, "/v1/status", "GET", credential, ""));
                 if (!"WeQ Remote".equals(status.getString("product")) || status.getInt("protocol") != 1 || !"status:read".equals(status.getString("scope")) || !status.getBoolean("online")) throw new Exception("电脑返回了不兼容的数据");
                 long elapsed = SystemClock.elapsedRealtime() - started;
-                main.post(() -> { if (revision != generation || !credential.equals(token)) return; busy = false; computerState.setText("电脑在线"); detail.setText("地址  " + address + "\n请求耗时  " + elapsed + " ms\n最近验证  " + DateFormat.getTimeInstance().format(new Date())); render(); });
+                main.post(() -> { if (revision != generation || !credential.equals(token)) return; busy = false; computerState.setText("电脑在线"); detail.setText("地址  " + address + "\n请求耗时  " + elapsed + " ms\n最近验证  " + DateFormat.getTimeInstance().format(new Date())); render(); if (restoring) { restoring = false; openWeb(); } });
             } catch (Exception e) { fail(revision, e.getMessage()); }
         });
+    }
+    private void openWeb() {
+        final Client client = node; final int revision = generation;
+        final String address = endpoint, credential = token, localSecret = Invitation.credential();
+        busy = true; render();
+        worker.execute(() -> {
+            try {
+                final String origin = client.openWeb(address, credential, localSecret);
+                main.post(() -> {
+                    if (revision != generation || !visible) return;
+                    busy = false;
+                    android.webkit.CookieManager cookies = android.webkit.CookieManager.getInstance();
+                    cookies.removeAllCookies(ignored -> {
+                        if (revision != generation || !visible) return;
+                        cookies.setCookie(origin, "weq_remote_local=" + localSecret + "; HttpOnly; SameSite=Strict; Path=/", accepted -> {
+                            if (revision != generation || !visible) return;
+                            webView = new android.webkit.WebView(this);
+                            android.webkit.WebSettings settings = webView.getSettings();
+                            settings.setJavaScriptEnabled(true); settings.setDomStorageEnabled(true);
+                            settings.setAllowFileAccess(false); settings.setAllowContentAccess(false);
+                            settings.setMixedContentMode(android.webkit.WebSettings.MIXED_CONTENT_NEVER_ALLOW);
+                            cookies.setAcceptThirdPartyCookies(webView, false);
+                            webView.setWebViewClient(new android.webkit.WebViewClient() {
+                                private boolean allowed(Uri url) { return "http".equals(url.getScheme()) && "127.0.0.1".equals(url.getHost()) && url.getPort() == Uri.parse(origin).getPort(); }
+                                @Override public boolean shouldOverrideUrlLoading(android.webkit.WebView view, android.webkit.WebResourceRequest request) { return !allowed(request.getUrl()); }
+                                @Override public android.webkit.WebResourceResponse shouldInterceptRequest(android.webkit.WebView view, android.webkit.WebResourceRequest request) {
+                                    if (allowed(request.getUrl())) return null;
+                                    return new android.webkit.WebResourceResponse("text/plain", "UTF-8", 403, "Forbidden", java.util.Collections.emptyMap(), new java.io.ByteArrayInputStream(new byte[0]));
+                                }
+                            });
+                            LinearLayout shell = new LinearLayout(this); shell.setOrientation(LinearLayout.VERTICAL);
+                            LinearLayout tools = new LinearLayout(this);
+                            android.widget.ImageButton close = new android.widget.ImageButton(this); close.setImageResource(android.R.drawable.ic_menu_close_clear_cancel); close.setContentDescription("断开电脑"); close.setOnClickListener(view -> stopNetwork(true));
+                            android.widget.ImageButton reload = new android.widget.ImageButton(this); reload.setImageResource(android.R.drawable.ic_popup_sync); reload.setContentDescription("重新加载"); reload.setOnClickListener(view -> webView.reload());
+                            android.widget.ImageButton forget = new android.widget.ImageButton(this); forget.setImageResource(android.R.drawable.ic_menu_delete); forget.setContentDescription("删除电脑"); forget.setOnClickListener(view -> { ConnectionStore.delete(this); Androidnet.clearWebCache(); stopNetwork(true); });
+                            tools.addView(close, new LinearLayout.LayoutParams(dp(48), dp(48))); tools.addView(reload, new LinearLayout.LayoutParams(dp(48), dp(48)));
+                            tools.addView(forget, new LinearLayout.LayoutParams(dp(48), dp(48)));
+                            shell.addView(tools); shell.addView(webView, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1));
+                            if (android.os.Build.VERSION.SDK_INT >= 30) shell.setOnApplyWindowInsetsListener((view, insets) -> {
+                                android.graphics.Insets bars = insets.getInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.ime());
+                                view.setPadding(bars.left, bars.top, bars.right, bars.bottom); return insets;
+                            });
+                            setContentView(shell); shell.requestApplyInsets(); webView.loadUrl(origin + "/");
+                        });
+                    });
+                });
+            } catch (Exception e) { fail(revision, "无法打开 WeQ Web，请检查电脑上的 Web 服务"); }
+        });
+    }
+    private void closeWeb() {
+        Client active = node;
+        if (active != null) worker.execute(active::closeWeb);
+        if (webView == null) return;
+        webView.stopLoading(); webView.loadUrl("about:blank"); webView.clearHistory(); webView.clearCache(true); webView.destroy(); webView = null;
+        android.webkit.CookieManager.getInstance().removeAllCookies(null);
+        setContentView(setupView);
+    }
+    @Override public void onBackPressed() {
+        if (webView != null) { if (webView.canGoBack()) webView.goBack(); else stopNetwork(true); }
+        else super.onBackPressed();
     }
     private JSONObject response(String raw) throws Exception {
         JSONObject envelope = new JSONObject(raw); int status = envelope.getInt("status");
@@ -266,6 +390,11 @@ public final class MainActivity extends Activity {
         if (status < 200 || status >= 300) throw new Exception("电脑返回 HTTP " + status + "，请检查邀请是否有效");
         return new JSONObject(envelope.getString("body"));
     }
-    private void fail(int revision, String message) { main.post(() -> { if (revision != generation) return; clearComputer(); error.setText(message == null ? "连接失败，请重试" : message); render(); }); }
-    @Override protected void onActivityResult(int request, int result, Intent data) { super.onActivityResult(request, result, data); if (request == 7 && result == RESULT_OK && data != null) invitation.setText(data.getStringExtra("invitation")); }
+    private void fail(int revision, String message) { main.post(() -> {
+        if (revision != generation) return;
+        if ("设备未授权或授权已被撤销，请重新配对".equals(message)) { ConnectionStore.delete(this); Androidnet.clearWebCache(); }
+        stopNetwork(true); error.setText(message == null ? "连接失败，请重试" : message); render();
+        if (!BuildConfig.TESTING && visible) main.postDelayed(reconnectPoll, 5000);
+    }); }
+    @Override protected void onActivityResult(int request, int result, Intent data) { super.onActivityResult(request, result, data); if (request == 7 && result == RESULT_OK && data != null) { invitation.setText(data.getStringExtra("invitation")); main.post(this::pair); } }
 }

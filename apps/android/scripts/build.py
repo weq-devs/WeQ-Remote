@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import shutil
 import urllib.request
 import xml.etree.ElementTree as ET
 import zipfile
@@ -46,6 +47,13 @@ def main():
     if hashlib.sha256(zxing.read_bytes()).hexdigest() != ZXING_HASH:
         raise SystemExit('本地 ZXing 文件与固定版本不符')
     env = dict(os.environ, ANDROID_HOME=str(sdk), ANDROID_NDK_HOME=str(ndk), GOBIN=str(BUILD / 'tools'), GOMAXPROCS='2', GOFLAGS='-p=2')
+    real_go = shutil.which('go')
+    if not real_go:
+        raise SystemExit('缺少 Go 工具链')
+    env['WEQ_GO_REAL'] = real_go
+    wrapper = BUILD / 'tools/go'
+    wrapper.write_text('#!' + sys.executable + '\nimport runpy\nrunpy.run_path(' + repr(str(ROOT / 'scripts/go-wrapper.py')) + ', run_name="__main__")\n')
+    wrapper.chmod(0o755)
     env['PATH'] = str(BUILD / 'tools') + os.pathsep + env['PATH']
     if not args.skip_network:
         run(['go', 'install', '-p', '2', 'golang.org/x/mobile/cmd/gomobile', 'golang.org/x/mobile/cmd/gobind'], ROOT / 'network', env)
@@ -83,7 +91,7 @@ def main():
     dex = variant / 'dex'
     dex.mkdir(exist_ok=True)
     run([tools / 'd8', '--min-api', '26', '--lib', android_jar, '--output', dex, jar, aar_root / 'classes.jar', zxing])
-    licenses = ["WeQ Remote Android 0.1.0\nTailscale 1.104.1 + Go mobile + ZXing 3.5.3\n"]
+    licenses = ["WeQ Remote Android 0.3.0\nTailscale 1.104.1 + Go mobile + ZXing 3.5.3\n"]
     go_root = Path(subprocess.check_output(['go', 'env', 'GOROOT'], env=env).decode().strip())
     go_license = next((path for path in (go_root / 'LICENSE', go_root.parent / 'LICENSE') if path.is_file()), None)
     if go_license is None:
@@ -118,7 +126,7 @@ def main():
     if not key.exists():
         key.parent.mkdir(exist_ok=True)
         run(['keytool', '-genkeypair', '-keystore', key, '-storepass', 'android', '-keypass', 'android', '-alias', 'androiddebugkey', '-keyalg', 'RSA', '-keysize', '2048', '-validity', '10000', '-dname', 'CN=Android Debug,O=Android,C=US'])
-    output = BUILD / ('weq-remote-0.1.0-arm64-test.apk' if args.test else 'weq-remote-0.1.0-arm64.apk')
+    output = BUILD / ('weq-remote-0.3.0-arm64-test.apk' if args.test else 'weq-remote-0.3.0-arm64.apk')
     run([tools / 'apksigner', 'sign', '--ks', key, '--ks-pass', 'pass:android', '--key-pass', 'pass:android', '--out', output, aligned])
     run([tools / 'apksigner', 'verify', '--verbose', output])
     print('APK:', output)

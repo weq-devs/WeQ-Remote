@@ -3,10 +3,35 @@ package androidnet
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"tailscale.com/logpolicy"
 	"tailscale.com/types/logger"
 	"testing"
 )
+
+func TestEnrollmentKeyConfiguration(t *testing.T) {
+	key := "tskey-auth-" + strings.Repeat("k", 40)
+	directory, err := AuthStateDir("/private/test", key)
+	if err != nil || strings.Contains(directory, key) || directory == "/private/test" {
+		t.Fatal("enrollment state must be isolated without storing the key")
+	}
+	other, _ := AuthStateDir("/private/test", key+"x")
+	if other == directory {
+		t.Fatal("different keys must not reuse another network identity")
+	}
+	config := networkConfig(directory, "", key)
+	if config.AuthKey != key || config.ControlURL != "" || config.Dir != directory {
+		t.Fatal("bootstrap must reach the official network configuration")
+	}
+	for _, invalid := range []string{"", "tskey-api-" + strings.Repeat("k", 40), key + "\n", key + "&control=evil"} {
+		if _, err := AuthStateDir("/private/test", invalid); err == nil {
+			t.Fatal("invalid key accepted")
+		}
+		if _, err := NewEnrolledClient("/unused", invalid); err == nil {
+			t.Fatal("invalid key started a node")
+		}
+	}
+}
 
 func TestSandboxLogDirectory(t *testing.T) {
 	state := filepath.Join(t.TempDir(), "private-state")

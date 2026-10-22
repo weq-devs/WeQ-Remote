@@ -1,20 +1,20 @@
 # WeQ Remote for Android
 
-版本 0.1.0，开发测试原型，Android 8.0 / API 26 起，当前仅构建 arm64-v8a。
+版本 0.3.0，开发测试原型，Android 8.0 / API 26 起，当前仅构建 arm64-v8a。
 
-功能与最小 iOS 原型一致：App 内登录 TS 网络，扫码或粘贴电脑配对链接，电脑核对校验码并批准，然后读取在线状态、请求耗时和验证时间。电脑撤销后拒绝旧凭据。不开系统 VPN，不开放聊天数据或 QQ 写操作。
+手机端仅封装现有 WeQ Web 和内嵌 TS，首页只保留扫码和链接输入。支持局域网 HTTPS 指纹配对或一次性 Auth Key 扫码入网，不占用系统 VPN。使用与安全边界见[Web 与手机连接](../../docs/guide/remote-web.md)。
 
 ## APK 与使用
 
-交付 APK：`/path/to/WeQ/apps/android/.build/weq-remote-0.1.0-arm64.apk`。
+开发 APK：`/path/to/WeQ/apps/android/.build/weq-remote-0.3.0-arm64.apk`。
 这是本机测试签名，不是商店正式发布。`-test.apk` 是独立包名的自动化测试版本，不作为普通客户端交付。
 
-1. 安装普通 APK，点击“连接网络”，登录与电脑相同的 tailnet。
+1. 安装普通 APK；电脑选择局域网直接生成二维码，或进入 Tailscale 选择手机已有/没有。已有时无需 Key，没有时完成电脑验证并填 Key 后生成二维码。
 2. 扫描电脑配对码，或复制电脑端的配对链接后粘贴。
-3. 点击“配对电脑”，两端核对六位码，在电脑批准。
-4. 点击“验证连通”，发出新的实际请求。
+3. 扫码直接发出请求，粘贴链接后点连接；电脑弹窗批准一次。
+4. 自动进入 WeQ Web，网页 HTTP 与 WebSocket 均经选定连接路径。顶部提供重新加载、断开和删除电脑入口。
 
-当前不支持免账号扫码入网、后台常连、聊天功能或持久设备授权；退后台、重建界面会取消当前电脑连接，返回后需重新配对。TS 身份保存在 App 私有 no-backup 目录，设备访问令牌只保留内存。未启用网络时不主动注册节点。
+设备令牌通过 Android Keystore 的 AES-GCM 密钥加密保存，禁止备份。退后台关闭连接，返回后使用保存的凭据自动重连，不重新配对。TS 身份保存在私有 no-backup 目录；原始入网 Key 不落盘。局域网走系统路由并校验证书 SHA-256 指纹，系统 Tailscale 可达时不需要内嵌节点。
 
 ## 构建
 
@@ -25,8 +25,8 @@
 
 ```sh
 cd /path/to/WeQ
-python3 apps/android/scripts/build.py
-python3 apps/android/scripts/build.py --test --skip-network
+android-sdk-run python3 apps/android/scripts/build.py
+android-sdk-run python3 apps/android/scripts/build.py --test --skip-network
 bash apps/android/scripts/check-protocol.sh
 cd apps/android/network
 go test -p 2 ./...
@@ -72,7 +72,7 @@ python3 apps/android/scripts/integration.py --serial emulator-5580
 
 真实手机的相机、公共控制面登录、跨公网/蜂窝切网及长期耗电需另外验收，不能用本机模拟器结果代替。
 
-## 2026-10-22 验证回执
+## 0.1.0 历史验证回执（2026-10-22）
 
 - 普通版与专用测试版均构建成功，APK v2 / v3 签名校验通过，普通版约 8.4 MiB；版本为 0.1.0，本机测试签名，未上架。
 - 普通交付 APK 已实际安装、冷启动检查通过；默认网络未启动，无测试标记、无系统遮挡，清单无测试 instrumentation 且不允许系统明文 HTTP。

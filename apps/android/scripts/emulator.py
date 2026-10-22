@@ -25,7 +25,8 @@ if args.create:
                '--path', avd_path]
 else:
     registry = configparser.ConfigParser(interpolation=None)
-    registry.read_string('[avd]\n' + (Path.home() / '.android/avd/WeQRemote_API36.ini').read_text())
+    avd_home = Path(os.environ.get('ANDROID_AVD_HOME', Path.home() / '.android/avd'))
+    registry.read_string('[avd]\n' + (avd_home / 'WeQRemote_API36.ini').read_text())
     if registry['avd'].get('path') != avd_path:
         raise SystemExit('AVD 注册入口没有指向本项目指定的外盘目录。')
     command = [sdk / 'emulator/emulator', '-avd', 'WeQRemote_API36', '-port', '5580', '-no-window',

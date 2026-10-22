@@ -19,16 +19,25 @@ final class ConnectionUITests: XCTestCase {
             app.launchEnvironment["WEQ_REMOTE_TEST_ENDPOINT"] = base.absoluteString
         }
         app.launch()
-        if usesTS {
-            let state = app.descendants(matching: .any).matching(identifier: "networkState").firstMatch
-            let connected = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "已连接"), object: state)
-            XCTAssertEqual(XCTWaiter.wait(for: [connected], timeout: 30), .completed)
-        }
         let field = app.descendants(matching: .any).matching(identifier: "pairingLink").firstMatch
         XCTAssertTrue(field.waitForExistence(timeout: 10))
         field.tap()
         field.typeText(invitation.url)
         app.buttons["pairComputer"].tap()
+        if usesTS {
+            let web = app.webViews.firstMatch
+            XCTAssertTrue(web.waitForExistence(timeout: 25))
+            XCTAssertTrue(web.staticTexts["Web 已连接"].waitForExistence(timeout: 15))
+            XCTAssertTrue(web.staticTexts["WebSocket 已连接"].waitForExistence(timeout: 15))
+            web.buttons["验证网页请求"].tap()
+            var revoke = URLRequest(url: base.appendingPathComponent("test/revoke"))
+            revoke.httpMethod = "POST"
+            _ = try await URLSession.shared.data(for: revoke)
+            XCTAssertTrue(web.staticTexts["订阅已断开"].waitForExistence(timeout: 15))
+            XCTAssertTrue(web.staticTexts["授权已撤销"].waitForExistence(timeout: 15))
+            app.terminate()
+            return
+        }
         XCTAssertTrue(app.buttons["verifyConnection"].waitForExistence(timeout: 20))
         XCTAssertTrue(app.staticTexts["电脑在线"].exists)
         app.buttons["verifyConnection"].tap()
@@ -49,13 +58,14 @@ final class ConnectionUITests: XCTestCase {
     }
 
     @MainActor
-    func testDefaultAppDoesNotStartNetworkOrConnectAutomatically() {
+    func testUnpairedAppOnlyShowsScanAndLinkInput() {
         let app = XCUIApplication()
         app.launch()
-        XCTAssertTrue(app.buttons["连接网络"].waitForExistence(timeout: 10))
-        let state = app.descendants(matching: .any).matching(identifier: "networkState").firstMatch
-        XCTAssertEqual(state.value as? String, "未启动")
-        XCTAssertFalse(app.buttons["pairComputer"].isEnabled)
+        XCTAssertTrue(app.buttons["扫码"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "pairingLink").firstMatch.exists)
+        XCTAssertFalse(app.buttons["连接网络"].exists)
+        XCTAssertFalse(app.buttons["登录 Tailscale"].exists)
+        XCTAssertFalse(app.buttons["pairComputer"].exists)
         app.terminate()
     }
 }

@@ -2,12 +2,15 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>NSCameraUsageDescription</key><string>扫描电脑上的 WeQ 配对二维码。</string>
-  <key>NSLocalNetworkUsageDescription</key><string>连接 App 内的加密网络代理。</string>
+  <key>NSLocalNetworkUsageDescription</key><string>连接局域网中已配对的 WeQ 电脑。</string>
   <key>NSAppTransportSecurity</key><dict>
     <key>NSAllowsArbitraryLoads</key><false/>
     <key>NSAllowsLocalNetworking</key><false/>
     <key>NSExceptionDomains</key><dict>
       <key>100.64.0.0/10</key><dict><key>NSExceptionAllowsInsecureHTTPLoads</key><true/></dict>
+      <key>10.0.0.0/8</key><dict><key>NSExceptionAllowsInsecureHTTPLoads</key><true/></dict>
+      <key>172.16.0.0/12</key><dict><key>NSExceptionAllowsInsecureHTTPLoads</key><true/></dict>
+      <key>192.168.0.0/16</key><dict><key>NSExceptionAllowsInsecureHTTPLoads</key><true/></dict>
       <key>127.0.0.1</key><dict><key>NSExceptionAllowsInsecureHTTPLoads</key><true/></dict>
     </dict>
   </dict>

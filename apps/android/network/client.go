@@ -3,6 +3,9 @@ package androidnet
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -11,6 +14,7 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -69,15 +73,80 @@ func SetInterfaces(raw string) error {
 }
 
 type Client struct {
-	mu     sync.RWMutex
-	server *tsnet.Server
-	http   *http.Client
-	ctx    context.Context
-	cancel context.CancelFunc
+	mu             sync.RWMutex
+	server         *tsnet.Server
+	http           *http.Client
+	ctx            context.Context
+	cancel         context.CancelFunc
+	web            *webProxy
+	directEndpoint string
+}
+
+func validDirectEndpoint(endpoint string) bool {
+	u, err := url.Parse(endpoint)
+	if err != nil || u.Scheme != "https" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+		return false
+	}
+	port, err := strconv.Atoi(u.Port())
+	if err != nil || port < 1 || port > 65535 {
+		return false
+	}
+	ip, err := netip.ParseAddr(u.Hostname())
+	return err == nil && ip.Is4() && (ip.IsPrivate() || netip.MustParsePrefix("100.64.0.0/10").Contains(ip))
+}
+
+func pinnedTLS(fingerprint string) *tls.Config {
+	return &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: true, // 信任锚是二维码中的精确证书指纹，而非系统 CA。
+		VerifyConnection: func(state tls.ConnectionState) error {
+			if len(state.PeerCertificates) == 0 {
+				return errors.New("missing certificate")
+			}
+			digest := sha256.Sum256(state.PeerCertificates[0].Raw)
+			if hex.EncodeToString(digest[:]) != fingerprint {
+				return errors.New("computer certificate changed; pair again")
+			}
+			return nil
+		}}
+}
+
+// NewDirectClient 复用系统路由（含系统 Tailscale），不会启动内嵌节点。
+func NewDirectClient(endpoint, fingerprint string) (*Client, error) {
+	if !validDirectEndpoint(endpoint) || !hexCredential(fingerprint) {
+		return nil, errors.New("invalid direct connection")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	transport := &http.Transport{Proxy: nil, TLSClientConfig: pinnedTLS(fingerprint), MaxIdleConns: 4, IdleConnTimeout: 20 * time.Second, ResponseHeaderTimeout: 12 * time.Second}
+	return &Client{directEndpoint: endpoint, ctx: ctx, cancel: cancel, http: &http.Client{Transport: transport, Timeout: 15 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}, nil
+}
+
+func (c *Client) accepts(endpoint string) bool {
+	if c.directEndpoint != "" {
+		return endpoint == c.directEndpoint && validDirectEndpoint(endpoint)
+	}
+	return validEndpoint(endpoint)
 }
 
 // NewClient 只用于官方控制面；测试配置从独立的测试 APK 进入。
 func NewClient(stateDir string) (*Client, error) { return newClient(stateDir, "") }
+
+var authKeyPattern = regexp.MustCompile(`^tskey-auth-[A-Za-z0-9_-]{20,200}$`)
+
+// AuthStateDir 按 Key 隔离节点，避免已登录的其他网络使入网 Key 被忽略。
+func AuthStateDir(stateDir, authKey string) (string, error) {
+	if !authKeyPattern.MatchString(authKey) || stateDir == "" {
+		return "", errors.New("invalid enrollment key")
+	}
+	digest := sha256.Sum256([]byte(authKey))
+	return filepath.Join(stateDir, "enrolled-"+hex.EncodeToString(digest[:])), nil
+}
+
+// NewEnrolledClient 仅使用官方控制面；调用者只在内存中传递入网凭据。
+func NewEnrolledClient(stateDir, authKey string) (*Client, error) {
+	if !authKeyPattern.MatchString(authKey) {
+		return nil, errors.New("invalid enrollment key")
+	}
+	return startClient(stateDir, "", authKey)
+}
 
 // NewTestClient 的目的地址必须是回环控制面；产品界面不暴露这个入口。
 func NewTestClient(stateDir, control string) (*Client, error) {
@@ -103,11 +172,19 @@ func prepareStateDir(stateDir string) error {
 }
 
 func newClient(stateDir, control string) (*Client, error) {
+	return startClient(stateDir, control, "")
+}
+
+func networkConfig(stateDir, control, authKey string) *tsnet.Server {
+	return &tsnet.Server{Dir: stateDir, Hostname: "weq-remote-android", AuthKey: authKey, ControlURL: control, Logf: logger.Discard, UserLogf: logger.Discard}
+}
+
+func startClient(stateDir, control, authKey string) (*Client, error) {
 	if err := prepareStateDir(stateDir); err != nil {
 		return nil, err
 	}
 	envknob.SetNoLogsNoSupport()
-	server := &tsnet.Server{Dir: stateDir, Hostname: "weq-remote-android", ControlURL: control, Logf: logger.Discard, UserLogf: logger.Discard}
+	server := networkConfig(stateDir, control, authKey)
 	if err := server.Start(); err != nil {
 		_ = server.Close()
 		return nil, errors.New("network start failed")
@@ -163,7 +240,7 @@ var claimPath = regexp.MustCompile(`^/v1/pair/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4
 
 // Request 不提供任意网络代理：仅接受配对和只读状态路径。
 func (c *Client) Request(endpoint, path, method, token, body string) (string, error) {
-	if !validEndpoint(endpoint) {
+	if !c.accepts(endpoint) {
 		return "", errors.New("invalid tailnet endpoint")
 	}
 	if !(method == "POST" && path == "/v1/pair" || method == "GET" && (path == "/v1/status" || claimPath.MatchString(path))) || len(body) > 4096 {
@@ -208,11 +285,16 @@ func (c *Client) Request(endpoint, path, method, token, body string) (string, er
 func (c *Client) Close() {
 	c.mu.Lock()
 	server, client := c.server, c.http
+	web := c.web
+	c.web = nil
 	c.server, c.http = nil, nil
 	if c.cancel != nil {
 		c.cancel()
 	}
 	c.mu.Unlock()
+	if web != nil {
+		web.close()
+	}
 	if client != nil {
 		client.CloseIdleConnections()
 	}

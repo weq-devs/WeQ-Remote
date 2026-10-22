@@ -2,6 +2,11 @@ import XCTest
 @testable import WeQRemote
 
 final class EmbeddedConnectionTests: XCTestCase {
+    @MainActor func testEnrollmentStateDoesNotReuseOtherIdentity() {
+        let key = "tskey-auth-" + String(repeating: "k", count: 40)
+        XCTAssertFalse(EmbeddedNetwork.enrollmentStateName(key).contains(key))
+        XCTAssertNotEqual(EmbeddedNetwork.enrollmentStateName(key), EmbeddedNetwork.enrollmentStateName(key + "x"))
+    }
     @MainActor
     func testEmbeddedTSConnectionAndRevocation() async throws {
         let fixture = URL(string: "http://127.0.0.1:45198")!

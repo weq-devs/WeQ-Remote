@@ -1,0 +1,15 @@
+.DS_Store
+**/.build/
+**/.swiftpm/
+**/*.xcodeproj/
+**/xcuserdata/
+**/__pycache__/
+node_modules/
+*.log
+.env
+.env.*
+*.p12
+*.p8
+*.mobileprovision
+local.xcconfig
+

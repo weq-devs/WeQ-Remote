@@ -1,8 +1,8 @@
 # WeQ Remote for iOS
 
-版本：0.1.0，本地开发原型，不是 App Store / TestFlight 发布版。iOS 17 起。
+版本：0.3.2，本地开发测试版，不是 App Store / TestFlight 发布版。iOS 17 起。
 
-唯一验证功能：扫码或粘贴电脑配对链接，电脑批准后读取 `/v1/status`，显示在线状态、请求耗时和验证时间；可重复验证，电脑撤销后立即拒绝访问。
+薄壳结构：内嵌 TS、扫码配对和 WKWebView，业务界面复用现有 WeQ Web。支持带一次性 Auth Key 的扫码入网，不要求手机再登录 Tailscale。电脑需明确批准完整 Web 访问权限。使用与安全边界见[Web 与手机连接](../../docs/guide/remote-web.md)。
 
 ## 构建
 
@@ -13,24 +13,25 @@ cd /path/to/WeQ
 bash apps/ios/scripts/generate-project.sh
 xcodebuild -project apps/ios/WeQRemote.xcodeproj -scheme WeQRemote \
   -destination 'generic/platform=iOS Simulator' \
-  -derivedDataPath apps/ios/.build/DerivedData CODE_SIGNING_ALLOWED=NO build
+  -derivedDataPath apps/ios/.build/DerivedData CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- build
 ```
 
 其他机器通过 `WEQ_TAILSCALE_FRAMEWORK=/absolute/path/TailscaleKit.xcframework` 指定匹配框架再运行生成脚本。XcodeGen 的环境变量路径只写入可再生的 Xcode 工程，不提交本机绝对依赖路径。
 
-真机安装：打开生成的 `apps/ios/WeQRemote.xcodeproj`，选择自己的签名团队与已连接 iPhone 后运行。无签名真机构建不等于可安装 IPA；本轮不自动创建远端 App ID、上传发布或替换其他 App。
+模拟器验证持久凭据同样需要 ad-hoc 签名和生成工程中的 Keychain entitlement；`CODE_SIGNING_ALLOWED=NO` 只能验证编译，不能据此验收 Keychain 保存。
+
+真机安装需要有效的开发签名和包含目标设备的描述文件；可通过 Xcode 或 `devicectl device install app` 安装。无签名真机构建不等于可安装 IPA，不上传到 TestFlight/App Store，也不替换其他 App。
 
 ## 使用
 
-1. 电脑端开启 WeQ Remote，完成网络登录。
-2. 手机点击“连接网络”，通过 App 内网络登录入口加入同一个 tailnet；无需额外安装 Tailscale 或占用系统 VPN。
-3. 手机扫描电脑二维码，或在电脑复制配对链接后粘贴；点击“配对电脑”。
-4. 两端核对六位校验码，在电脑批准，然后手机显示“电脑在线”。
-5. 点击“验证连通”发出新的真实请求。电脑撤销设备后，再验证应提示授权失效。
+1. 电脑选择「局域网」直接生成二维码；或进入「Tailscale」选择手机已有/没有 Tailscale。已有时无需 Key，没有时完成电脑验证、填 Key 后生成二维码。
+2. 手机扫码即申请连接，也可粘贴链接并点箭头或键盘「连接」。
+3. 电脑弹窗批准完整 Web 访问后进入网页，后续打开自动重连，无需重复验证。
+4. 电脑可删除已配对设备，手机工具栏可删除本机保存的电脑凭据。
 
-本版不做免账号扫码入网、后台常连、聊天功能或持久设备授权。设备访问令牌只保留在手机内存；退到后台即取消请求并关闭内嵌节点，返回后需要重新配对。TS 节点身份保留在 App 私有 Application Support，并排除系统备份。
+设备凭据保存在 ThisDeviceOnly Keychain；退到后台关闭连接，返回后从 Keychain 恢复。TS 节点身份保留在 App 私有 Application Support，并排除系统备份；WKWebView 使用非持久数据存储。内嵌模式 SOCKS 代理禁止失败后退回直连；局域网模式使用系统路由和精确证书指纹校验，不启动内嵌节点。
 
-扫码只填入链接，不自动发出配对请求。只接受 v1、无额外字段、`100.64.0.0/10` 数字地址和指定端口；拒绝公网域名、普通 LAN、回环地址、用户信息、路径、查询及重定向。HTTPS 控制面仍按系统与 TS 的证书校验。仅 TS 内的 HTTP 使用网段级 ATS 例外，不允许任意 HTTP。
+支持旧 v1、带 Key/有效期的 v2 和带局域网 HTTPS 指纹的 v3；拒绝重复/额外字段、公网域名、回环和控制面替换。ATS 例外限定私有 IPv4 / TS 网段；LAN 协议仍强制 HTTPS 且仅接受二维码中的指纹，不接受任意自签名证书。
 
 ## 验证
 
@@ -69,7 +70,11 @@ xcodebuild -project apps/ios/WeQRemote.xcodeproj -scheme WeQRemote \
 
 测试后关闭两个本轮进程及使用的模拟设备，不关闭其他任务设备。隔离 TS 通过不代表真实 iPhone 蜂窝网络、公网控制面登录、相机扫码或 App 分发已验收；实际结果另记。
 
-## 2026-10-22 本机回执
+协议单测可直接在宿主机运行，不创建模拟器：`swift test --package-path apps/ios --scratch-path apps/ios/.build/protocol -j 2`。
+模拟器必须使用 f 盘设备集及 `ios-simulator-run` / `ios-simctl` 入口，不能直接使用默认设备集启动设备。
+
+
+## 0.1.0 历史回执（2026-10-22）
 
 - iOS 27.0 / iPhone 18 Pro 模拟器：6 项单元/连接测试 + 2 项 UI 测试全部通过，无跳过。包含手机内嵌 TS → 本地 DERP/直连 → 正式电脑网络辅助程序 → 真实配对/状态接口，撤销后的 401 拒绝也通过。
 - 最后追加网络关闭/重建的安全收尾后，单独重跑真实 TS 连接、撤销、节点重建测试，通过；完整 8 项结果在 `.build/FinalConnectionTests.xcresult`，最新生命周期结果在 `.build/LifecycleTests.xcresult`。

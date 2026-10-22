@@ -15,6 +15,7 @@ REPO = ROOT.parents[1]
 BUILD = ROOT / '.build'
 parser = argparse.ArgumentParser()
 parser.add_argument('--serial', default='emulator-5580')
+parser.add_argument('--lan', action='store_true')
 args = parser.parse_args()
 sdk = Path(os.environ.get('ANDROID_HOME', Path.home() / 'Library/Android/sdk'))
 adb = [str(sdk / 'platform-tools/adb'), '-s', args.serial]
@@ -36,36 +37,51 @@ with socket.socket() as probe:
 config = BUILD / 'network-test.json'
 if config.exists():
     raise SystemExit('已有测试网络配置，请先检查原现场，不覆盖。')
-subprocess.run(['go', 'build', '-p', '2', '-o', str(BUILD / 'test-network'), './ios-test-network'], cwd=REPO / 'tools/remote-network', check=True)
-env = dict(os.environ, WEQ_REMOTE_TEST_CONFIG=str(config), GOMAXPROCS='2')
+if not args.lan:
+    subprocess.run(['go', 'build', '-p', '2', '-o', str(BUILD / 'test-network'), './ios-test-network'], cwd=REPO / 'tools/remote-network', check=True)
+env = dict(os.environ, WEQ_REMOTE_TEST_CONFIG=str(config), WEQ_REMOTE_LAN_TEST='1' if args.lan else '0', GOMAXPROCS='2')
 processes = []
 ports = []
 log_path = BUILD / 'integration.log'
 with log_path.open('w') as log:
     try:
         processes.append(subprocess.Popen(['pnpm', 'exec', 'tsx', 'apps/ios/scripts/integration-server.ts'], cwd=REPO, env=env, stdout=log, stderr=log, start_new_session=True))
-        processes.append(subprocess.Popen([str(BUILD / 'test-network'), '--helper', str(REPO / 'tools/remote-network/weq-remote-network'), '--config', str(config)], cwd=REPO, env=env, stdin=subprocess.PIPE, stdout=log, stderr=log, start_new_session=True))
+        if not args.lan:
+            processes.append(subprocess.Popen([str(BUILD / 'test-network'), '--helper', str(REPO / 'tools/remote-network/weq-remote-network'), '--config', str(config), '--both'], cwd=REPO, env=env, stdin=subprocess.PIPE, stdout=log, stderr=log, start_new_session=True))
         deadline = time.monotonic() + 55
-        while not config.exists():
+        while not args.lan and not config.exists():
             if any(process.poll() is not None for process in processes) or time.monotonic() > deadline:
                 raise RuntimeError('隔离 TS 网络未就绪，请查看有界测试日志。')
             time.sleep(.2)
-        settings = json.loads(config.read_text())
-        ports = [45198, urlparse(settings['control']).port, int(settings['relayPort'])]
+        if args.lan:
+            from urllib.request import urlopen
+            while True:
+                try:
+                    with urlopen('http://127.0.0.1:45198/test/invitation', timeout=2) as response:
+                        if response.status == 200:
+                            break
+                except Exception:
+                    if time.monotonic() > deadline:
+                        raise RuntimeError('LAN 测试入口未就绪')
+                    time.sleep(.2)
+            ports = [45198]
+        else:
+            settings = json.loads(config.read_text())
+            ports = [45198, urlparse(settings['control']).port, int(settings['relayPort'])]
         for port in ports:
             call(adb + ['reverse', f'tcp:{port}', f'tcp:{port}'])
         package = 'io.github.weqdevs.remote.test'
-        print(call(adb + ['install', '-r', str(BUILD / 'weq-remote-0.1.0-arm64-test.apk')]).decode())
+        print(call(adb + ['install', '-r', str(BUILD / 'weq-remote-0.3.0-arm64-test.apk')]).decode())
         for mode in ('no', 'yes'):
             call(adb + ['shell', 'cmd', 'uimode', 'night', mode])
-            output = call(adb + ['shell', 'am', 'instrument', '-w', package + '/io.github.weqdevs.remote.RemoteInstrumentation']).decode()
+            output = call(adb + ['shell', 'am', 'instrument', '-w', '-e', 'lan', '1' if args.lan else '0', package + '/io.github.weqdevs.remote.RemoteInstrumentation']).decode()
             print(output)
             if 'PASS:' not in output or 'FAIL:' in output:
                 raise RuntimeError('Android 原生集成验证失败')
             screenshot = call(adb + ['exec-out', 'run-as', package, 'cat', 'files/connection.png'])
-            (BUILD / ('connected-dark.png' if mode == 'yes' else 'connected-light.png')).write_bytes(screenshot)
+            (BUILD / (('lan-' if args.lan else '') + ('connected-dark.png' if mode == 'yes' else 'connected-light.png'))).write_bytes(screenshot)
             call(adb + ['shell', 'am', 'force-stop', package])
-        print('PASS: light/dark native UI; embedded TS; pairing; actual status request; revocation')
+        print('PASS: light/dark WebView; ' + ('LAN TLS + persisted reconnect' if args.lan else 'embedded TS') + '; pairing; HTTP/WebSocket; revocation')
     finally:
         subprocess.run(adb + ['shell', 'am', 'force-stop', 'io.github.weqdevs.remote.test'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         subprocess.run(adb + ['shell', 'cmd', 'uimode', 'night', 'auto'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

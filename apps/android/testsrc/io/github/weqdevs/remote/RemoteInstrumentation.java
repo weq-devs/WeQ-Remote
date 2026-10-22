@@ -14,18 +14,22 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.json.JSONObject;
 
 public final class RemoteInstrumentation extends Instrumentation {
-    @Override public void onCreate(Bundle arguments) { super.onCreate(arguments); start(); }
+    private boolean lan;
+    @Override public void onCreate(Bundle arguments) { super.onCreate(arguments); lan = "1".equals(arguments.getString("lan")); start(); }
     @Override public void onStart() {
         Bundle result = new Bundle();
         MainActivity activity = null;
         try {
             String pkg = getTargetContext().getPackageName();
+            ConnectionStore.delete(getTargetContext());
             Intent first = new Intent().setComponent(new ComponentName(pkg, MainActivity.class.getName())).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             activity = (MainActivity)startActivitySync(first);
             final MainActivity initial = activity;
             require(read(initial.networkState).contains("未启动"), "default network must stay off");
             runOnMainSync(() -> require(!initial.pairButton.isEnabled(), "unconnected pairing enabled"));
             runOnMainSync(initial::finish); waitForIdleSync();
+
+            if (lan) { testLAN(pkg); result.putString("stream", "PASS: LAN pinned TLS; Keystore persisted reconnect; WebView HTTP; WebSocket; revoke and credential removal\n"); finish(android.app.Activity.RESULT_OK, result); return; }
 
             JSONObject network = http("/test/network", "GET");
             JSONObject invitation = http("/test/invitation", "GET");
@@ -35,18 +39,10 @@ public final class RemoteInstrumentation extends Instrumentation {
             final MainActivity connected = activity;
             waitText(connected.networkState, "已连接", 40000);
             runOnMainSync(() -> connected.pairButton.performClick());
-            waitText(connected.computerState, "电脑在线", 30000);
-            require(read(connected.detail).contains("ms"), "real latency missing");
-            runOnMainSync(() -> connected.verifyButton.performClick());
-            waitForIdleSync();
-            long requestDeadline = android.os.SystemClock.elapsedRealtime() + 16000;
-            while (true) {
-                AtomicReference<Boolean> ready = new AtomicReference<>(false);
-                runOnMainSync(() -> ready.set(connected.verifyButton.isEnabled()));
-                if (ready.get()) break;
-                require(android.os.SystemClock.elapsedRealtime() < requestDeadline, "repeat request timed out");
-                Thread.sleep(100);
-            }
+            waitWeb(connected, "Web 已连接", 30000);
+            waitWeb(connected, "WebSocket 已连接", 15000);
+            runOnMainSync(() -> connected.webView.evaluateJavascript("document.querySelector('#probe').click()", null));
+            waitWeb(connected, "Web 已连接", 15000);
             android.view.accessibility.AccessibilityNodeInfo activeWindow = null;
             long windowDeadline = android.os.SystemClock.elapsedRealtime() + 5000;
             while (android.os.SystemClock.elapsedRealtime() < windowDeadline) {
@@ -64,10 +60,9 @@ public final class RemoteInstrumentation extends Instrumentation {
             try (FileOutputStream output = new FileOutputStream(new File(getTargetContext().getFilesDir(), "connection.png"))) { image.compress(Bitmap.CompressFormat.PNG, 100, output); }
             image.recycle();
             http("/test/revoke", "POST");
-            runOnMainSync(() -> connected.verifyButton.performClick());
-            waitText(connected.error, "授权已被撤销", 20000);
-            runOnMainSync(() -> require(connected.verifyButton.getVisibility() != android.view.View.VISIBLE, "revoked device remains connected"));
-            result.putString("stream", "PASS: default network off; embedded TS; pairing; status; repeated request; revoke=401\n");
+            waitWeb(connected, "订阅已断开", 20000);
+            waitWeb(connected, "授权已撤销", 20000);
+            result.putString("stream", "PASS: default network off; embedded TS; pairing; WebView HTTP; WebSocket; revoke=403 and socket closed\n");
             runOnMainSync(connected::finish);
             finish(android.app.Activity.RESULT_OK, result);
         } catch (Throwable failure) {
@@ -76,7 +71,59 @@ public final class RemoteInstrumentation extends Instrumentation {
             finish(android.app.Activity.RESULT_CANCELED, result);
         }
     }
+    private void testLAN(String pkg) throws Exception {
+        MainActivity current = null;
+        try {
+            JSONObject invitation = http("/test/invitation", "GET");
+            Intent first = new Intent().setComponent(new ComponentName(pkg, MainActivity.class.getName())).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK).setData(android.net.Uri.parse(invitation.getString("url")));
+            current = (MainActivity)startActivitySync(first);
+            MainActivity paired = current;
+            runOnMainSync(() -> paired.pairButton.performClick());
+            waitWeb(paired, "Web 已连接", 30000); waitWeb(paired, "WebSocket 已连接", 15000);
+            require(ConnectionStore.load(getTargetContext()) != null, "credential not persisted");
+            runOnMainSync(paired::finish); waitForIdleSync();
+            current = (MainActivity)startActivitySync(new Intent().setComponent(new ComponentName(pkg, MainActivity.class.getName())).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+            MainActivity restored = current;
+            waitWeb(restored, "Web 已连接", 30000); waitWeb(restored, "WebSocket 已连接", 15000);
+            require(http("/test/devices", "GET").getInt("count") == 1, "reconnect created a new pairing");
+            android.view.accessibility.AccessibilityNodeInfo active = null;
+            long deadline = android.os.SystemClock.elapsedRealtime() + 5000;
+            while (android.os.SystemClock.elapsedRealtime() < deadline) {
+                active = getUiAutomation().getRootInActiveWindow();
+                if (active != null && pkg.contentEquals(active.getPackageName())) break;
+                Thread.sleep(100);
+            }
+            if (active == null || !pkg.contentEquals(active.getPackageName())) {
+                Bitmap failure = getUiAutomation().takeScreenshot();
+                if (failure != null) { try (FileOutputStream output = new FileOutputStream(new File(getTargetContext().getFilesDir(), "failure.png"))) { failure.compress(Bitmap.CompressFormat.PNG, 100, output); } failure.recycle(); }
+                throw new AssertionError("test window not foreground: " + (active == null ? "none" : active.getPackageName()));
+            }
+            Bitmap image = getUiAutomation().takeScreenshot(); require(image != null, "screenshot unavailable");
+            try (FileOutputStream output = new FileOutputStream(new File(getTargetContext().getFilesDir(), "connection.png"))) { image.compress(Bitmap.CompressFormat.PNG, 100, output); } image.recycle();
+            http("/test/revoke", "POST");
+            waitWeb(restored, "订阅已断开", 20000); waitWeb(restored, "授权已撤销", 20000);
+            runOnMainSync(restored::finish); waitForIdleSync();
+            current = (MainActivity)startActivitySync(new Intent().setComponent(new ComponentName(pkg, MainActivity.class.getName())).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+            waitText(current.error, "授权已被撤销", 20000);
+            require(ConnectionStore.load(getTargetContext()) == null, "revoked credential not removed");
+        } finally { if (current != null) { MainActivity last = current; runOnMainSync(last::finish); } ConnectionStore.delete(getTargetContext()); }
+    }
     private String read(android.widget.TextView view) { AtomicReference<String> value = new AtomicReference<>(); runOnMainSync(() -> value.set(view.getText().toString())); return value.get(); }
+    private void waitWeb(MainActivity activity, String expected, long timeout) throws Exception {
+        long until = android.os.SystemClock.elapsedRealtime() + timeout;
+        while (android.os.SystemClock.elapsedRealtime() < until) {
+            AtomicReference<String> text = new AtomicReference<>("");
+            java.util.concurrent.CountDownLatch ready = new java.util.concurrent.CountDownLatch(1);
+            runOnMainSync(() -> {
+                if (activity.webView == null) { ready.countDown(); return; }
+                activity.webView.evaluateJavascript("document.body.innerText", value -> { text.set(value); ready.countDown(); });
+            });
+            require(ready.await(5, java.util.concurrent.TimeUnit.SECONDS), "WebView evaluation timeout");
+            if (text.get().contains(expected)) return;
+            Thread.sleep(200);
+        }
+        throw new AssertionError("WebView state not reached: " + expected);
+    }
     private void waitText(android.widget.TextView view, String expected, long timeout) throws Exception {
         long until = android.os.SystemClock.elapsedRealtime() + timeout;
         while (android.os.SystemClock.elapsedRealtime() < until) { if (read(view).contains(expected)) return; Thread.sleep(200); }

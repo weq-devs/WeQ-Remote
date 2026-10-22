@@ -13,11 +13,72 @@ final class RemoteModel: ObservableObject {
     @Published private(set) var latency: Int?
     @Published private(set) var checkedAt: Date?
     @Published private(set) var error: String?
+    @Published private(set) var webSession: RemoteWebSession?
     let network: EmbeddedNetwork
     private var api: RemoteAPI?
     private var credential: DeviceCredential?
     private var polling: Task<Void, Never>?
     private var revision = 0
+    private var fingerprint: String?
+    private var reconnectPaused = false
+
+    func resumeReconnect() { reconnectPaused = false }
+
+    func preparePairing() {
+        guard !reconnectPaused else { return }
+        reconnectPaused = true
+        if polling == nil, webSession == nil {
+            revision += 1
+            api?.session.invalidateAndCancel()
+            api = nil
+            credential = nil
+            busy = false
+        }
+    }
+
+    func reconnect() async {
+        guard !reconnectPaused, !busy, polling == nil, api == nil else { return }
+        let generation = revision
+        busy = true
+        defer { if generation == revision { busy = false } }
+        do {
+            guard let saved = try SavedConnection.load() else { return }
+            message = "正在连接电脑"
+            fingerprint = saved.fingerprint
+            let session = try await connectionSession(endpoint: saved.endpoint, fingerprint: saved.fingerprint)
+            guard generation == revision else { session.invalidateAndCancel(); return }
+            api = RemoteAPI(endpoint: saved.endpoint, session: session)
+            credential = try DeviceCredential(token: saved.token)
+            computerAddress = saved.endpoint.host
+            paired = true
+            await refresh()
+            if connected {
+                let session = try await network.webSession(endpoint: saved.endpoint, token: saved.token, fingerprint: saved.fingerprint)
+                guard generation == revision else { session.close(); return }
+                webSession = session
+            }
+            else { api?.session.invalidateAndCancel(); api = nil }
+        } catch { if generation == revision { api?.session.invalidateAndCancel(); api = nil; self.error = error.localizedDescription } }
+    }
+
+    private func connectionSession(endpoint: URL, fingerprint: String?) async throws -> URLSession {
+        if let fingerprint {
+            return URLSession(configuration: EmbeddedNetwork.configuration(), delegate: NoRedirectDelegate(endpoint: endpoint, fingerprint: fingerprint), delegateQueue: nil)
+        }
+        await network.start()
+        let generation = revision
+        let deadline = ContinuousClock.now + .seconds(45)
+        while !network.connected && ContinuousClock.now < deadline {
+            try Task.checkCancellation()
+            guard generation == revision else { throw CancellationError() }
+            await network.refresh()
+            if network.loginURL != nil { throw RemoteError.enrollment }
+            try await Task.sleep(for: .milliseconds(500))
+        }
+        return try await network.session()
+    }
+
+    func forget() { SavedConnection.delete(); network.webDataStore.clear(); disconnect() }
 
     init(network: EmbeddedNetwork) { self.network = network }
 
@@ -38,6 +99,7 @@ final class RemoteModel: ObservableObject {
     var testMode: Bool { testEndpoint != nil }
 
     func pair() async {
+        preparePairing()
         guard !busy, polling == nil else { return }
         error = nil
         busy = true
@@ -45,16 +107,25 @@ final class RemoteModel: ObservableObject {
         defer { if generation == revision { busy = false } }
         do {
             let invitation = try PairingInvitation(invitationText)
+            invitationText = ""
+            if invitation.fingerprint != nil { await network.stop() }
+            if let authKey = invitation.authKey {
+                guard !testMode, let expiresAt = invitation.expiresAt else { throw RemoteError.enrollment }
+                invitationText = ""
+                message = "正在入网"
+                try await network.enroll(authKey: authKey, expiresAt: expiresAt)
+                guard generation == revision else { throw CancellationError() }
+            }
             let endpoint = testEndpoint ?? invitation.endpoint
             let session: URLSession
             if testMode { session = URLSession(configuration: EmbeddedNetwork.configuration(), delegate: NoRedirectDelegate(), delegateQueue: nil) }
-            else { session = try await network.session() }
+            else { session = try await connectionSession(endpoint: endpoint, fingerprint: invitation.fingerprint) }
             let newAPI = RemoteAPI(endpoint: endpoint, session: session)
             let token = try DeviceCredential()
             let claim: PairClaim
             do {
                 claim = try await newAPI.request("v1/pair", method: "POST", body: [
-                    "invitation": invitation.secret, "name": "WeQ Remote iOS", "tokenHash": token.hash,
+                    "invitation": invitation.secret, "name": "WeQ Remote iOS", "tokenHash": token.hash, "scope": "web:access",
                 ])
             } catch { session.invalidateAndCancel(); throw error }
             guard generation == revision else { session.invalidateAndCancel(); return }
@@ -67,6 +138,7 @@ final class RemoteModel: ObservableObject {
             api?.session.invalidateAndCancel()
             api = newAPI
             credential = token
+            fingerprint = invitation.fingerprint
             computerAddress = invitation.endpoint.host
             invitationText = ""
             code = claim.code
@@ -88,11 +160,17 @@ final class RemoteModel: ObservableObject {
                 guard generation == revision, let api, let credential else { return }
                 let approval: PairApproval = try await api.request("v1/pair/\(claim.id.uuidString.lowercased())", token: credential.token)
                 guard generation == revision else { return }
-                guard approval.id == claim.id, approval.scope == "status:read" else { throw RemoteError.response }
+                guard approval.id == claim.id, approval.scope == "web:access" else { throw RemoteError.response }
                 if approval.approved {
+                    if !testMode && (EmbeddedNetwork.integrationControl == nil || ProcessInfo.processInfo.arguments.contains("--remote-keep-credential")) { try SavedConnection(endpoint: api.endpoint, token: credential.token, fingerprint: fingerprint).save() }
                     paired = true
                     code = nil
                     await refresh()
+                    if connected, !testMode {
+                        let session = try await network.webSession(endpoint: api.endpoint, token: credential.token, fingerprint: fingerprint)
+                        guard generation == revision else { session.close(); return }
+                        webSession = session
+                    }
                     return
                 }
                 try await Task.sleep(for: .seconds(2))
@@ -132,10 +210,12 @@ final class RemoteModel: ObservableObject {
         connected = false
         message = "连接未通过"
         error = failure.localizedDescription
-        if case RemoteError.unauthorized = failure { disconnect(); error = failure.localizedDescription }
+        if case RemoteError.unauthorized = failure { SavedConnection.delete(); network.webDataStore.clear(); disconnect(); error = failure.localizedDescription }
     }
 
     func disconnect() {
+        webSession?.close()
+        webSession = nil
         revision += 1
         polling?.cancel()
         polling = nil
@@ -151,5 +231,6 @@ final class RemoteModel: ObservableObject {
         computerAddress = nil
         message = "未配对"
         error = nil
+        invitationText = ""
     }
 }
