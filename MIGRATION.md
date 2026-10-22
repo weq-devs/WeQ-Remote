@@ -25,3 +25,13 @@
 - 生成的 Xcode 工程与部分缓存包含旧绝对路径，迁移后重新生成工程；缓存不可复用时由构建工具正常重建，不用兼容软链接掩盖漏改。
 - `scripts/remote-integration-server.ts`、其合成 Web 页面及 `tools/remote-network/ios-test-network` 归电脑侧测试，保留在 WeQ；手机测试通过显式桌面入口使用它们。
 
+## 迁移后验证
+
+- 本仓库边界与路径测试 4 项通过；覆盖显式桌面路径、带空格路径、缺失 / 错误仓库拒绝、手机源文件无桌面私有导入，以及产品构建不依赖桌面仓库。
+- Swift 宿主机协议与非持久数据存储共 9 项测试通过；Android Go `test -race ./...`、Java 邀请 / 地址 / 凭据 / SHA-256 / 真实二维码编解码检查通过。
+- 从新路径重新生成 Xcode 工程后，iOS 真机目标 Debug 编译通过（本轮未签名、未安装）；Android 从新仓库完整构建 APK，v2 / v3 签名校验通过，沿用本机测试签名。
+- 通过 `WEQ_REMOTE_CLIENT_REPO=/path/to/WeQ-Remote node --test scripts/remote-integration-server.test.mjs`，实际从本仓库 Python 入口启动电脑夹具，验证契约版本、配对、批准、状态、Web / RPC 和撤销后的拒绝全部通过；没有读取真实 QQ。
+- 桌面主进程 / preload / renderer 与 Web 在隔离输出目录编译通过；没有覆盖正在运行的 `out` / Web `dist/public`，没有重启桌面服务。隔离构建配置及日志在既有 `/path/to/private-maintenance/`，文件前缀 `remote-split-`。
+- 本轮未启动模拟器、未重新安装真机、未修改设备凭据、未执行全仓 CI，也没有将构建成功冒称真机加载耗时或公共网络验收。
+- 新仓库有本地提交、无远端。WeQ 原工作区中迁移产生的删除、夹具和文档调整保留待审，没有将其他任务的未提交改动连带提交。
+

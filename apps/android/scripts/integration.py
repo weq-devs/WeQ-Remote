@@ -7,16 +7,24 @@ from pathlib import Path
 import socket
 import signal
 import subprocess
+import sys
 import time
 from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parents[1]
 REPO = ROOT.parents[1]
+sys.path.insert(0, str(REPO / 'scripts'))
+from desktop_fixture import desktop_repository, fixture_command
 BUILD = ROOT / '.build'
 parser = argparse.ArgumentParser()
 parser.add_argument('--serial', default='emulator-5580')
 parser.add_argument('--lan', action='store_true')
+parser.add_argument('--desktop-repo')
 args = parser.parse_args()
+try:
+    DESKTOP = desktop_repository(args.desktop_repo)
+except ValueError as error:
+    parser.error(str(error))
 sdk = Path(os.environ.get('ANDROID_HOME', Path.home() / 'Library/Android/sdk'))
 adb = [str(sdk / 'platform-tools/adb'), '-s', args.serial]
 
@@ -38,16 +46,16 @@ config = BUILD / 'network-test.json'
 if config.exists():
     raise SystemExit('已有测试网络配置，请先检查原现场，不覆盖。')
 if not args.lan:
-    subprocess.run(['go', 'build', '-p', '2', '-o', str(BUILD / 'test-network'), './ios-test-network'], cwd=REPO / 'tools/remote-network', check=True)
+    subprocess.run(['go', 'build', '-p', '2', '-o', str(BUILD / 'test-network'), './ios-test-network'], cwd=DESKTOP / 'tools/remote-network', check=True)
 env = dict(os.environ, WEQ_REMOTE_TEST_CONFIG=str(config), WEQ_REMOTE_LAN_TEST='1' if args.lan else '0', GOMAXPROCS='2')
 processes = []
 ports = []
 log_path = BUILD / 'integration.log'
 with log_path.open('w') as log:
     try:
-        processes.append(subprocess.Popen(['pnpm', 'exec', 'tsx', 'apps/ios/scripts/integration-server.ts'], cwd=REPO, env=env, stdout=log, stderr=log, start_new_session=True))
+        processes.append(subprocess.Popen(fixture_command(DESKTOP), cwd=DESKTOP, env=env, stdout=log, stderr=log, start_new_session=True))
         if not args.lan:
-            processes.append(subprocess.Popen([str(BUILD / 'test-network'), '--helper', str(REPO / 'tools/remote-network/weq-remote-network'), '--config', str(config), '--both'], cwd=REPO, env=env, stdin=subprocess.PIPE, stdout=log, stderr=log, start_new_session=True))
+            processes.append(subprocess.Popen([str(BUILD / 'test-network'), '--helper', str(DESKTOP / 'tools/remote-network/weq-remote-network'), '--config', str(config), '--both'], cwd=DESKTOP, env=env, stdin=subprocess.PIPE, stdout=log, stderr=log, start_new_session=True))
         deadline = time.monotonic() + 55
         while not args.lan and not config.exists():
             if any(process.poll() is not None for process in processes) or time.monotonic() > deadline:

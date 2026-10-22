@@ -2,11 +2,11 @@
 
 版本 0.3.0，开发测试原型，Android 8.0 / API 26 起，当前仅构建 arm64-v8a。
 
-手机端仅封装现有 WeQ Web 和内嵌 TS，首页只保留扫码和链接输入。支持局域网 HTTPS 指纹配对或一次性 Auth Key 扫码入网，不占用系统 VPN。使用与安全边界见[Web 与手机连接](../../docs/guide/remote-web.md)。
+手机端仅封装电脑提供的 WeQ Web 和内嵌 TS，首页只保留扫码和链接输入。支持局域网 HTTPS 指纹配对或一次性 Auth Key 扫码入网，不占用系统 VPN。手机壳已独立仓库，协议见[协议约定](../../docs/protocol.md)，本机电脑侧用法见 [Web 与手机连接](../../../WeQ-upstream/docs/guide/remote-web.md)。
 
 ## APK 与使用
 
-开发 APK：`/path/to/WeQ/apps/android/.build/weq-remote-0.3.0-arm64.apk`。
+开发 APK：`/path/to/WeQ-Remote/apps/android/.build/weq-remote-0.3.0-arm64.apk`。
 这是本机测试签名，不是商店正式发布。`-test.apk` 是独立包名的自动化测试版本，不作为普通客户端交付。
 
 1. 安装普通 APK；电脑选择局域网直接生成二维码，或进入 Tailscale 选择手机已有/没有。已有时无需 Key，没有时完成电脑验证并填 Key 后生成二维码。
@@ -24,7 +24,7 @@
 `ANDROID_HOME` / `ANDROID_NDK_HOME` 可覆盖默认 SDK/NDK 路径。
 
 ```sh
-cd /path/to/WeQ
+cd /path/to/WeQ-Remote
 android-sdk-run python3 apps/android/scripts/build.py
 android-sdk-run python3 apps/android/scripts/build.py --test --skip-network
 bash apps/android/scripts/check-protocol.sh
@@ -52,17 +52,18 @@ python3 apps/android/scripts/emulator.py \
 配置为无窗口、无音频、禁快照、2 核。SDK 会将 Android 36 的 RAM 最小值提升为约 2.5 GB。首次启动需要完成系统初始化；测试后正常关闭本轮设备：
 
 ```sh
-~/Library/Android/sdk/platform-tools/adb -s emulator-5580 emu avd name
-~/Library/Android/sdk/platform-tools/adb -s emulator-5580 emu kill
+android-sdk-run adb -s emulator-5580 emu avd name
+android-sdk-run adb -s emulator-5580 emu kill
 ```
 
 ## 真实 TS 集成验证
 
 ```sh
-python3 apps/android/scripts/integration.py --serial emulator-5580
+android-sdk-run python3 apps/android/scripts/integration.py \
+  --desktop-repo /path/to/WeQ --serial emulator-5580
 ```
 
-脚本仅接受 `WeQRemote_API36`；复用现有本机测试控制面、DERP、正式电脑端网络辅助程序和真实 `RemotePairing` / `createRemoteServer`，不登录公共 tailnet。ADB reverse 只用于让模拟器访问本机测试控制面与中继；App 的 `/v1/pair`、`/v1/status` 实际经过内嵌 TS，不改走系统 HTTP 冒充加密通道。
+脚本通过 `--desktop-repo` 或 `WEQ_DESKTOP_REPO` 定位电脑侧夹具；缺少约定入口时明确失败，不从手机模块导入桌面私有实现。它仅接受 `WeQRemote_API36`；复用本机测试控制面、DERP、正式电脑端网络辅助程序和真实配对接口，不登录公共 tailnet。ADB reverse 只用于让模拟器访问本机测试控制面与中继；App 的 `/v1/pair`、`/v1/status` 实际经过内嵌 TS，不改走系统 HTTP 冒充加密通道。
 
 自动检查默认不启动网络、配对、实际状态读取、重复请求、撤销后的 401，并检查浅/深色。专用 `io.github.weqdevs.remote.test` APK 才启用回环测试控制面与测试 instrumentation；普通 APK 不接收这些测试 Intent 参数，也不允许系统明文 HTTP。
 

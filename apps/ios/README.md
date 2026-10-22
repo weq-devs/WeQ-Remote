@@ -2,14 +2,14 @@
 
 版本：0.3.2，本地开发测试版，不是 App Store / TestFlight 发布版。iOS 17 起。
 
-薄壳结构：内嵌 TS、扫码配对和 WKWebView，业务界面复用现有 WeQ Web。支持带一次性 Auth Key 的扫码入网，不要求手机再登录 Tailscale。电脑需明确批准完整 Web 访问权限。使用与安全边界见[Web 与手机连接](../../docs/guide/remote-web.md)。
+薄壳结构：内嵌 TS、扫码配对和 WKWebView，业务界面复用电脑提供的 WeQ Web。手机壳已独立于 WeQ 仓库；构建不依赖桌面源码，协议边界见[协议约定](../../docs/protocol.md)，本机电脑侧用法见 [Web 与手机连接](../../../WeQ-upstream/docs/guide/remote-web.md)。
 
 ## 构建
 
 本机只读复用现有 TailscaleKit，不复制整个工程、不改动外部依赖工程。来源与初始构建指纹在 `Support/tailscale-dependency.json`，BSD 许可证随 App 打包。Framework 必须包含 `TailscaleNode.statusJSON()`，并支持 iOS 真机及模拟器。
 
 ```sh
-cd /path/to/WeQ
+cd /path/to/WeQ-Remote
 bash apps/ios/scripts/generate-project.sh
 xcodebuild -project apps/ios/WeQRemote.xcodeproj -scheme WeQRemote \
   -destination 'generic/platform=iOS Simulator' \
@@ -40,21 +40,21 @@ xcodebuild -project apps/ios/WeQRemote.xcodeproj -scheme WeQRemote \
 普通回环集成测试服务：
 
 ```sh
-pnpm exec tsx apps/ios/scripts/integration-server.ts
+python3 scripts/desktop_fixture.py --desktop-repo /path/to/WeQ
 ```
 
 仅监听 `127.0.0.1:45198`。它会自动批准测试请求，绝不是产品服务。测试结束关闭进程。
 Debug 模拟器测试标志 `--remote-integration-test` 允许通过回环测试真实协议；仅在同时设置合法 `WEQ_REMOTE_TEST_ENDPOINT` 时生效。真机和 Release 编译不含该入口。
 
-隔离 TS 集成网络：构建并运行 `tools/remote-network/ios-test-network`，它启动本地控制面、DERP 与正式电脑端网络辅助程序，不注册公共网络。配置只写入 `apps/ios/.build/network-test.json`；UI 测试检测到该配置后，以 `--remote-ts-integration-test` 和仅回环的 `WEQ_REMOTE_TEST_CONTROL` 启动手机内嵌 TS，实际穿过两端 TS 与 DERP/直连传输，再访问同一配对 API。
+隔离 TS 集成网络由电脑仓库的 `tools/remote-network/ios-test-network` 提供，它启动本地控制面、DERP 与正式电脑端网络辅助程序，不注册公共网络。先用 `--network-config "$PWD/apps/ios/.build/network-test.json"` 启动上述夹具，另一个终端运行下面的网络进程。配置在手机仓库的 `.build`，不会进入 Git；UI 测试从 HTTP 夹具读取配置后，以 `--remote-ts-integration-test` 和仅回环的 `WEQ_REMOTE_TEST_CONTROL` 启动手机内嵌 TS。
 
 ```sh
-cd tools/remote-network
-go build -o weq-remote-network .
-go build -o ../../apps/ios/.build/ios-test-network ./ios-test-network
-cd ../..
+export WEQ_DESKTOP_REPO=/path/to/WeQ
+node "$WEQ_DESKTOP_REPO/scripts/prepare-remote-network.mjs"
+go -C "$WEQ_DESKTOP_REPO/tools/remote-network" build \
+  -o "$PWD/apps/ios/.build/ios-test-network" ./ios-test-network
 apps/ios/.build/ios-test-network \
-  --helper "$PWD/tools/remote-network/weq-remote-network" \
+  --helper "$WEQ_DESKTOP_REPO/tools/remote-network/weq-remote-network" \
   --config "$PWD/apps/ios/.build/network-test.json"
 ```
 
@@ -86,7 +86,9 @@ xcodebuild -project apps/ios/WeQRemote.xcodeproj -scheme WeQRemote \
 
 编译产物（可再生、不入 Git）：
 
-- 模拟器：`/path/to/WeQ/apps/ios/.build/DerivedData/Build/Products/Debug-iphonesimulator/WeQRemote.app`
-- 真机未签名：`/path/to/WeQ/apps/ios/.build/DeviceBuild/Build/Products/Release-iphoneos/WeQRemote.app`
+- 模拟器：`/path/to/WeQ-Remote/apps/ios/.build/DerivedData/Build/Products/Debug-iphonesimulator/WeQRemote.app`
+- 真机未签名：`/path/to/WeQ-Remote/apps/ios/.build/DeviceBuild/Build/Products/Release-iphoneos/WeQRemote.app`
+
+上述历史产物与缓存随手机目录原地迁移。旧日志中的原始路径不改写；生成的 Xcode 工程需重新运行生成脚本，不用旧路径软链接兼容。
 
 依赖文档：[TailscaleKit](https://github.com/tailscale/libtailscale/tree/d1dc45d039edb7759ecbee6ba2aea0c4bca884b8/swift)、[Apple ATS 网段例外](https://developer.apple.com/documentation/bundleresources/information-property-list/nsapptransportsecurity/nsexceptiondomains)。
