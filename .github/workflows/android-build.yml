@@ -71,4 +71,5 @@ jobs:
             apps/android/.build/*.apk
             apps/android/.build/SHA256SUMS
           if-no-files-found: error
+          include-hidden-files: true
           retention-days: 3
