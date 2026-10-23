@@ -6,10 +6,11 @@
 
 ## 构建
 
-本机只读复用现有 TailscaleKit，不复制整个工程、不改动外部依赖工程。来源与初始构建指纹在 `Support/tailscale-dependency.json`，BSD 许可证随 App 打包。Framework 必须包含 `TailscaleNode.statusJSON()`，并支持 iOS 真机及模拟器。
+通过 `WEQ_TAILSCALE_FRAMEWORK` 显式指定 TailscaleKit，不依赖开发者的其他项目路径。来源与初始构建指纹在 `Support/tailscale-dependency.json`，BSD 许可证随 App 打包。Framework 必须包含 `TailscaleNode.statusJSON()`，并支持 iOS 真机及模拟器。
 
 ```sh
 cd /path/to/WeQ-Remote
+export WEQ_TAILSCALE_FRAMEWORK=/absolute/path/TailscaleKit.xcframework
 bash apps/ios/scripts/generate-project.sh
 xcodebuild -project apps/ios/WeQRemote.xcodeproj -scheme WeQRemote \
   -destination 'generic/platform=iOS Simulator' \

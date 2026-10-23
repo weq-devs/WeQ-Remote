@@ -21,7 +21,7 @@
 - 初次配对必须由电脑明确批准。撤销后旧令牌不可读取状态、Web 或继续订阅。
 - `GET /v1/status` 的当前响应为 `product: WeQ Remote, protocol: 1, scope: status:read, online: true`。这里的 `status:read` 是状态响应类别，不能据此推断设备拥有完整 Web 权限。
 - Web 使用 `weq_remote` HttpOnly Cookie 或 Bearer 凭据；HTTP 与 `/trpc-ws` 由电脑端鉴权。手机壳不复制业务 API 定义或依赖桌面私有模块。
-- iOS Keychain 服务名、Android Keystore 及 Bundle ID 不因拆仓库而改变；项目路径不属于设备授权标识。
+- 拆仓库本身不改变设备授权；后续隐私清理将应用标识与 iOS Keychain 服务名改为项目命名空间 `io.github.weqdevs.remote`。新身份不能读取旧应用凭据，需重新配对；既有安装与电脑授权未被改动。项目路径不属于设备授权标识。
 
 ## 版本与测试
 

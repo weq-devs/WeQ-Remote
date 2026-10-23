@@ -2,7 +2,7 @@
 
 WeQ 的独立手机连接客户端。iOS 与 Android 负责扫码、连接、凭据和原生 WebView，业务页面从电脑上的 WeQ Web 服务加载，不维护另一套聊天界面。
 
-当前版本：iOS 0.3.2、Android 0.3.0，均为开发测试版，未上架应用商店。源码仓库：[weq-devs/WeQ-Remote](https://github.com/weq-devs/WeQ-Remote)（私有）。
+当前版本：iOS 0.3.2、Android 0.3.0，均为开发测试版，未上架应用商店。源码仓库配置目标：[weq-devs/WeQ-Remote](https://github.com/weq-devs/WeQ-Remote)。远端当前访问状态见本地维护记录，不将配置地址视为已推送证明。
 
 ## 仓库边界
 
@@ -64,3 +64,5 @@ WEQ_REMOTE_CLIENT_REPO=/path/to/WeQ-Remote \
 ## 历史与许可
 
 保留了手机目录的 4 条路径过滤历史，以及拆分前的完整工作区快照，详见 [迁移记录](MIGRATION.md)。源码沿用 WeQ 的 [LICENSE](LICENSE)，Tailscale 等依赖遵循各自许可。不提交签名、账号、原始凭据、节点身份或构建产物。
+
+历史中的个人提交身份、本机路径及应用标识已脱敏；当前应用命名空间为 `io.github.weqdevs.remote`。这与旧身份安装是不同应用，不能原位升级或直接读取其 Keychain / Keystore；新构建需要单独安装并重新配对。本次仅清理源码，未构建、安装或迁移设备数据，现有版本号不代表已发布该身份变更。
