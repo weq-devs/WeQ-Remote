@@ -2,7 +2,7 @@
 
 WeQ 的独立手机连接客户端。iOS 与 Android 负责扫码、连接、凭据和原生 WebView，业务页面从电脑上的 WeQ Web 服务加载，不维护另一套聊天界面。
 
-当前版本：iOS 0.3.2、Android 0.3.0，均为开发测试版，未上架应用商店。源码仓库配置目标：[weq-devs/WeQ-Remote](https://github.com/weq-devs/WeQ-Remote)。远端当前访问状态见本地维护记录，不将配置地址视为已推送证明。
+当前版本：iOS 0.3.2、Android 0.3.0，均为开发测试版，未上架应用商店。源码仓库：[weq-devs/WeQ-Remote](https://github.com/weq-devs/WeQ-Remote)（私有，默认分支 `dev`）。
 
 ## 仓库边界
 
