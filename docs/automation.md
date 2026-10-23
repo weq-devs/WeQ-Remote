@@ -102,3 +102,15 @@ Android APK SHA-256：`324138c21aecd31174840ec714875040d2cc7947e85e4c77bc67c7a9b
 本地下载及复核产物位于仓库内 `apps/ios/.build/actions/39907390229/` 与 `apps/android/.build/actions/39908423616/`，均为 Git 忽略的可再生产物，不入版本历史。
 
 云端 Artifact 按工作流保留 3 天，不是永久下载入口。上述结果只证明对应提交的自动化测试、构建、打包和上传链路，不代表签名安装、真实网络或性能验收。
+
+## 0.1.0 发布回执（2026-10-23，北京时间）
+
+- 发布源码提交：`a03202c86acc9682972079c69ce3942febb4f749`，注释标签 `v0.1.0`。标签前的 [dev CI #39910581481](https://github.com/weq-devs/WeQ-Remote/actions/runs/39910581481) 全部通过。
+- [Release #39910834092](https://github.com/weq-devs/WeQ-Remote/actions/runs/39910834092) 全部成功：标签与说明检查、三个 CI Job、两端构建、同轮产物来源 / 版本 / 摘要复核和自动上传发布均通过。iOS Job 用时 1 分 28 秒，Android Job 用时 5 分 43 秒。
+- [WeQ Remote 0.1.0](https://github.com/weq-devs/WeQ-Remote/releases/tag/v0.1.0) 于 14:26:09 发布。API 复核 `isDraft: false`、`isPrerelease: false`，五个附件均为 `uploaded`；仓库仍为私有，未上架商店。
+- Release 附件：普通开发签名 APK、未签名真机 IPA、`android-build.json`、`ios-build.json` 和汇总 `SHA256SUMS`。实际版本为 iOS 0.1.0（build 6）、Android 0.1.0（versionCode 4），两份来源记录均指向发布提交且 `sourceDirty: false`。
+- 已将五个附件下载至仓库 `.build/releases/v0.1.0/`，汇总 SHA-256 全部通过；两安装包 ZIP 完整性、IPA 实际版本、APK 实际包身份 / 版本 / arm64 架构及 v2 / v3 签名复核通过。产物不入 Git，没有安装应用、操作设备或迁移凭据。
+
+发布 APK SHA-256：`d0d791634f91de90c19285f10eb480d58e69e946b845ea1da1334b25e87c7425`。
+
+发布 IPA SHA-256：`32558b7b834eeef0da4e3223956237bd2ed00f12cb5bce3235a725c68034077b`。
