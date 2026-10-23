@@ -72,13 +72,19 @@ python3 apps/ios/scripts/build_unsigned_ipa.py
 
 ## 云端实跑回执（2026-10-23，北京时间）
 
-经用户授权，将自动化提交推送到现有私有仓库 `dev`，本轮构建源码为 `52aa4d7e4f6e8d48a7e231c72fab2f8483f89321`。未创建 Release、Tag 或商店发布，未安装应用或操作设备。
+经用户授权，将自动化提交推送到现有私有仓库 `dev`，首轮构建源码为 `52aa4d7e4f6e8d48a7e231c72fab2f8483f89321`；Android 上传修复及重跑源码为 `e85d7d96f1e7a4af18f409b9c882a5c812d6bc6a`。未创建 Release、Tag 或商店发布，未安装应用或操作设备。
 
 - [日常 CI #39907358806](https://github.com/weq-devs/WeQ-Remote/actions/runs/39907358806)：三个 Job 全部成功，包括仓库 / Java 协议、Swift 宿主机协议、工作流校验及 Go 静态 / 竞态检查。
 - [Android 首轮 #39907390364](https://github.com/weq-devs/WeQ-Remote/actions/runs/39907390364)：APK 编译、v2 / v3 签名校验及锁文件检查成功，但 Artifact 上传失败；上传 Action 默认排除隐藏文件，导致 `.build` 下白名单路径被过滤。本轮没有可下载的 Android Artifact，不能记作端到端通过。后续修复显式启用 `include-hidden-files`，仍保持原有 APK / 校验和白名单。
+- [Android 修复后重跑 #39908423616](https://github.com/weq-devs/WeQ-Remote/actions/runs/39908423616)：13:55:10–13:59:06，Job 用时 3 分 56 秒，全部成功。仓库 / Java / Go 竞态测试、普通 APK 编译、签名校验、锁文件检查、校验和生成及 Artifact 上传均通过。该修复提交的[日常 CI #39908392409](https://github.com/weq-devs/WeQ-Remote/actions/runs/39908392409)也全部成功。
+- Android Artifact 为 `android-development-39908423616-1`，仅包含 `weq-remote-0.3.0-arm64.apk` 和 `SHA256SUMS`。APK 为 0.3.0（versionCode 3），8,803,004 字节；下载后 SHA-256、ZIP 完整性和 v2 / v3 签名复核通过，包名为 `io.github.weqdevs.remote`，原生架构为 `arm64-v8a`，min / target SDK 为 26 / 36。本轮未启用 `build_test_apk`，未验收可选专用测试 APK 分支。
 - [iOS unsigned IPA #39907390229](https://github.com/weq-devs/WeQ-Remote/actions/runs/39907390229)：13:44:03–13:46:00，Job 用时 1 分 57 秒，全部成功。22 项仓库 / 构建辅助测试、9 项 Swift 测试通过，固定源码 Framework、Release App、IPA 打包与 Artifact 上传成功。
 - iOS Artifact 为 `ios-unsigned-39907390229-1`，包含 `weq-remote-unsigned.ipa`、`SHA256SUMS`、`build.json`。IPA 为 0.3.2（build 5），8,245,866 字节，来源记录 `sourceDirty: false`。下载后 SHA-256、ZIP 完整性、应用身份、主程序与内嵌 Framework 的无签名真机 arm64 检查均通过。
 
 iOS IPA SHA-256：`af6efa2be2b35158da4cb36e0e162572c45c47448e8811b3e21db0428e4dbd6d`。
+
+Android APK SHA-256：`324138c21aecd31174840ec714875040d2cc7947e85e4c77bc67c7a9bd77c616`。
+
+本地下载及复核产物位于仓库内 `apps/ios/.build/actions/39907390229/` 与 `apps/android/.build/actions/39908423616/`，均为 Git 忽略的可再生产物，不入版本历史。
 
 云端 Artifact 按工作流保留 3 天，不是永久下载入口。上述结果只证明对应提交的自动化测试、构建、打包和上传链路，不代表签名安装、真实网络或性能验收。
