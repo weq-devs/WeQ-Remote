@@ -1,6 +1,6 @@
 # WeQ Remote for iOS
 
-版本：0.3.2，本地开发测试版，不是 App Store / TestFlight 发布版。iOS 17 起。
+版本：0.1.0（build 6），GitHub Release 提供未签名开发测试 IPA，不是 App Store / TestFlight 发布版。iOS 17 起。见 [0.1.0 发布说明](../../docs/releases/0.1.0.md)。
 
 薄壳结构：内嵌 TS、扫码配对和 WKWebView，业务界面复用电脑提供的 WeQ Web。手机壳已独立于 WeQ 仓库；构建不依赖桌面源码，协议边界见[协议约定](../../docs/protocol.md)，本机电脑侧用法见 [Web 与手机连接](../../../WeQ-upstream/docs/guide/remote-web.md)。
 
@@ -37,7 +37,7 @@ App 使用隔离临时工程和 DerivedData 编译，不覆盖现有生成工程
 
 打包前检查 App 身份、iPhoneOS 平台、所有 Mach-O 的 arm64 / 真机标识和无签名状态，拒绝描述文件、签名目录、外逃链接及已有输出冲突，并保留 ZIP 中的可执行权限。该检查是产物结构校验，不是真机运行验收。
 
-GitHub Actions 中手动运行 `iOS unsigned IPA`，产物保留 3 天，见[自动化维护](../../docs/automation.md)。未签名 IPA 安装前仍须对 App 和内嵌 Framework 正确签名；重新签名时应按签名团队重建 application-identifier、Keychain access groups 和描述文件，不照搬未展开的 entitlement 模板。源码构建的纯真机 Framework 不用于模拟器测试。
+GitHub Actions 中手动运行 `iOS unsigned IPA`，临时产物保留 3 天；标签上的 `Release` 工作流另将校验通过的安装包附到 GitHub Release，见[自动化维护](../../docs/automation.md)。未签名 IPA 安装前仍须对 App 和内嵌 Framework 正确签名；重新签名时应按签名团队重建 application-identifier、Keychain access groups 和描述文件，不照搬未展开的 entitlement 模板。源码构建的纯真机 Framework 不用于模拟器测试。
 
 ## 使用
 

@@ -1,6 +1,11 @@
 name: Android development APK
 
 on:
+  workflow_call:
+    inputs:
+      build_test_apk:
+        type: boolean
+        default: false
   workflow_dispatch:
     inputs:
       build_test_apk:
@@ -12,7 +17,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: android-build-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 defaults:
@@ -70,6 +75,7 @@ jobs:
           path: |
             apps/android/.build/*.apk
             apps/android/.build/SHA256SUMS
+            apps/android/.build/android-build.json
           if-no-files-found: error
           include-hidden-files: true
           retention-days: 3

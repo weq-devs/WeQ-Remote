@@ -1,0 +1,72 @@
+name: Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Require an existing version tag and release notes
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          test "$REF_TYPE" = tag
+          python3 scripts/release_assets.py check-tag "$TAG"
+
+  ci:
+    needs: validate
+    uses: ./.github/workflows/ci.yml
+
+  android:
+    needs: validate
+    uses: ./.github/workflows/android-build.yml
+
+  ios:
+    needs: validate
+    uses: ./.github/workflows/ios-unsigned.yml
+
+  publish:
+    needs: [ci, android, ios]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ github.ref_name }}
+      SOURCE_COMMIT: ${{ github.sha }}
+      RUN_ID: ${{ github.run_id }}
+      RUN_ATTEMPT: ${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Download only artifacts from this run
+        run: |
+          gh run download "$RUN_ID" --name "android-development-$RUN_ID-$RUN_ATTEMPT" --dir "$RUNNER_TEMP/artifacts/android"
+          gh run download "$RUN_ID" --name "ios-unsigned-$RUN_ID-$RUN_ATTEMPT" --dir "$RUNNER_TEMP/artifacts/ios"
+      - name: Verify versions, source and checksums
+        run: python3 scripts/release_assets.py prepare "$TAG" "$SOURCE_COMMIT" "$RUNNER_TEMP/artifacts" "$RUNNER_TEMP/release-assets"
+      - name: Publish verified assets without replacing an existing release
+        run: |
+          version="${TAG#v}"
+          gh release create "$TAG" "$RUNNER_TEMP/release-assets/"* --verify-tag --title "WeQ Remote $version" --notes-file "docs/releases/$version.md"

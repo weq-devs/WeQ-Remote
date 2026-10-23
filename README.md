@@ -2,7 +2,7 @@
 
 WeQ 的独立手机连接客户端。iOS 与 Android 负责扫码、连接、凭据和原生 WebView，业务页面从电脑上的 WeQ Web 服务加载，不维护另一套聊天界面。
 
-当前版本：iOS 0.3.2、Android 0.3.0，均为开发测试版，未上架应用商店。源码仓库：[weq-devs/WeQ-Remote](https://github.com/weq-devs/WeQ-Remote)（私有，默认分支 `dev`）。
+当前版本：iOS / Android 0.1.0。独立仓库首次发布使用统一版本号，沿用递增的内部构建号；此前 0.3.x 为未发布的开发版本。安装包仍为开发测试用途，未上架应用商店。源码仓库：[weq-devs/WeQ-Remote](https://github.com/weq-devs/WeQ-Remote)（私有，默认分支 `dev`）。发布说明见 [0.1.0](docs/releases/0.1.0.md)。
 
 ## 仓库边界
 
@@ -35,7 +35,7 @@ Android 的 Java 协议测试与构建共用固定版本、SHA-256 校验的 ZXi
 
 ## 自动化
 
-GitHub Actions 在 push / pull request 时运行仓库与构建辅助测试、Java 协议 / 二维码测试、Go 静态与竞态检查、macOS Swift 宿主机测试；也支持手动运行。Android 开发 APK 和 iOS 未签名真机 IPA 分别手动触发，只生成短期保留的构建产物，不自动发布。iOS 从校验过的固定源码构建 TailscaleKit，不依赖私人项目或签名。触发方式、安全边界和未覆盖范围见 [自动化维护](docs/automation.md)。
+GitHub Actions 在 push / pull request 时运行仓库与构建辅助测试、Java 协议 / 二维码测试、Go 静态与竞态检查、macOS Swift 宿主机测试；也支持手动运行。Android 开发 APK 和 iOS 未签名真机 IPA 可分别构建，默认不发布。手动在版本标签上运行 `Release` 时，复用 CI 和两端构建，全部成功且产物校验通过后才创建 GitHub Release。iOS 从校验过的固定源码构建 TailscaleKit，不依赖私人项目或签名。触发方式、安全边界和未覆盖范围见 [自动化维护](docs/automation.md)。
 
 ## 与电脑端联调
 
@@ -69,4 +69,4 @@ WEQ_REMOTE_CLIENT_REPO=/path/to/WeQ-Remote \
 
 保留了手机目录的 4 条路径过滤历史，以及拆分前的完整工作区快照，详见 [迁移记录](MIGRATION.md)。源码沿用 WeQ 的 [LICENSE](LICENSE)，Tailscale 等依赖遵循各自许可。不提交签名、账号、原始凭据、节点身份或构建产物。
 
-历史中的个人提交身份、本机路径及应用标识已脱敏；当前应用命名空间为 `io.github.weqdevs.remote`。这与旧身份安装是不同应用，不能原位升级或直接读取其 Keychain / Keystore；新构建需要单独安装并重新配对。本次仅清理源码，未构建、安装或迁移设备数据，现有版本号不代表已发布该身份变更。
+历史中的个人提交身份、本机路径及应用标识已脱敏；当前应用命名空间为 `io.github.weqdevs.remote`。这与旧身份安装是不同应用，不能原位升级或直接读取其 Keychain / Keystore；新构建需要单独安装并重新配对。身份清理时仅修改源码；后续自动化构建与发布不迁移设备数据，具体结果见自动化回执与发布说明。

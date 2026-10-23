@@ -27,14 +27,14 @@ gh workflow run android-build.yml --ref dev -f build_test_apk=true
 
 工作流在 Ubuntu 24.04 中准备 API 36、Build Tools 36.0.0、NDK 28.2.13676358，不安装模拟器镜像。先运行仓库 / Java / Go race 测试，再调用现有 `apps/android/scripts/build.py`；可选测试版复用本轮生成的网络 AAR。整个 Job 超时 45 分钟。
 
-构建脚本生成并校验 APK 的 v2 / v3 签名。只上传 `.build` 根目录的 APK 和 `SHA256SUMS`，显式启用 `include-hidden-files` 以允许隐藏父目录下的这两个白名单路径；不递归上传整个 `.build`。Artifact 名含运行 ID 与重试次数，保留 3 天。不会上传 keystore、节点状态、完整构建缓存或用户配置，也不会创建 GitHub Release、Tag 或商店发布。
+构建脚本生成并校验 APK 的 v2 / v3 签名，使用 AAPT2 读取实际 APK 身份及版本，与源码清单比对后生成 `android-build.json` 来源记录。只上传 `.build` 根目录的 APK、`SHA256SUMS` 和该来源记录，显式启用 `include-hidden-files` 以允许隐藏父目录下的白名单路径；不递归上传整个 `.build`。Artifact 名含运行 ID 与重试次数，保留 3 天。不会上传 keystore、节点状态、完整构建缓存或用户配置；单独构建不会创建 GitHub Release、Tag 或商店发布。
 
 每轮 runner 的 debug 签名是临时身份，不能保证跨次构建相同，也不能用于覆盖使用其他证书的既有安装。专用 `-test.apk` 含测试控制入口，不作为普通客户端交付。两类 APK 都是开发测试产物，不能作为正式签名或分发承诺。
 
 ## 依赖与权限
 
 - 所有 Action 固定到完整提交 SHA，版本注释放在同一行；Dependabot 仅对 GitHub Actions 每周检查并向 `dev` 提出更新 PR，不自动合并、不自动升级协议依赖。
-- `GITHUB_TOKEN` 仅有 `contents: read`，checkout 不持久保存凭据。工作流不引用仓库 Secrets，不使用 `pull_request_target`、自托管 runner 或个人机器路径。
+- CI 和构建 Job 的 `GITHUB_TOKEN` 仅有 `contents: read`；Release 的发布 Job 单独授予 `contents: write` 与 `actions: read`。checkout 不持久保存凭据。工作流不引用仓库 Secrets，不使用 `pull_request_target`、自托管 runner 或个人机器路径。
 - ZXing 仅从固定 Maven Central 地址下载，版本为 3.5.3，最大 1 MiB；SHA-256 校验成功后原子保存。已有缓存损坏即失败，不覆盖或信任损坏文件。
 - 手动 APK 工作流的真实执行结果见下方验收回执；本地语法 / 单测通过不等于云端构建已运行成功。
 
@@ -60,9 +60,23 @@ gh workflow run ios-unsigned.yml --ref dev
 python3 apps/ios/scripts/build_unsigned_ipa.py
 ```
 
-未签名 IPA 无法直接在普通 iPhone 上运行；安装前需要正确签名 App、内嵌 Framework 和 entitlements。没有自动发布、上传 TestFlight、创建 Release 或操作设备。整个 Job 超时 45 分钟，权限 / 并发取消策略与其他手动构建一致。
+未签名 IPA 无法直接在普通 iPhone 上运行；安装前需要正确签名 App、内嵌 Framework 和 entitlements。单独运行该构建工作流不创建 Release、不上传 TestFlight、不操作设备；只有下方显式触发的 Release 工作流负责 GitHub 发布。整个 Job 超时 45 分钟，权限 / 并发取消策略与其他手动构建一致。
 
 参考：[GitHub 工作流安全](https://docs.github.com/en/actions/reference/security/secure-use)、[Runner 镜像](https://github.com/actions/runner-images)、[setup-go 版本与缓存契约](https://github.com/actions/setup-go)。
+
+## GitHub Release
+
+当前对外版本为 iOS / Android 0.1.0；此前 0.3.x 为未发布的开发版本，以下历史构建回执保留原值。iOS 内部 build 递增至 6，Android versionCode 递增至 4，不重置内部构建号。
+
+`.github/workflows/release.yml` 只支持手动触发，且必须运行在已存在的 `vMAJOR.MINOR.PATCH` 标签上；在分支上误触发会失败，不创建标签或发布。发布前先经用户授权提交并推送版本、文档及标签，再执行：
+
+```sh
+gh workflow run release.yml --ref v0.1.0
+```
+
+Release 复用同一标签提交的 CI、Android 普通 APK 和 iOS 未签名 IPA 工作流，各自使用独立并发组，避免可复用工作流相互取消。三个流程全部成功后，发布 Job 只下载当前运行 ID / attempt 的两端产物。`scripts/release_assets.py` 复核版本、SHA-256、干净源码提交、IPA 实际身份 / 真机二进制与两端来源记录；仅将普通 APK、未签名 IPA、两份来源记录和汇总 `SHA256SUMS` 作为附件。
+
+发布使用 `gh release create --verify-tag`，不会隐式新建标签，不覆盖已有 Release 或附件。GitHub CLI 先准备草稿并上传附件，全部成功后发布；失败不冒称已发布，不自动删除现场或重写标签。Release 附件不受 Actions Artifact 的 3 天保留期限制。源码构建、GitHub 发布不等于商店上架或签名安装，具体边界见 [0.1.0 发布说明](releases/0.1.0.md)。
 
 ## 验收边界
 

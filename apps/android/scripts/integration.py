@@ -9,6 +9,7 @@ import signal
 import subprocess
 import sys
 import time
+import xml.etree.ElementTree as ET
 from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -16,6 +17,7 @@ REPO = ROOT.parents[1]
 sys.path.insert(0, str(REPO / 'scripts'))
 from desktop_fixture import desktop_repository, fixture_command
 BUILD = ROOT / '.build'
+VERSION = ET.parse(ROOT / 'AndroidManifest.xml').getroot().get('{http://schemas.android.com/apk/res/android}versionName')
 parser = argparse.ArgumentParser()
 parser.add_argument('--serial', default='emulator-5580')
 parser.add_argument('--lan', action='store_true')
@@ -79,7 +81,7 @@ with log_path.open('w') as log:
         for port in ports:
             call(adb + ['reverse', f'tcp:{port}', f'tcp:{port}'])
         package = 'io.github.weqdevs.remote.test'
-        print(call(adb + ['install', '-r', str(BUILD / 'weq-remote-0.3.0-arm64-test.apk')]).decode())
+        print(call(adb + ['install', '-r', str(BUILD / f'weq-remote-{VERSION}-arm64-test.apk')]).decode())
         for mode in ('no', 'yes'):
             call(adb + ['shell', 'cmd', 'uimode', 'night', mode])
             output = call(adb + ['shell', 'am', 'instrument', '-w', '-e', 'lan', '1' if args.lan else '0', package + '/io.github.weqdevs.remote.RemoteInstrumentation']).decode()

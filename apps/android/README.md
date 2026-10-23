@@ -1,12 +1,12 @@
 # WeQ Remote for Android
 
-版本 0.3.0，开发测试原型，Android 8.0 / API 26 起，当前仅构建 arm64-v8a。
+版本 0.1.0（versionCode 4），开发测试客户端，Android 8.0 / API 26 起，当前仅构建 arm64-v8a。见 [0.1.0 发布说明](../../docs/releases/0.1.0.md)。
 
 手机端仅封装电脑提供的 WeQ Web 和内嵌 TS，首页只保留扫码和链接输入。支持局域网 HTTPS 指纹配对或一次性 Auth Key 扫码入网，不占用系统 VPN。手机壳已独立仓库，协议见[协议约定](../../docs/protocol.md)，本机电脑侧用法见 [Web 与手机连接](../../../WeQ-upstream/docs/guide/remote-web.md)。
 
 ## APK 与使用
 
-开发 APK：`/path/to/WeQ-Remote/apps/android/.build/weq-remote-0.3.0-arm64.apk`。
+开发 APK：`/path/to/WeQ-Remote/apps/android/.build/weq-remote-0.1.0-arm64.apk`。
 这是本机测试签名，不是商店正式发布。`-test.apk` 是独立包名的自动化测试版本，不作为普通客户端交付。
 
 1. 安装普通 APK；电脑选择局域网直接生成二维码，或进入 Tailscale 选择手机已有/没有。已有时无需 Key，没有时完成电脑验证并填 Key 后生成二维码。
@@ -34,7 +34,7 @@ go test -p 2 ./...
 
 首次构建下载小型 Go 工具和固定的 ZXing 3.5.3 JAR，复用本机 SDK 与系统镜像；不下载整套 IDE。`scripts/dependencies.py` 为构建和 Java 测试提供同一个 SHA-256 校验入口；协议测试不要求先构建 APK，不需要 SDK / NDK。APK 包含 Go/TS 依赖的许可证文本。测试签名密钥按 Android 惯例保存在 `~/.android/debug.keystore`，不进仓库。
 
-GitHub Actions 的 `Android development APK` 支持手动构建 arm64 普通 APK，并可选另建专用测试 APK。产物、签名与自动验收边界见[自动化维护](../../docs/automation.md)；云端临时 debug 签名不能代替既有安装的签名。
+GitHub Actions 的 `Android development APK` 支持手动构建 arm64 普通 APK，并可选另建专用测试 APK。标签上的 `Release` 工作流只发布普通 APK，不发布专用测试包。产物、签名与自动验收边界见[自动化维护](../../docs/automation.md)；云端临时 debug 签名不能代替既有安装的签名。
 
 ## f 盘模拟器
 

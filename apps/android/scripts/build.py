@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """用现有 SDK 与固定版本 gomobile 构建最小 APK，不下载整套 IDE/Gradle。"""
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
 import shutil
+import shlex
 import xml.etree.ElementTree as ET
 import zipfile
 from dependencies import ensure_zxing
@@ -19,6 +21,12 @@ ET.register_namespace('android', ANDROID[1:-1])
 
 def run(command, cwd=ROOT, env=None):
     subprocess.run([str(value) for value in command], cwd=cwd, env=env, check=True)
+
+
+def apk_identity(badging):
+    line = next(line for line in badging.splitlines() if line.startswith('package: '))
+    fields = dict(item.split('=', 1) for item in shlex.split(line)[1:])
+    return {key: fields[key] for key in ('name', 'versionCode', 'versionName')}
 
 
 def main():
@@ -81,7 +89,8 @@ def main():
     dex = variant / 'dex'
     dex.mkdir(exist_ok=True)
     run([tools / 'd8', '--min-api', '26', '--lib', android_jar, '--output', dex, jar, aar_root / 'classes.jar', zxing])
-    licenses = ["WeQ Remote Android 0.3.0\nTailscale 1.104.1 + Go mobile + ZXing 3.5.3\n"]
+    version = manifest.getroot().get(ANDROID + 'versionName')
+    licenses = [f"WeQ Remote Android {version}\nTailscale 1.104.1 + Go mobile + ZXing 3.5.3\n"]
     go_root = Path(subprocess.check_output(['go', 'env', 'GOROOT'], env=env).decode().strip())
     go_license = next((path for path in (go_root / 'LICENSE', go_root.parent / 'LICENSE') if path.is_file()), None)
     if go_license is None:
@@ -116,9 +125,21 @@ def main():
     if not key.exists():
         key.parent.mkdir(exist_ok=True)
         run(['keytool', '-genkeypair', '-keystore', key, '-storepass', 'android', '-keypass', 'android', '-alias', 'androiddebugkey', '-keyalg', 'RSA', '-keysize', '2048', '-validity', '10000', '-dname', 'CN=Android Debug,O=Android,C=US'])
-    output = BUILD / ('weq-remote-0.3.0-arm64-test.apk' if args.test else 'weq-remote-0.3.0-arm64.apk')
+    output = BUILD / f'weq-remote-{version}-arm64{"-test" if args.test else ""}.apk'
     run([tools / 'apksigner', 'sign', '--ks', key, '--ks-pass', 'pass:android', '--key-pass', 'pass:android', '--out', output, aligned])
     run([tools / 'apksigner', 'verify', '--verbose', output])
+    identity = apk_identity(subprocess.check_output([str(tools / 'aapt2'), 'dump', 'badging', str(output)], text=True))
+    expected = {'name': manifest.getroot().get('package'),
+                'versionCode': manifest.getroot().get(ANDROID + 'versionCode'), 'versionName': version}
+    if identity != expected:
+        raise ValueError('APK identity/version does not match source manifest')
+    if not args.test:
+        repository = ROOT.parents[1]
+        provenance = {'identity': identity, 'filename': output.name,
+                      'sha256': hashlib.sha256(output.read_bytes()).hexdigest(),
+                      'sourceCommit': subprocess.check_output(['git', '-C', str(repository), 'rev-parse', 'HEAD'], text=True).strip(),
+                      'sourceDirty': bool(subprocess.check_output(['git', '-C', str(repository), 'status', '--porcelain'], text=True).strip())}
+        (BUILD / 'android-build.json').write_text(json.dumps(provenance, indent=2) + '\n')
     print('APK:', output)
 
 
