@@ -2,6 +2,8 @@
   "repository": "https://github.com/tailscale/libtailscale.git",
   "revision": "d1dc45d039edb7759ecbee6ba2aea0c4bca884b8",
   "tailscaleVersion": "1.104.1",
+  "sourceArchiveSHA256": "2eb22795f48d672953422cb1f88979d32d3b0e75381d18a0a57857d4e967f408",
+  "xcodegenVersion": "2.46.0",
   "localBuild": "WEQ_TAILSCALE_FRAMEWORK (external dependency)",
   "localBuildPrivacy": "envknob.SetNoLogsNoSupport; discard enrollment logs",
   "initialBinarySHA256": {

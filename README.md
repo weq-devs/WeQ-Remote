@@ -35,7 +35,7 @@ Android 的 Java 协议测试与构建共用固定版本、SHA-256 校验的 ZXi
 
 ## 自动化
 
-GitHub Actions 在 push / pull request 时运行仓库与构建辅助测试、Java 协议 / 二维码测试、Go 静态与竞态检查、macOS Swift 宿主机测试；也支持手动运行。Android APK 构建单独手动触发，只生成短期保留的开发测试包，不自动发布。触发方式、安全边界和未覆盖范围见 [自动化维护](docs/automation.md)。
+GitHub Actions 在 push / pull request 时运行仓库与构建辅助测试、Java 协议 / 二维码测试、Go 静态与竞态检查、macOS Swift 宿主机测试；也支持手动运行。Android 开发 APK 和 iOS 未签名真机 IPA 分别手动触发，只生成短期保留的构建产物，不自动发布。iOS 从校验过的固定源码构建 TailscaleKit，不依赖私人项目或签名。触发方式、安全边界和未覆盖范围见 [自动化维护](docs/automation.md)。
 
 ## 与电脑端联调
 

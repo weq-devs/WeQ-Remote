@@ -1,0 +1,59 @@
+name: iOS unsigned IPA
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: Build unsigned iPhone arm64 IPA
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: apps/ios/Support/.go-version
+          cache-dependency-path: apps/ios/Support/tailscale-dependency.json
+      - name: Prepare checksum-pinned XcodeGen
+        run: |
+          cd "$RUNNER_TEMP"
+          curl --fail --location --max-time 120 --output xcodegen.zip https://github.com/yonaskolb/XcodeGen/releases/download/2.46.0/xcodegen.zip
+          echo '4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806  xcodegen.zip' | shasum -a 256 -c -
+          unzip -q xcodegen.zip
+          echo "$RUNNER_TEMP/xcodegen/bin" >> "$GITHUB_PATH"
+      - name: Repository and build-helper tests
+        run: python3 -m unittest discover -s tests -v
+      - name: Swift host protocol tests
+        run: swift test --package-path apps/ios --scratch-path apps/ios/.build/protocol -j 2
+      - name: Build source dependency and unsigned IPA
+        run: python3 apps/ios/scripts/build_unsigned_ipa.py --output-dir "$RUNNER_TEMP/unsigned-ipa"
+      - name: Summarize unsigned artifact
+        run: |
+          cd "$RUNNER_TEMP/unsigned-ipa"
+          shasum -a 256 -c SHA256SUMS
+          printf '%s\n' 'Unsigned iPhone arm64 IPA only. Requires signing before installation; not an App Store/TestFlight release or device acceptance.' >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ios-unsigned-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/unsigned-ipa/*.ipa
+            ${{ runner.temp }}/unsigned-ipa/SHA256SUMS
+            ${{ runner.temp }}/unsigned-ipa/build.json
+          if-no-files-found: error
+          retention-days: 3

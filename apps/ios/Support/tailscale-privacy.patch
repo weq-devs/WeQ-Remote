@@ -1,0 +1,21 @@
+diff --git a/tailscale.go b/tailscale.go
+--- a/tailscale.go
++++ b/tailscale.go
+@@ -24,6 +24,7 @@ import (
+ 	"unsafe"
+ 
+ 	"golang.org/x/sys/unix"
++	"tailscale.com/envknob"
+ 	"tailscale.com/hostinfo"
+ 	"tailscale.com/ipn"
+ 	"tailscale.com/tsnet"
+@@ -110,7 +111,8 @@ func TsnetNewServer() C.int {
+ 	}
+ 	sd := servers.next
+ 	servers.next++
+-	s := &server{s: &tsnet.Server{}}
++	envknob.SetNoLogsNoSupport()
++	s := &server{s: &tsnet.Server{UserLogf: logger.Discard}}
+ 	servers.m[sd] = s
+ 	return (C.int)(sd)
+ }

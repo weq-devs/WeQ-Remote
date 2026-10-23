@@ -23,6 +23,22 @@ xcodebuild -project apps/ios/WeQRemote.xcodeproj -scheme WeQRemote \
 
 真机安装需要有效的开发签名和包含目标设备的描述文件；可通过 Xcode 或 `devicectl device install app` 安装。无签名真机构建不等于可安装 IPA，不上传到 TestFlight/App Store，也不替换其他 App。
 
+### 未签名 IPA
+
+无需证书、Apple ID 或描述文件即可从源码构建真机 arm64 IPA：
+
+```sh
+python3 apps/ios/scripts/build_unsigned_ipa.py
+```
+
+使用 `Support/.go-version` 的 Go、`Support/tailscale-dependency.json` 的 XcodeGen 版本和支持 Swift 6 的 Xcode。该入口下载并校验固定 Tailscale 源码，应用 `tailscale-privacy.patch` 后构建仅含真机 arm64 的 XCFramework；上游固定提交本身已含 `statusJSON()`，没有另加该接口补丁。
+
+App 使用隔离临时工程和 DerivedData 编译，不覆盖现有生成工程，不创建模拟器或操作真机。IPA 默认写入 `.build/unsigned-ipa/<UTC构建标识>/`；也可用 `--output-dir /absolute/path/empty-directory` 指定空目录，已有文件不覆盖。同时生成 `SHA256SUMS` 与 `build.json`，记录来源、工具链、源码提交和工作区是否有未提交改动。中间源码及 DerivedData 自动清理，Framework 按输入指纹校验复用。
+
+打包前检查 App 身份、iPhoneOS 平台、所有 Mach-O 的 arm64 / 真机标识和无签名状态，拒绝描述文件、签名目录、外逃链接及已有输出冲突，并保留 ZIP 中的可执行权限。该检查是产物结构校验，不是真机运行验收。
+
+GitHub Actions 中手动运行 `iOS unsigned IPA`，产物保留 3 天，见[自动化维护](../../docs/automation.md)。未签名 IPA 安装前仍须对 App 和内嵌 Framework 正确签名；重新签名时应按签名团队重建 application-identifier、Keychain access groups 和描述文件，不照搬未展开的 entitlement 模板。源码构建的纯真机 Framework 不用于模拟器测试。
+
 ## 使用
 
 1. 电脑选择「局域网」直接生成二维码；或进入「Tailscale」选择手机已有/没有 Tailscale。已有时无需 Key，没有时完成电脑验证、填 Key 后生成二维码。
