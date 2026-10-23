@@ -31,7 +31,11 @@ go -C apps/android/network test -race ./...
 bash apps/android/scripts/check-protocol.sh
 ```
 
-Android 的 Java 协议测试复用构建时校验的 ZXing 依赖；首次运行前按平台说明准备，不自动下载不明版本。SDK / 模拟器继续使用既有外盘与 guard 入口，不在 SSD 新建替代实例。
+Android 的 Java 协议测试与构建共用固定版本、SHA-256 校验的 ZXing 依赖；缺失时自动准备，已有文件校验失败则停止，不覆盖原文件。SDK / 模拟器继续使用既有外盘与 guard 入口，不在 SSD 新建替代实例。
+
+## 自动化
+
+GitHub Actions 在 push / pull request 时运行仓库与构建辅助测试、Java 协议 / 二维码测试、Go 静态与竞态检查、macOS Swift 宿主机测试；也支持手动运行。Android APK 构建单独手动触发，只生成短期保留的开发测试包，不自动发布。触发方式、安全边界和未覆盖范围见 [自动化维护](docs/automation.md)。
 
 ## 与电脑端联调
 

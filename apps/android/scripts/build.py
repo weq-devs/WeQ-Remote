@@ -1,20 +1,18 @@
 #!/usr/bin/env python3
 """用现有 SDK 与固定版本 gomobile 构建最小 APK，不下载整套 IDE/Gradle。"""
 import argparse
-import hashlib
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
 import shutil
-import urllib.request
 import xml.etree.ElementTree as ET
 import zipfile
+from dependencies import ensure_zxing
 
 ROOT = Path(__file__).resolve().parents[1]
 BUILD = ROOT / '.build'
-ZXING_HASH = '8d8064c1636fdaef7189dd9055c7d59950a8940a12f2293956446ec3c109fd82'
 ANDROID = '{http://schemas.android.com/apk/res/android}'
 ET.register_namespace('android', ANDROID[1:-1])
 
@@ -37,15 +35,7 @@ def main():
             raise SystemExit(f'缺少本机 Android 工具：{path}')
     (BUILD / 'tools').mkdir(parents=True, exist_ok=True)
     (BUILD / 'deps').mkdir(exist_ok=True)
-    zxing = BUILD / 'deps/zxing-core-3.5.3.jar'
-    if not zxing.exists():
-        with urllib.request.urlopen('https://repo.maven.apache.org/maven2/com/google/zxing/core/3.5.3/core-3.5.3.jar', timeout=60) as response:
-            data = response.read(1_048_576)
-        if hashlib.sha256(data).hexdigest() != ZXING_HASH:
-            raise SystemExit('ZXing 校验失败')
-        zxing.write_bytes(data)
-    if hashlib.sha256(zxing.read_bytes()).hexdigest() != ZXING_HASH:
-        raise SystemExit('本地 ZXing 文件与固定版本不符')
+    zxing = ensure_zxing(BUILD)
     env = dict(os.environ, ANDROID_HOME=str(sdk), ANDROID_NDK_HOME=str(ndk), GOBIN=str(BUILD / 'tools'), GOMAXPROCS='2', GOFLAGS='-p=2')
     real_go = shutil.which('go')
     if not real_go:

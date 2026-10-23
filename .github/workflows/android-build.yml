@@ -1,0 +1,74 @@
+name: Android development APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_test_apk:
+        description: Also build the separate instrumentation test APK
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: Build arm64 development APK
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      GOMAXPROCS: '2'
+      GOFLAGS: -mod=readonly -p=2
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: apps/android/network/go.mod
+          cache-dependency-path: apps/android/network/go.sum
+      - name: Prepare SDK packages without emulator images
+        run: |
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" 'platforms;android-36' 'build-tools;36.0.0' 'ndk;28.2.13676358'
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/28.2.13676358" >> "$GITHUB_ENV"
+      - name: Repository and Java protocol tests
+        run: |
+          python3 -m unittest discover -s tests -v
+          bash apps/android/scripts/check-protocol.sh
+      - name: Network tests
+        run: go -C apps/android/network test -race -count=1 -p 2 -timeout=5m ./...
+      - name: Build and verify ordinary APK
+        run: python3 apps/android/scripts/build.py
+      - name: Build and verify separate test APK
+        if: inputs.build_test_apk
+        run: python3 apps/android/scripts/build.py --test --skip-network
+      - name: Check locked dependency files
+        run: git diff --exit-code -- apps/android/network/go.mod apps/android/network/go.sum
+      - name: Hash development APKs
+        run: |
+          cd apps/android/.build
+          sha256sum ./*.apk > SHA256SUMS
+          printf '%s\n' 'Development APKs only. Ephemeral debug signing; not a store release or device/network acceptance.' >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: android-development-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            apps/android/.build/*.apk
+            apps/android/.build/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 3

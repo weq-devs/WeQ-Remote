@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  repository-and-java:
+    name: Repository and Java protocol
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Repository and build-helper tests
+        run: python3 -m unittest discover -s tests -v
+      - name: Java protocol and real QR round trip
+        run: bash apps/android/scripts/check-protocol.sh
+
+  go-network:
+    name: Go network and workflow validation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      GOMAXPROCS: '2'
+      GOFLAGS: -mod=readonly
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: apps/android/network/go.mod
+          cache-dependency-path: apps/android/network/go.sum
+      - name: Validate workflows
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -color
+      - name: Verify module checksums
+        run: |
+          go -C apps/android/network mod download
+          go -C apps/android/network mod verify
+      - name: Static analysis
+        run: go -C apps/android/network vet ./...
+      - name: Network tests with race detection
+        run: go -C apps/android/network test -race -count=1 -p 2 -timeout=5m ./...
+      - name: Check dependency files are unchanged
+        run: git diff --exit-code -- apps/android/network/go.mod apps/android/network/go.sum
+
+  swift-protocol:
+    name: Swift host protocol
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Test without signing, framework or simulator
+        run: swift test --package-path apps/ios --scratch-path apps/ios/.build/protocol -j 2

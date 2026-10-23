@@ -32,7 +32,9 @@ cd apps/android/network
 go test -p 2 ./...
 ```
 
-首次构建下载小型 Go 工具和固定的 ZXing 3.5.3 JAR，复用本机 SDK 与系统镜像；不下载整套 IDE。APK 包含 Go/TS 依赖的许可证文本。测试签名密钥按 Android 惯例保存在 `~/.android/debug.keystore`，不进仓库。
+首次构建下载小型 Go 工具和固定的 ZXing 3.5.3 JAR，复用本机 SDK 与系统镜像；不下载整套 IDE。`scripts/dependencies.py` 为构建和 Java 测试提供同一个 SHA-256 校验入口；协议测试不要求先构建 APK，不需要 SDK / NDK。APK 包含 Go/TS 依赖的许可证文本。测试签名密钥按 Android 惯例保存在 `~/.android/debug.keystore`，不进仓库。
+
+GitHub Actions 的 `Android development APK` 支持手动构建 arm64 普通 APK，并可选另建专用测试 APK。产物、签名与自动验收边界见[自动化维护](../../docs/automation.md)；云端临时 debug 签名不能代替既有安装的签名。
 
 ## f 盘模拟器
 
