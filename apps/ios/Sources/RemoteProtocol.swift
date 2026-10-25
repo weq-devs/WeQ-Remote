@@ -21,6 +21,8 @@ enum RemoteError: LocalizedError {
 
 struct PairingInvitation: Equatable {
     let endpoint: URL
+    let endpoints: [URL]
+    let isMultiRoute: Bool
     let secret: String
     let authKey: String?
     let expiresAt: Double?
@@ -33,7 +35,6 @@ struct PairingInvitation: Equatable {
               components.user == nil, components.password == nil, components.port == nil,
               components.path.isEmpty, components.fragment == nil,
               let items = components.queryItems,
-              Set(items.map(\.name)).count == items.count,
               let rawEndpoint = items.first(where: { $0.name == "endpoint" })?.value,
               let endpoint = URL(string: rawEndpoint),
               let secret = items.first(where: { $0.name == "invitation" })?.value,
@@ -42,7 +43,29 @@ struct PairingInvitation: Equatable {
         self.endpoint = endpoint
         self.secret = secret
         let version = items.first(where: { $0.name == "v" })?.value
-        if version == "3", Set(items.map(\.name)) == Set(["v", "endpoint", "invitation", "fingerprint"]),
+        isMultiRoute = version == "4"
+        let grouped = Dictionary(grouping: items, by: \.name)
+        guard grouped.allSatisfy({ ($0.key == "endpoint" && version == "4") || $0.value.count == 1 }) else { throw RemoteError.invitation }
+        let candidates = items.filter { $0.name == "endpoint" }.compactMap { $0.value.flatMap(URL.init(string:)) }
+        guard candidates.count == grouped["endpoint"]?.count else { throw RemoteError.invitation }
+        endpoints = candidates
+        if version == "4" {
+            let hasKey = grouped["authKey"] != nil
+            let expected: Set<String> = hasKey ? ["v", "endpoint", "invitation", "fingerprint", "authKey", "expiresAt"] : ["v", "endpoint", "invitation", "fingerprint"]
+            guard Set(grouped.keys) == expected, (1...8).contains(candidates.count), Set(candidates).count == candidates.count,
+                  candidates.allSatisfy({ Self.isDirectEndpoint($0) || Self.isTailnetEndpoint($0) }),
+                  let pin = grouped["fingerprint"]?.first?.value,
+                  pin.range(of: "\\A[a-f0-9]{64}\\z", options: .regularExpression) != nil else { throw RemoteError.invitation }
+            fingerprint = pin
+            if hasKey {
+                guard candidates.contains(where: Self.isTailnetEndpoint),
+                      let key = grouped["authKey"]?.first?.value, Self.validAuthKey(key),
+                      let text = grouped["expiresAt"]?.first?.value, text.range(of: "^[0-9]{13}$", options: .regularExpression) != nil,
+                      let expiry = Double(text), expiry > Date().timeIntervalSince1970 * 1000,
+                      expiry <= (Date().timeIntervalSince1970 + 180) * 1000 else { throw RemoteError.invitation }
+                authKey = key; expiresAt = expiry
+            } else { authKey = nil; expiresAt = nil }
+        } else if version == "3", Set(items.map(\.name)) == Set(["v", "endpoint", "invitation", "fingerprint"]),
            Self.isDirectEndpoint(endpoint), let pin = items.first(where: { $0.name == "fingerprint" })?.value,
            pin.range(of: "\\A[a-f0-9]{64}\\z", options: .regularExpression) != nil {
             fingerprint = pin; authKey = nil; expiresAt = nil
@@ -108,6 +131,25 @@ struct SavedConnection: Codable {
     let endpoint: URL
     let token: String
     let fingerprint: String?
+    let endpoints: [URL]?
+    let routeFingerprint: String?
+
+    init(endpoint: URL, token: String, fingerprint: String?, endpoints: [URL]? = nil, routeFingerprint: String? = nil) {
+        self.endpoint = endpoint; self.token = token; self.fingerprint = fingerprint
+        self.endpoints = endpoints; self.routeFingerprint = routeFingerprint
+    }
+
+    func validate() throws {
+        _ = try DeviceCredential(token: token)
+        guard fingerprint == nil ? PairingInvitation.isTailnetEndpoint(endpoint) :
+                PairingInvitation.isDirectEndpoint(endpoint) && fingerprint?.range(of: "\\A[a-f0-9]{64}\\z", options: .regularExpression) != nil else { throw RemoteError.credential }
+        if let endpoints {
+            guard (1...8).contains(endpoints.count), Set(endpoints).count == endpoints.count, endpoints.contains(endpoint),
+                  endpoints.allSatisfy({ PairingInvitation.isDirectEndpoint($0) || PairingInvitation.isTailnetEndpoint($0) }),
+                  routeFingerprint?.range(of: "\\A[a-f0-9]{64}\\z", options: .regularExpression) != nil,
+                  fingerprint == (endpoint.scheme == "https" ? routeFingerprint : nil) else { throw RemoteError.credential }
+        } else if routeFingerprint != nil { throw RemoteError.credential }
+    }
 
     private static var query: [String: Any] { [kSecClass as String: kSecClassGenericPassword,
         kSecAttrService as String: "io.github.weqdevs.remote.connection", kSecAttrAccount as String: "computer"] }
@@ -118,12 +160,11 @@ struct SavedConnection: Codable {
         if status == errSecItemNotFound { return nil }
         guard status == errSecSuccess, let data = value as? Data else { throw RemoteError.credential }
         let saved = try JSONDecoder().decode(Self.self, from: data)
-        _ = try DeviceCredential(token: saved.token)
-        guard saved.fingerprint == nil ? PairingInvitation.isTailnetEndpoint(saved.endpoint) :
-                PairingInvitation.isDirectEndpoint(saved.endpoint) && saved.fingerprint?.range(of: "\\A[a-f0-9]{64}\\z", options: .regularExpression) != nil else { throw RemoteError.credential }
+        try saved.validate()
         return saved
     }
     func save() throws {
+        try validate()
         let data = try JSONEncoder().encode(self)
         let status = SecItemUpdate(Self.query as CFDictionary, [kSecValueData as String: data] as CFDictionary)
         if status == errSecItemNotFound {
@@ -133,6 +174,36 @@ struct SavedConnection: Codable {
         } else if status != errSecSuccess { throw RemoteError.credential }
     }
     static func delete() { SecItemDelete(query as CFDictionary) }
+}
+
+func remoteRouteCanRetry(_ error: Error) -> Bool {
+    if case RemoteError.network = error { return true }
+    if case RemoteError.enrollment = error { return true }
+    guard let url = error as? URLError else { return false }
+    return [.timedOut, .cannotFindHost, .cannotConnectToHost, .networkConnectionLost,
+            .dnsLookupFailed, .notConnectedToInternet, .cannotLoadFromNetwork].contains(url.code)
+}
+
+// 探测完成才发配对申请；应用层拒绝与取消不能被换地址吞掉。
+func selectRemoteRoute<T>(_ endpoints: [URL], connect: (URL) async throws -> T) async throws -> (URL, T) {
+    var failure: Error = RemoteError.network
+    for endpoint in endpoints {
+        try Task.checkCancellation()
+        do { return (endpoint, try await connect(endpoint)) }
+        catch {
+            guard remoteRouteCanRetry(error) else { throw error }
+            failure = error
+        }
+    }
+    throw failure
+}
+
+struct RemoteHello: Decodable {
+    let product: String
+    let `protocol`: Int
+    func validate() throws {
+        guard product == "WeQ Remote", self.protocol == 1 else { throw RemoteError.response }
+    }
 }
 
 struct PairClaim: Decodable {
@@ -191,10 +262,10 @@ struct RemoteAPI {
     let session: URLSession
 
     func request<T: Decodable>(_ path: String, method: String = "GET", token: String? = nil,
-                               body: [String: String]? = nil) async throws -> T {
+                               body: [String: String]? = nil, timeout: TimeInterval = 12) async throws -> T {
         var request = URLRequest(url: endpoint.appendingPathComponent(path))
         request.httpMethod = method
-        request.timeoutInterval = 12
+        request.timeoutInterval = timeout
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         if let token { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         if let body {

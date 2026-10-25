@@ -37,6 +37,7 @@ public final class MainActivity extends Activity {
     private boolean enabled, online, busy, paired, visible;
     private String loginURL, endpoint, token, claimID;
     private String fingerprint;
+    private String connectionRoutes;
     private boolean restoring;
     private long expiresAt;
     private String testControl;
@@ -229,13 +230,17 @@ public final class MainActivity extends Activity {
     private void clearComputer() {
         closeWeb();
         generation++;
-        main.removeCallbacks(approvalPoll); endpoint = null; token = null; fingerprint = null; claimID = null; paired = false; restoring = false;
+        main.removeCallbacks(approvalPoll); endpoint = null; token = null; fingerprint = null; connectionRoutes = null; claimID = null; paired = false; restoring = false;
         computerState.setText("未配对"); detail.setText(""); error.setText(""); busy = false;
     }
     private void pair() {
         if (busy) return;
         try {
             Invitation link = Invitation.parse(invitation.getText().toString());
+            if (link.multiRoute) {
+                if (link.authKey != null && testControl != null) throw new Exception("测试网络不接受正式入网密钥");
+                startMulti(new org.json.JSONArray(link.endpoints).toString(), link.fingerprint, link.authKey, () -> claim(link)); return;
+            }
             if (link.fingerprint != null) { startDirect(link.endpoint, link.fingerprint, () -> claim(link)); return; }
             if (link.authKey != null) {
                 if (testControl != null) throw new Exception("测试网络不接受正式入网密钥");
@@ -259,6 +264,27 @@ public final class MainActivity extends Activity {
             } catch (Exception e) { fail(revision, "无法创建连接，请重新扫描二维码"); }
         });
     }
+    private void startMulti(String routes, String pin, String authKey, Runnable next) {
+        stopNetwork(true); busy = true; final int revision = generation; render();
+        worker.execute(() -> {
+            try {
+                Future<?> pendingClose = closing;
+                if (pendingClose != null) pendingClose.get();
+                go.Seq.setContext(getApplicationContext());
+                Androidnet.setInterfaces(interfaceSnapshot());
+                String base = new java.io.File(getNoBackupFilesDir(), "tailnet").getAbsolutePath();
+                String directory = authKey != null ? Androidnet.authStateDir(base, authKey) : networkDirectory != null ? networkDirectory : base;
+                if (revision != generation || !visible) return;
+                Client client = Androidnet.newMultiClient(directory, routes, pin, authKey == null ? "" : authKey);
+                main.post(() -> {
+                    if (revision != generation || !visible) { closeClient(client); return; }
+                    networkDirectory = directory;
+                    if (authKey != null) getPreferences(MODE_PRIVATE).edit().putString("networkState", new java.io.File(directory).getName()).apply();
+                    node = client; fingerprint = pin; connectionRoutes = routes; online = true; busy = false; next.run();
+                });
+            } catch (Exception e) { fail(revision, "无法连接电脑，请检查局域网、Tailscale 服务或重新生成包含 Key 的配对码"); }
+        });
+    }
     private boolean restoreComputer() {
         if (testControl != null || invitation.length() > 0) return false;
         try {
@@ -267,7 +293,12 @@ public final class MainActivity extends Activity {
             String address = saved.getString("endpoint"), credential = saved.getString("token"), pin = saved.optString("fingerprint", "");
             if (!credential.matches("[a-f0-9]{64}")) throw new Exception("电脑凭据无效");
             Runnable resume = () -> { endpoint = address; token = credential; paired = true; restoring = true; computerState.setText("正在连接电脑"); verify(); };
-            if (!pin.isEmpty()) startDirect(address, pin, resume);
+            org.json.JSONArray routes = saved.optJSONArray("endpoints");
+            if (routes != null) {
+                if (routes.length() == 0 || !address.equals(routes.getString(0))) throw new Exception("电脑地址无效");
+                startMulti(routes.toString(), pin, null, resume);
+            }
+            else if (!pin.isEmpty()) startDirect(address, pin, resume);
             else { endpoint = address; token = credential; paired = true; restoring = true; enabled = true; startNetwork(); }
             return true;
         } catch (Exception e) { error.setText("无法读取保存的电脑凭据，请重新配对"); return false; }
@@ -304,7 +335,7 @@ public final class MainActivity extends Activity {
                 JSONObject approval = response(client.request(address, "/v1/pair/" + id, "GET", credential, ""));
                 if (!id.equals(approval.getString("id")) || !"web:access".equals(approval.getString("scope"))) throw new Exception("电脑返回了不兼容的数据，请升级电脑端");
                 main.post(() -> { if (revision != generation || !id.equals(claimID)) return; if (approval.optBoolean("approved")) {
-                    try { if (!BuildConfig.TESTING || fingerprint != null) ConnectionStore.save(this, endpoint, token, fingerprint); paired = true; openWeb(); }
+                    try { if (!BuildConfig.TESTING || fingerprint != null) ConnectionStore.save(this, endpoint, token, fingerprint, connectionRoutes); paired = true; openWeb(); }
                     catch (Exception e) { fail(revision, "无法保存电脑凭据，请重试"); }
                 } else main.postDelayed(approvalPoll, 1500); });
             } catch (Exception e) { fail(revision, e.getMessage()); }

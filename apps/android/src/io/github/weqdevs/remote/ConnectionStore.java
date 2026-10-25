@@ -23,7 +23,11 @@ final class ConnectionStore {
         return generator.generateKey();
     }
     static void save(Context context, String endpoint, String token, String fingerprint) throws Exception {
+        save(context, endpoint, token, fingerprint, null);
+    }
+    static void save(Context context, String endpoint, String token, String fingerprint, String routes) throws Exception {
         JSONObject data = new JSONObject().put("endpoint", endpoint).put("token", token).put("fingerprint", fingerprint);
+        if (routes != null) data.put("endpoints", new org.json.JSONArray(routes));
         Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding"); cipher.init(Cipher.ENCRYPT_MODE, key());
         String value = Base64.encodeToString(cipher.getIV(), Base64.NO_WRAP) + ":" + Base64.encodeToString(cipher.doFinal(data.toString().getBytes("UTF-8")), Base64.NO_WRAP);
         if (!context.getSharedPreferences("connection", Context.MODE_PRIVATE).edit().putString("computer", value).commit()) throw new Exception("无法保存电脑凭据");

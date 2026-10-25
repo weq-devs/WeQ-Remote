@@ -51,6 +51,45 @@ final class RemoteProtocolTests: XCTestCase {
         }
     }
 
+    func testMultiRouteInvitation() throws {
+        let pin = String(repeating: "f", count: 64)
+        let multi = link(endpoint: "https://192.168.1.8:7691").replacingOccurrences(of: "v=1", with: "v=4") + "&fingerprint=\(pin)&endpoint=http://100.64.0.10:7691&endpoint=https://100.64.0.10:7692"
+        XCTAssertEqual(try PairingInvitation(multi).endpoints.map(\.host), ["192.168.1.8", "100.64.0.10", "100.64.0.10"])
+        let keyed = multi + "&authKey=tskey-auth-\(String(repeating: "k", count: 40))&expiresAt=\(Int(Date().timeIntervalSince1970 * 1000) + 120000)"
+        XCTAssertNotNil(try PairingInvitation(keyed).authKey)
+        for invalid in [multi + "&endpoint=https://192.168.1.8:7691", multi.replacingOccurrences(of: "100.64.0.10", with: "8.8.8.8"), multi.replacingOccurrences(of: "v=4", with: "v=3"), multi + "&unknown=x", multi + "&v=4"] {
+            XCTAssertThrowsError(try PairingInvitation(invalid))
+        }
+    }
+
+    func testSavedRoutesKeepAllEntrancesButNotEnrollmentKey() throws {
+        let lan = URL(string: "https://192.168.1.8:7691")!, tailnet = URL(string: "http://100.64.0.10:7691")!
+        let pin = String(repeating: "f", count: 64)
+        let saved = SavedConnection(endpoint: tailnet, token: String(repeating: "a", count: 64), fingerprint: nil, endpoints: [lan, tailnet], routeFingerprint: pin)
+        let restored = try JSONDecoder().decode(SavedConnection.self, from: JSONEncoder().encode(saved))
+        try restored.validate()
+        XCTAssertEqual(restored.endpoints, [lan, tailnet])
+        XCTAssertEqual(restored.routeFingerprint, pin)
+        XCTAssertThrowsError(try SavedConnection(endpoint: tailnet, token: saved.token, fingerprint: nil, endpoints: [lan], routeFingerprint: pin).validate())
+    }
+
+    func testRouteFailoverOnlyRetriesConnectionFailures() async throws {
+        let lan = URL(string: "https://192.168.1.8:7691")!, tailnet = URL(string: "http://100.64.0.10:7691")!
+        var visited: [URL] = []
+        let (selected, _) = try await selectRemoteRoute([lan, tailnet]) { endpoint in
+            visited.append(endpoint)
+            if endpoint == lan { throw URLError(.cannotConnectToHost) }
+            return "reachable"
+        }
+        XCTAssertEqual(visited, [lan, tailnet]); XCTAssertEqual(selected, tailnet)
+        let rejections: [Error] = [RemoteError.unauthorized, RemoteError.response, CancellationError(), URLError(.serverCertificateUntrusted)]
+        for rejection in rejections {
+            visited = []
+            do { _ = try await selectRemoteRoute([lan, tailnet]) { endpoint -> String in visited.append(endpoint); throw rejection }; XCTFail("rejection swallowed") }
+            catch { XCTAssertEqual(visited, [lan]) }
+        }
+    }
+
     func testRejectsNonTailnetDestinations() {
         for endpoint in ["http://127.0.0.1:7691", "http://192.168.1.1:80", "http://100.128.0.1:7691",
                          "http://100.63.0.1:7691", "http://example.com:80", "http://100.64.0.1:7691/path",

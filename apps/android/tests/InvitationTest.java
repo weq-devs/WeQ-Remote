@@ -29,17 +29,33 @@ public final class InvitationTest {
         reject(direct.replace("192.168.1.8", "8.8.8.8"));
         reject(direct.replace("fingerprint=" + secret, "fingerprint=bad"));
         reject(direct + "&fingerprint=" + secret);
+        String multi = direct.replace("v=3", "v=4") + "&endpoint=http%3A%2F%2F100.64.0.1%3A7691&endpoint=https%3A%2F%2F100.64.0.1%3A7692";
+        require(Invitation.parse(multi).endpoints.size() == 3, "v4 keeps all connection routes");
+        String multiKey = multi + "&authKey=" + authKey + "&expiresAt=" + (System.currentTimeMillis() + 120000);
+        require(authKey.equals(Invitation.parse(multiKey).authKey), "v4 enrollment");
+        reject(multi + "&endpoint=https%3A%2F%2F192.168.1.8%3A7691");
+        reject(multi.replace("100.64.0.1", "8.8.8.8"));
+        reject(multi.replace("v=4", "v=3"));
+        reject(multi + "&unknown=x");
+        reject(multiKey.replaceAll("expiresAt=[0-9]+", "expiresAt=1000000000000"));
         String a = Invitation.credential(), b = Invitation.credential();
         require(a.matches("[a-f0-9]{64}") && !a.equals(b), "random credential");
         require(Invitation.hash(a).length() == 64, "credential hash");
         require(Invitation.hash("test").equals("9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"), "desktop hash convention");
-        String payload = bootstrap;
+        String payload = multiKey;
         com.google.zxing.common.BitMatrix qr = new com.google.zxing.qrcode.QRCodeWriter().encode(payload, com.google.zxing.BarcodeFormat.QR_CODE, 300, 300);
         int[] pixels = new int[90000];
         for (int y = 0; y < 300; y++) for (int x = 0; x < 300; x++) pixels[y * 300 + x] = qr.get(x, y) ? 0xff000000 : 0xffffffff;
         com.google.zxing.BinaryBitmap bitmap = new com.google.zxing.BinaryBitmap(new com.google.zxing.common.HybridBinarizer(new com.google.zxing.RGBLuminanceSource(300, 300, pixels)));
         String decoded = new com.google.zxing.MultiFormatReader().decode(bitmap).getText();
-        require(Invitation.parse(decoded).endpoint.equals(valid.endpoint), "real QR decode");
+        require(Invitation.parse(decoded).endpoints.size() == 3, "real v4 QR decode");
+        if (args.length == 1) {
+            java.awt.image.BufferedImage image = javax.imageio.ImageIO.read(new java.io.File(args[0]));
+            int[] original = image.getRGB(0, 0, image.getWidth(), image.getHeight(), null, 0, image.getWidth());
+            com.google.zxing.BinaryBitmap desktop = new com.google.zxing.BinaryBitmap(new com.google.zxing.common.HybridBinarizer(new com.google.zxing.RGBLuminanceSource(image.getWidth(), image.getHeight(), original)));
+            Invitation actual = Invitation.parse(new com.google.zxing.MultiFormatReader().decode(desktop).getText());
+            require(actual.multiRoute && actual.endpoints.size() == 8 && actual.authKey != null, "desktop runtime maximum-route QR decode");
+        }
         System.out.println("Invitation tests passed: parsing, destination, duplicates, random credential, SHA-256, real QR decode");
     }
     private static void reject(String link) throws Exception { try { Invitation.parse(link); } catch (Exception expected) { return; } throw new AssertionError("unsafe invitation accepted"); }

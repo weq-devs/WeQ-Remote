@@ -30,6 +30,12 @@ import (
 var interfaceMu sync.RWMutex
 var interfaces []netmon.Interface
 
+var errPinnedCertificate = errors.New("computer certificate changed; pair again")
+
+type remoteTransportError struct{ retry bool }
+
+func (e *remoteTransportError) Error() string { return "连接失败，请检查网络及电脑状态" }
+
 func init() {
 	netmon.RegisterInterfaceGetter(func() ([]netmon.Interface, error) {
 		interfaceMu.RLock()
@@ -73,6 +79,7 @@ func SetInterfaces(raw string) error {
 }
 
 type Client struct {
+	routes         *remoteRoutes
 	mu             sync.RWMutex
 	server         *tsnet.Server
 	http           *http.Client
@@ -99,11 +106,11 @@ func pinnedTLS(fingerprint string) *tls.Config {
 	return &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: true, // 信任锚是二维码中的精确证书指纹，而非系统 CA。
 		VerifyConnection: func(state tls.ConnectionState) error {
 			if len(state.PeerCertificates) == 0 {
-				return errors.New("missing certificate")
+				return errPinnedCertificate
 			}
 			digest := sha256.Sum256(state.PeerCertificates[0].Raw)
 			if hex.EncodeToString(digest[:]) != fingerprint {
-				return errors.New("computer certificate changed; pair again")
+				return errPinnedCertificate
 			}
 			return nil
 		}}
@@ -196,6 +203,9 @@ func startClient(stateDir, control, authKey string) (*Client, error) {
 }
 
 func (c *Client) Status() (string, error) {
+	if c.routes != nil {
+		return c.routes.status()
+	}
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	if c.server == nil {
@@ -240,10 +250,13 @@ var claimPath = regexp.MustCompile(`^/v1/pair/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4
 
 // Request 不提供任意网络代理：仅接受配对和只读状态路径。
 func (c *Client) Request(endpoint, path, method, token, body string) (string, error) {
+	if c.routes != nil {
+		return c.routes.request(endpoint, path, method, token, body)
+	}
 	if !c.accepts(endpoint) {
 		return "", errors.New("invalid tailnet endpoint")
 	}
-	if !(method == "POST" && path == "/v1/pair" || method == "GET" && (path == "/v1/status" || claimPath.MatchString(path))) || len(body) > 4096 {
+	if !(method == "POST" && path == "/v1/pair" || method == "GET" && (path == "/v1/hello" || path == "/v1/status" || claimPath.MatchString(path))) || len(body) > 4096 {
 		return "", errors.New("invalid remote request")
 	}
 	c.mu.RLock()
@@ -252,7 +265,13 @@ func (c *Client) Request(endpoint, path, method, token, body string) (string, er
 	if client == nil {
 		return "", errors.New("network closed")
 	}
-	request, err := http.NewRequestWithContext(c.ctx, method, endpoint+path, strings.NewReader(body))
+	ctx := c.ctx
+	if path == "/v1/hello" {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 3*time.Second)
+		defer cancel()
+	}
+	request, err := http.NewRequestWithContext(ctx, method, endpoint+path, strings.NewReader(body))
 	if err != nil {
 		return "", errors.New("request failed")
 	}
@@ -268,7 +287,7 @@ func (c *Client) Request(endpoint, path, method, token, body string) (string, er
 	}
 	response, err := client.Do(request)
 	if err != nil {
-		return "", errors.New("连接失败，请检查网络及电脑状态")
+		return "", &remoteTransportError{retry: !errors.Is(err, errPinnedCertificate) && !errors.Is(err, context.Canceled)}
 	}
 	defer response.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(response.Body, 65537))
@@ -283,6 +302,10 @@ func (c *Client) Request(endpoint, path, method, token, body string) (string, er
 }
 
 func (c *Client) Close() {
+	if c.routes != nil {
+		c.routes.close()
+		return
+	}
 	c.mu.Lock()
 	server, client := c.server, c.http
 	web := c.web

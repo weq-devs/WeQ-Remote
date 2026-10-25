@@ -6,29 +6,38 @@ import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.HashSet;
 
 final class Invitation {
     final String endpoint;
+    final List<String> endpoints;
     final String secret;
     final String authKey;
     final long expiresAt;
     final String fingerprint;
-    private Invitation(String endpoint, String secret, String authKey, long expiresAt, String fingerprint) { this.endpoint = endpoint; this.secret = secret; this.authKey = authKey; this.expiresAt = expiresAt; this.fingerprint = fingerprint; }
+    final boolean multiRoute;
+    private Invitation(List<String> endpoints, String secret, String authKey, long expiresAt, String fingerprint, boolean multiRoute) { this.endpoints = java.util.Collections.unmodifiableList(new ArrayList<>(endpoints)); this.endpoint = endpoints.get(0); this.secret = secret; this.authKey = authKey; this.expiresAt = expiresAt; this.fingerprint = fingerprint; this.multiRoute = multiRoute; }
 
     static Invitation parse(String text) throws Exception {
         if (text == null || text.length() > 2048) throw new IllegalArgumentException("配对链接无效");
         URI uri = new URI(text.trim());
         if (!"weq-remote".equals(uri.getScheme()) || !"pair".equals(uri.getHost()) || uri.getUserInfo() != null || uri.getPort() != -1 || !"".equals(uri.getPath()) || uri.getFragment() != null || uri.getRawQuery() == null) throw new IllegalArgumentException("配对链接无效");
         Map<String, String> fields = new HashMap<>();
+        List<String> endpoints = new ArrayList<>();
         for (String field : uri.getRawQuery().split("&", -1)) {
             String[] pair = field.split("=", 2);
             if (pair.length != 2) throw new IllegalArgumentException("配对字段无效");
             String key = URLDecoder.decode(pair[0], "UTF-8");
-            if (fields.put(key, URLDecoder.decode(pair[1], "UTF-8")) != null) throw new IllegalArgumentException("配对字段重复");
+            String value = URLDecoder.decode(pair[1], "UTF-8");
+            if ("endpoint".equals(key)) { endpoints.add(value); fields.putIfAbsent(key, value); }
+            else if (fields.put(key, value) != null) throw new IllegalArgumentException("配对字段重复");
         }
-        boolean bootstrap = "2".equals(fields.get("v"));
-        boolean direct = "3".equals(fields.get("v"));
-        if ((!bootstrap && !direct && !"1".equals(fields.get("v"))) || fields.size() != (bootstrap ? 5 : direct ? 4 : 3) || !fields.containsKey("endpoint") || !fields.containsKey("invitation")) throw new IllegalArgumentException("配对版本不兼容");
+        boolean multi = "4".equals(fields.get("v"));
+        boolean bootstrap = "2".equals(fields.get("v")) || (multi && fields.containsKey("authKey"));
+        boolean direct = "3".equals(fields.get("v")) || multi;
+        if ((!bootstrap && !direct && !"1".equals(fields.get("v"))) || fields.size() != (multi ? bootstrap ? 6 : 4 : bootstrap ? 5 : direct ? 4 : 3) || !fields.containsKey("endpoint") || !fields.containsKey("invitation") || endpoints.isEmpty() || endpoints.size() > (multi ? 8 : 1) || new HashSet<>(endpoints).size() != endpoints.size()) throw new IllegalArgumentException("配对版本不兼容");
         String fingerprint = direct ? fields.get("fingerprint") : null;
         if (direct && (fingerprint == null || !fingerprint.matches("[a-f0-9]{64}"))) throw new IllegalArgumentException("电脑指纹无效");
         String authKey = null; long expiresAt = 0;
@@ -39,7 +48,15 @@ final class Invitation {
             expiresAt = Long.parseLong(expiry);
             if (expiresAt <= System.currentTimeMillis() || expiresAt > System.currentTimeMillis() + 180000) throw new IllegalArgumentException("入网邀请已过期或手机时间不正确，请重新生成");
         }
-        URI endpoint = new URI(fields.get("endpoint"));
+        for (String address : endpoints) validateEndpoint(address, multi ? address.startsWith("https:") : direct);
+        if (multi && bootstrap && endpoints.stream().noneMatch(address -> address.startsWith("http:"))) throw new IllegalArgumentException("缺少内嵌网络地址");
+        String secret = fields.get("invitation");
+        if (!secret.matches("[a-f0-9]{64}")) throw new IllegalArgumentException("邀请无效");
+        return new Invitation(endpoints, secret, authKey, expiresAt, fingerprint, multi);
+    }
+
+    static void validateEndpoint(String address, boolean direct) throws Exception {
+        URI endpoint = new URI(address);
         String host = endpoint.getHost();
         if (!(direct ? "https" : "http").equals(endpoint.getScheme()) || endpoint.getUserInfo() != null || endpoint.getPort() < 1 || endpoint.getPort() > 65535 || !"".equals(endpoint.getPath()) || endpoint.getRawQuery() != null || endpoint.getFragment() != null || host == null) throw new IllegalArgumentException("电脑地址无效");
         String[] parts = host.split("\\.", -1);
@@ -52,9 +69,6 @@ final class Invitation {
         boolean tailnet = octets[0] == 100 && octets[1] >= 64 && octets[1] <= 127;
         boolean lan = octets[0] == 10 || (octets[0] == 172 && octets[1] >= 16 && octets[1] <= 31) || (octets[0] == 192 && octets[1] == 168);
         if (!tailnet && !(direct && lan)) throw new IllegalArgumentException("只允许局域网或 TS 网络地址");
-        String secret = fields.get("invitation");
-        if (!secret.matches("[a-f0-9]{64}")) throw new IllegalArgumentException("邀请无效");
-        return new Invitation(endpoint.toString(), secret, authKey, expiresAt, fingerprint);
     }
 
     static String credential() { byte[] bytes = new byte[32]; new SecureRandom().nextBytes(bytes); return hex(bytes); }

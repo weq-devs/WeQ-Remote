@@ -32,6 +32,10 @@ func hexCredential(value string) bool {
 }
 
 func (c *Client) CloseWeb() {
+	if c.routes != nil {
+		c.routes.closeWeb()
+		return
+	}
 	c.mu.Lock()
 	web := c.web
 	c.web = nil
@@ -43,6 +47,9 @@ func (c *Client) CloseWeb() {
 
 // OpenWeb 为 WebView 提供受限本机入口；所有 HTTP/WS 请求经内嵌 TS，不使用系统 VPN。
 func (c *Client) OpenWeb(endpoint, token, localSecret string) (string, error) {
+	if c.routes != nil {
+		return c.routes.openWeb(endpoint, token, localSecret)
+	}
 	if !c.accepts(endpoint) || !hexCredential(token) || !hexCredential(localSecret) {
 		return "", errors.New("invalid web destination or credential")
 	}
