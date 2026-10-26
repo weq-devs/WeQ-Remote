@@ -1,12 +1,12 @@
 # WeQ Remote for Android
 
-版本 0.1.0（versionCode 4），开发测试客户端，Android 8.0 / API 26 起，当前仅构建 arm64-v8a。见 [0.1.0 发布说明](../../docs/releases/0.1.0.md)。
+当前源码为 0.2.0 开发版（versionCode 5），尚未发布；GitHub Release 仍为 0.1.0（versionCode 4）。Android 8.0 / API 26 起，当前仅构建 arm64-v8a。见 [0.1.0 发布说明](../../docs/releases/0.1.0.md)。
 
 手机端仅封装电脑提供的 WeQ Web 和内嵌 TS，首页只保留扫码和链接输入。支持局域网 HTTPS 指纹配对或一次性 Auth Key 扫码入网，不占用系统 VPN。手机壳已独立仓库，协议见[协议约定](../../docs/protocol.md)，本机电脑侧用法见 [Web 与手机连接](../../../WeQ-upstream/docs/guide/remote-web.md)。
 
 ## APK 与使用
 
-开发 APK：`/path/to/WeQ-Remote/apps/android/.build/weq-remote-0.1.0-arm64.apk`。
+开发 APK：`/path/to/WeQ-Remote/apps/android/.build/weq-remote-0.2.0-arm64.apk`。
 这是本机测试签名，不是商店正式发布。`-test.apk` 是独立包名的自动化测试版本，不作为普通客户端交付。
 
 1. 安装普通 APK；新版电脑并列显示局域网与 WeQ 专用 Tailscale 地址，统一点击「生成配对码」。跨网络时启动并登录专用 Tailscale，勾选「嵌入 Tailscale Key」，点击生成后在弹窗填写 Key。
@@ -14,7 +14,7 @@
 3. 扫码直接发出请求，粘贴链接后点连接；电脑弹窗批准一次。
 4. 自动进入 WeQ Web，网页 HTTP 与 WebSocket 均经选定连接路径。顶部提供重新加载、断开和删除电脑入口。
 
-设备令牌通过 Android Keystore 的 AES-GCM 密钥加密保存，禁止备份。退后台关闭连接，返回后使用保存的凭据自动重连，不重新配对。TS 身份保存在私有 no-backup 目录；原始入网 Key 不落盘。局域网走系统路由并校验证书 SHA-256 指纹，系统 Tailscale 可达时不需要内嵌节点。
+设备令牌通过 Android Keystore 的 AES-GCM 密钥加密保存，禁止备份。已连接时退后台暂停 WebView 并停止原生重试，不销毁网页或本地代理；返回前台校验授权，短暂断网保留页面并重试。Activity 销毁时释放网络，进程回收后的冷启动使用保存的凭据自动重连，不重新配对；不使用前台服务或后台保活，不承诺进程被回收后恢复网页临时状态。401 撤销授权仍清除凭据。TS 身份保存在私有 no-backup 目录；原始入网 Key 不落盘。局域网走系统路由并校验证书 SHA-256 指纹，系统 Tailscale 可达时不需要内嵌节点。
 
 当前开发源码新增 v4 多入口邀请，保存全部入口并在连接不可达时按顺序尝试；先探测再提交一次配对申请，不跨路径重发 POST。已发布的 0.1.0 尚不支持 v4，需要新版 App；旧 v1/v2/v3 邀请继续可用。
 

@@ -110,6 +110,7 @@ def main():
                     break
     apache = ('Apache License, Version 2.0\nhttps://www.apache.org/licenses/LICENSE-2.0\nZXing: Copyright ZXing authors\n')
     licenses.append(apache)
+    licenses.append((ROOT / 'Support/Lucide-LICENSE.txt').read_text())
     with zipfile.ZipFile(unsigned, 'a') as archive:
         for path in sorted(dex.glob('*.dex')):
             archive.write(path, path.name)

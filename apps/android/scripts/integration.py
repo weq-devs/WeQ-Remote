@@ -90,6 +90,8 @@ with log_path.open('w') as log:
                 raise RuntimeError('Android 原生集成验证失败')
             screenshot = call(adb + ['exec-out', 'run-as', package, 'cat', 'files/connection.png'])
             (BUILD / (('lan-' if args.lan else '') + ('connected-dark.png' if mode == 'yes' else 'connected-light.png'))).write_bytes(screenshot)
+            pairing = call(adb + ['exec-out', 'run-as', package, 'cat', 'files/pairing.png'])
+            (BUILD / ('pairing-dark.png' if mode == 'yes' else 'pairing-light.png')).write_bytes(pairing)
             call(adb + ['shell', 'am', 'force-stop', package])
         print('PASS: light/dark WebView; ' + ('LAN TLS + persisted reconnect' if args.lan else 'embedded TS') + '; pairing; HTTP/WebSocket; revocation')
     finally:

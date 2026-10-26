@@ -7,6 +7,7 @@ import struct
 import sys
 import tempfile
 import unittest
+import xml.etree.ElementTree as ET
 import zipfile
 
 
@@ -110,10 +111,21 @@ class ReleaseAssetsTests(unittest.TestCase):
             self.assertEqual((output / 'original').read_text(), 'preserve')
 
     def test_tags_and_source_version(self):
-        self.assertEqual(release.check_tag('v0.1.0'), '0.1.0')
-        for tag in ('dev', 'v01.1.0', 'v0.1.0/escape', 'v0.1.0;echo secret', 'v0.3.0'):
-            with self.subTest(tag=tag), self.assertRaises(ValueError):
-                release.check_tag(tag)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'apps/android').mkdir(parents=True)
+            manifest = ET.Element('manifest', {'{http://schemas.android.com/apk/res/android}versionName': '0.1.0'})
+            ET.ElementTree(manifest).write(root / 'apps/android/AndroidManifest.xml')
+            notes = root / 'docs/releases/0.1.0.md'
+            notes.parent.mkdir(parents=True)
+            notes.write_text('Synthetic release notes')
+            self.assertEqual(release.check_tag('v0.1.0', root), '0.1.0')
+            for tag in ('dev', 'v01.1.0', 'v0.1.0/escape', 'v0.1.0;echo secret', 'v0.3.0'):
+                with self.subTest(tag=tag), self.assertRaises(ValueError):
+                    release.check_tag(tag, root)
+            notes.unlink()
+            with self.assertRaisesRegex(ValueError, 'Missing release notes'):
+                release.check_tag('v0.1.0', root)
 
     def test_apk_badging_uses_actual_tool_output_fields(self):
         badging = "package: name='io.github.weqdevs.remote' versionCode='4' versionName='0.1.0' platformBuildVersionName='16'\nminSdkVersion:'26'\n"

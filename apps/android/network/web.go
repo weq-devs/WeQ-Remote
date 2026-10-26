@@ -45,6 +45,18 @@ func (c *Client) CloseWeb() {
 	}
 }
 
+// HasWeb reports whether the current route still owns the WebView's local proxy.
+func (c *Client) HasWeb() bool {
+	if c.routes != nil {
+		c.routes.mu.Lock()
+		defer c.routes.mu.Unlock()
+		return !c.routes.closed && c.routes.active != nil && c.routes.active.HasWeb()
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.web != nil
+}
+
 // OpenWeb 为 WebView 提供受限本机入口；所有 HTTP/WS 请求经内嵌 TS，不使用系统 VPN。
 func (c *Client) OpenWeb(endpoint, token, localSecret string) (string, error) {
 	if c.routes != nil {

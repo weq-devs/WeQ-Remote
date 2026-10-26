@@ -99,9 +99,15 @@ func TestWebProxyIsConfinedAndAuthenticated(t *testing.T) {
 	}}
 	client := &Client{server: &tsnet.Server{}, http: &http.Client{Transport: transport}}
 	defer client.Close()
+	if client.HasWeb() {
+		t.Fatal("unopened client reports a Web proxy")
+	}
 	origin, err := client.OpenWeb("http://100.64.0.10:7691", token, local)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !client.HasWeb() {
+		t.Fatal("open proxy was not retained")
 	}
 	browser := &http.Client{Timeout: 5 * time.Second}
 	check := func(cookie, source string, code int) {
@@ -133,6 +139,9 @@ func TestWebProxyIsConfinedAndAuthenticated(t *testing.T) {
 	check(local, "https://evil.invalid", 403)
 	check(local, origin, 200)
 	client.Close()
+	if client.HasWeb() {
+		t.Fatal("closed client reports a live Web proxy")
+	}
 	if _, err := browser.Get(origin); err == nil {
 		t.Fatal("closed network left a listening Web gateway")
 	}

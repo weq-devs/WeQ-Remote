@@ -38,6 +38,10 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate {
         view.navigationDelegate = nil
         view.loadHTMLString("", baseURL: nil)
     }
+
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        webView.reload()
+    }
 }
 
 struct WebContainer: UIViewRepresentable {

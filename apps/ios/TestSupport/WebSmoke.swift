@@ -62,6 +62,12 @@ enum WebSmoke {
             try await wait(session.view, contains: "WebSocket 已连接")
             try await wait(session.view, contains: "Web 已连接")
             stage("web-connected")
+            _ = try await session.view.evaluateJavaScript("window.__weqResumeMarker = 'retained'")
+            model.suspend()
+            await model.reconnect()
+            guard model.webSession === session,
+                  try await session.view.evaluateJavaScript("window.__weqResumeMarker") as? String == "retained" else { throw SmokeFailure.web }
+            stage("session-retained")
             if lan {
                 model.disconnect()
                 model.resumeReconnect()
@@ -82,7 +88,7 @@ enum WebSmoke {
             try await wait(session.view, contains: "订阅已断开")
             try await wait(session.view, contains: "授权已撤销")
             if lan { SavedConnection.delete() }
-            try JSONSerialization.data(withJSONObject: ["passed": true, "checks": [lan ? "LAN TLS pin + saved credential reconnect" : "embedded TS", "WKWebView HTTP", "WebSocket", "revocation"]]).write(to: output, options: .atomic)
+            try JSONSerialization.data(withJSONObject: ["passed": true, "checks": [lan ? "LAN TLS pin + saved credential reconnect" : "embedded TS", "same session + DOM after suspend/resume", "WKWebView HTTP", "WebSocket", "revocation"]]).write(to: output, options: .atomic)
         } catch {
             if lan { SavedConnection.delete() }
             // 不把 SDK 错误描述、邀请或凭据写入测试文件。

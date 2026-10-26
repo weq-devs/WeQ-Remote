@@ -97,6 +97,10 @@ func TestMultiRouteProbeAndReconnect(t *testing.T) {
 	if routes.endpoint != tail {
 		t.Fatal("did not fall back to embedded route")
 	}
+	client := &Client{routes: routes}
+	if _, err := client.OpenWeb(lan, strings.Repeat("a", 64), strings.Repeat("b", 64)); err != nil || !client.HasWeb() {
+		t.Fatal("active route did not open a Web proxy", err)
+	}
 	if _, err := routes.request(lan, "/v1/pair", "POST", "", `{}`); err != nil {
 		t.Fatal(err)
 	}
@@ -109,12 +113,18 @@ func TestMultiRouteProbeAndReconnect(t *testing.T) {
 	if posts != 1 {
 		t.Fatal("pairing invitation was submitted more than once")
 	}
+	if _, err := routes.request(lan, "/v1/status", "GET", strings.Repeat("a", 64), ""); err != nil || !client.HasWeb() {
+		t.Fatal("same-route foreground verification discarded the Web proxy", err)
+	}
 	down[lan], down[tail] = false, true
 	if _, err := routes.request(lan, "/v1/status", "GET", strings.Repeat("a", 64), ""); err != nil {
 		t.Fatal(err)
 	}
 	if routes.endpoint != lan {
 		t.Fatal("GET did not reconnect through LAN")
+	}
+	if client.HasWeb() {
+		t.Fatal("route change must report that the old Web proxy needs replacing")
 	}
 	deny = true
 	before := len(requests)

@@ -4,6 +4,41 @@ final class ConnectionUITests: XCTestCase {
     private let base = URL(string: "http://127.0.0.1:45198")!
 
     @MainActor
+    func testLANBackgroundResume() async throws {
+        let (data, _) = try await URLSession.shared.data(from: base.appendingPathComponent("test/invitation"))
+        let invitation = try JSONDecoder().decode(TestInvitation.self, from: data)
+        guard URLComponents(string: invitation.url)?.queryItems?.contains(where: { $0.name == "fingerprint" }) == true else {
+            throw XCTSkip("未启动局域网 HTTPS 夹具")
+        }
+        let app = XCUIApplication()
+        app.launch()
+        let field = app.descendants(matching: .any).matching(identifier: "pairingLink").firstMatch
+        if field.waitForExistence(timeout: 5) {
+            field.tap()
+            field.typeText(invitation.url)
+            app.buttons["pairComputer"].tap()
+        }
+        let web = app.webViews.firstMatch
+        XCTAssertTrue(web.waitForExistence(timeout: 30))
+        XCTAssertTrue(web.staticTexts["Web 已连接"].waitForExistence(timeout: 15))
+        XCTAssertTrue(web.staticTexts["WebSocket 已连接"].waitForExistence(timeout: 15))
+        XCUIDevice.shared.press(.home)
+        app.activate()
+        XCTAssertTrue(web.staticTexts["Web 已连接"].waitForExistence(timeout: 15))
+        XCTAssertFalse(app.buttons["扫码"].exists)
+        let (countData, _) = try await URLSession.shared.data(from: base.appendingPathComponent("test/devices"))
+        XCTAssertEqual(try JSONDecoder().decode(DeviceCount.self, from: countData).count, 1)
+        var revoke = URLRequest(url: base.appendingPathComponent("test/revoke"))
+        revoke.httpMethod = "POST"
+        _ = try await URLSession.shared.data(for: revoke)
+        XCUIDevice.shared.press(.home)
+        app.activate()
+        XCTAssertTrue(app.staticTexts["connectionError"].waitForExistence(timeout: 15))
+        XCTAssertFalse(app.webViews.firstMatch.exists)
+        app.terminate()
+    }
+
+    @MainActor
     func testRealDesktopProtocolAndRevocation() async throws {
         let (data, _) = try await URLSession.shared.data(from: base.appendingPathComponent("test/invitation"))
         let invitation = try JSONDecoder().decode(TestInvitation.self, from: data)
@@ -29,6 +64,10 @@ final class ConnectionUITests: XCTestCase {
             XCTAssertTrue(web.waitForExistence(timeout: 25))
             XCTAssertTrue(web.staticTexts["Web 已连接"].waitForExistence(timeout: 15))
             XCTAssertTrue(web.staticTexts["WebSocket 已连接"].waitForExistence(timeout: 15))
+            XCUIDevice.shared.press(.home)
+            app.activate()
+            XCTAssertTrue(web.staticTexts["Web 已连接"].waitForExistence(timeout: 15))
+            XCTAssertFalse(app.buttons["扫码"].exists)
             web.buttons["验证网页请求"].tap()
             var revoke = URLRequest(url: base.appendingPathComponent("test/revoke"))
             revoke.httpMethod = "POST"
@@ -72,3 +111,4 @@ final class ConnectionUITests: XCTestCase {
 
 private struct TestInvitation: Decodable { let url: String }
 private struct TestNetwork: Decodable { let endpoint: String; let control: String }
+private struct DeviceCount: Decodable { let count: Int }

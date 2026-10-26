@@ -1,6 +1,6 @@
 # WeQ Remote for iOS
 
-版本：0.1.0（build 6），GitHub Release 提供未签名开发测试 IPA，不是 App Store / TestFlight 发布版。iOS 17 起。见 [0.1.0 发布说明](../../docs/releases/0.1.0.md)。
+当前源码：0.2.0 开发版（build 7），尚未发布。GitHub Release 仍为 0.1.0（build 6）未签名开发测试 IPA，不是 App Store / TestFlight 发布版。iOS 17 起。见 [0.1.0 发布说明](../../docs/releases/0.1.0.md)。
 
 薄壳结构：内嵌 TS、扫码配对和 WKWebView，业务界面复用电脑提供的 WeQ Web。手机壳已独立于 WeQ 仓库；构建不依赖桌面源码，协议边界见[协议约定](../../docs/protocol.md)，本机电脑侧用法见 [Web 与手机连接](../../../WeQ-upstream/docs/guide/remote-web.md)。
 
@@ -46,7 +46,7 @@ GitHub Actions 中手动运行 `iOS unsigned IPA`，临时产物保留 3 天；�
 3. 电脑弹窗批准完整 Web 访问后进入网页，后续打开自动重连，无需重复验证。
 4. 电脑可删除已配对设备，手机工具栏可删除本机保存的电脑凭据。
 
-设备凭据保存在 ThisDeviceOnly Keychain；退到后台关闭连接，返回后从 Keychain 恢复。TS 节点身份保留在 App 私有 Application Support，并排除系统备份；WKWebView 使用非持久数据存储。内嵌模式 SOCKS 代理禁止失败后退回直连；局域网模式使用系统路由和精确证书指纹校验，不启动内嵌节点。
+设备凭据保存在 ThisDeviceOnly Keychain。已连接时退后台保留内存中的 WKWebView 与连接对象，返回前台校验授权，不主动重建网页；连接暂时不可用时保留页面并重试，401 撤销授权仍清除凭据与网页。未完成的配对在后台取消。系统回收进程后的冷启动从 Keychain 自动重连，不承诺恢复未保存的网页状态；不申请后台保活。TS 节点身份保留在 App 私有 Application Support，并排除系统备份；WKWebView 使用非持久数据存储。内嵌模式 SOCKS 代理禁止失败后退回直连；局域网模式使用系统路由和精确证书指纹校验，不启动内嵌节点。
 
 当前开发源码新增 v4 多入口邀请，保留全部地址并在连接不可达时按顺序重连；Key 用于 App 内置 Tailscale 加入电脑所在网络。已发布的 0.1.0 尚不支持 v4，需要新版 App。继续支持旧 v1、带 Key/有效期的 v2 和带局域网 HTTPS 指纹的 v3。除 v4 的不同 `endpoint` 外拒绝重复/额外字段、公网域名、回环和控制面替换。ATS 例外限定私有 IPv4 / TS 网段；LAN 协议仍强制 HTTPS 且仅接受二维码中的指纹，不接受任意自签名证书。
 

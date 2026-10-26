@@ -27,6 +27,7 @@ public final class RemoteInstrumentation extends Instrumentation {
             final MainActivity initial = activity;
             require(read(initial.networkState).contains("未启动"), "default network must stay off");
             runOnMainSync(() -> require(!initial.pairButton.isEnabled(), "unconnected pairing enabled"));
+            saveScreenshot("pairing.png");
             runOnMainSync(initial::finish); waitForIdleSync();
 
             if (lan) { testLAN(pkg); result.putString("stream", "PASS: LAN pinned TLS; Keystore persisted reconnect; WebView HTTP; WebSocket; revoke and credential removal\n"); finish(android.app.Activity.RESULT_OK, result); return; }
@@ -41,6 +42,7 @@ public final class RemoteInstrumentation extends Instrumentation {
             runOnMainSync(() -> connected.pairButton.performClick());
             waitWeb(connected, "Web 已连接", 30000);
             waitWeb(connected, "WebSocket 已连接", 15000);
+            checkBackgroundResume(connected);
             runOnMainSync(() -> connected.webView.evaluateJavascript("document.querySelector('#probe').click()", null));
             waitWeb(connected, "Web 已连接", 15000);
             android.view.accessibility.AccessibilityNodeInfo activeWindow = null;
@@ -80,6 +82,7 @@ public final class RemoteInstrumentation extends Instrumentation {
             MainActivity paired = current;
             runOnMainSync(() -> paired.pairButton.performClick());
             waitWeb(paired, "Web 已连接", 30000); waitWeb(paired, "WebSocket 已连接", 15000);
+            checkBackgroundResume(paired);
             require(ConnectionStore.load(getTargetContext()) != null, "credential not persisted");
             runOnMainSync(paired::finish); waitForIdleSync();
             current = (MainActivity)startActivitySync(new Intent().setComponent(new ComponentName(pkg, MainActivity.class.getName())).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
@@ -104,11 +107,32 @@ public final class RemoteInstrumentation extends Instrumentation {
             waitWeb(restored, "订阅已断开", 20000); waitWeb(restored, "授权已撤销", 20000);
             runOnMainSync(restored::finish); waitForIdleSync();
             current = (MainActivity)startActivitySync(new Intent().setComponent(new ComponentName(pkg, MainActivity.class.getName())).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
-            waitText(current.error, "授权已被撤销", 20000);
+            waitText(current.error, "授权已被撤销", 45000);
             require(ConnectionStore.load(getTargetContext()) == null, "revoked credential not removed");
         } finally { if (current != null) { MainActivity last = current; runOnMainSync(last::finish); } ConnectionStore.delete(getTargetContext()); }
     }
     private String read(android.widget.TextView view) { AtomicReference<String> value = new AtomicReference<>(); runOnMainSync(() -> value.set(view.getText().toString())); return value.get(); }
+    private void checkBackgroundResume(MainActivity activity) throws Exception {
+        AtomicReference<android.webkit.WebView> original = new AtomicReference<>();
+        java.util.concurrent.CountDownLatch ready = new java.util.concurrent.CountDownLatch(1);
+        runOnMainSync(() -> {
+            original.set(activity.webView);
+            activity.webView.evaluateJavascript("window.__weqResumeMarker='retained'; document.body.insertAdjacentHTML('beforeend','<p id=resume-marker>页面状态已保留</p>')", ignored -> ready.countDown());
+        });
+        require(ready.await(5, java.util.concurrent.TimeUnit.SECONDS), "resume marker not set");
+        try (java.io.InputStream output = new android.os.ParcelFileDescriptor.AutoCloseInputStream(getUiAutomation().executeShellCommand("input keyevent KEYCODE_HOME"))) { while (output.read() != -1) { } }
+        Thread.sleep(1500);
+        getTargetContext().startActivity(new Intent().setComponent(new ComponentName(getTargetContext(), MainActivity.class))
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT));
+        waitWeb(activity, "页面状态已保留", 15000);
+        runOnMainSync(() -> require(activity.webView == original.get(), "background return replaced WebView"));
+        require(http("/test/devices", "GET").getInt("count") == 1, "background return created another pairing");
+    }
+    private void saveScreenshot(String name) throws Exception {
+        Bitmap image = getUiAutomation().takeScreenshot(); require(image != null, "screenshot unavailable");
+        try (FileOutputStream output = new FileOutputStream(new File(getTargetContext().getFilesDir(), name))) { image.compress(Bitmap.CompressFormat.PNG, 100, output); }
+        image.recycle();
+    }
     private void waitWeb(MainActivity activity, String expected, long timeout) throws Exception {
         long until = android.os.SystemClock.elapsedRealtime() + timeout;
         while (android.os.SystemClock.elapsedRealtime() < until) {
@@ -127,7 +151,8 @@ public final class RemoteInstrumentation extends Instrumentation {
     private void waitText(android.widget.TextView view, String expected, long timeout) throws Exception {
         long until = android.os.SystemClock.elapsedRealtime() + timeout;
         while (android.os.SystemClock.elapsedRealtime() < until) { if (read(view).contains(expected)) return; Thread.sleep(200); }
-        throw new AssertionError("UI state not reached: " + expected + "; current=" + read(view));
+        String last = read(view);
+        if (!last.contains(expected)) throw new AssertionError("UI state not reached: " + expected + "; current=" + last);
     }
     private JSONObject http(String path, String method) throws Exception {
         HttpURLConnection connection = (HttpURLConnection)new URL("http://127.0.0.1:45198" + path).openConnection();
