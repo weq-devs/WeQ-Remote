@@ -66,12 +66,12 @@ python3 apps/ios/scripts/build_unsigned_ipa.py
 
 ## GitHub Release
 
-当前对外版本为 iOS / Android 0.1.0；此前 0.3.x 为未发布的开发版本，以下历史构建回执保留原值。iOS 内部 build 递增至 6，Android versionCode 递增至 4，不重置内部构建号。
+当前对外版本为 iOS / Android 0.2.0（iOS build 7、Android versionCode 5）；此前 0.3.x 为未发布的开发版本，以下历史构建回执保留原值。
 
 `.github/workflows/release.yml` 只支持手动触发，且必须运行在已存在的 `vMAJOR.MINOR.PATCH` 标签上；在分支上误触发会失败，不创建标签或发布。发布前先经用户授权提交并推送版本、文档及标签，再执行：
 
 ```sh
-gh workflow run release.yml --ref v0.1.0
+gh workflow run release.yml --ref v0.2.0
 ```
 
 Release 复用同一标签提交的 CI、Android 普通 APK 和 iOS 未签名 IPA 工作流，各自使用独立并发组，避免可复用工作流相互取消。三个流程全部成功后，发布 Job 只下载当前运行 ID / attempt 的两端产物。`scripts/release_assets.py` 复核版本、SHA-256、干净源码提交、IPA 实际身份 / 真机二进制与两端来源记录；仅将普通 APK、未签名 IPA、两份来源记录和汇总 `SHA256SUMS` 作为附件。
@@ -114,3 +114,17 @@ Android APK SHA-256：`324138c21aecd31174840ec714875040d2cc7947e85e4c77bc67c7a9b
 发布 APK SHA-256：`d0d791634f91de90c19285f10eb480d58e69e946b845ea1da1334b25e87c7425`。
 
 发布 IPA SHA-256：`32558b7b834eeef0da4e3223956237bd2ed00f12cb5bce3235a725c68034077b`。
+
+## 0.2.0 发布回执（2026-11-06，北京时间）
+
+- 发布源码提交：`20b83d8bfe7c13823a1e1b8312b18cda16251c55`，注释标签 `v0.2.0`；版本号与构建号沿用源码现值，没有递增。
+- 本地 34 项仓库及发布辅助测试、标签预检和差异检查通过；[dev CI #42086006966](https://github.com/weq-devs/WeQ-Remote/actions/runs/42086006966) 与标签 CI #42086006848 全部通过。
+- [Release #42086037495](https://github.com/weq-devs/WeQ-Remote/actions/runs/42086037495) 首轮 CI 和 Android 构建成功，但 iOS 因 hosted runner 多次分配失败而取消；GitHub 提示 macOS arm64 容量紧张，未创建 Release。
+- 完整重跑（attempt 2）中，仓库 / Java、Go 检查、Android APK 与 iOS IPA 构建均成功，iOS 构建内的 Swift 宿主机测试也通过。独立 Swift CI 仍在排队，约 10 分 49 秒后主动取消本轮；自动 publish 未执行成功，不能将这次工作流记为全绿。
+- 下载 attempt 2 的两端产物，以 `scripts/release_assets.py prepare` 复核同一干净来源提交、版本、SHA-256、ZIP 完整性及 IPA 身份 / 无签名真机 arm64 结构，全部通过。随后使用 `gh release create --verify-tag` 手动发布同一标签及五个校验附件，没有改写标签或替换产物。
+- [WeQ Remote 0.2.0](https://github.com/weq-devs/WeQ-Remote/releases/tag/v0.2.0) 于 03:05:31 发布。API 确认 `draft: false`、`prerelease: false`，五个附件均为 `uploaded`，服务端摘要与本地一致。iOS 为 0.2.0（build 7），Android 为 0.2.0（versionCode 5）。
+- 本机备用未签名 IPA 也构建成功，但未用于 Release；发布的两端安装包均来自云端 attempt 2。没有安装应用或操作模拟器 / 真机。
+
+发布 APK SHA-256：`a3c9ce8bbb2c38e70ade3a173acf6a47e44e20ee634239459888b3aeee0c172c`。
+
+发布 IPA SHA-256：`9fe7c014b2d8b9e89750395bbf4a31167c366135651b99652c74d15558987079`。

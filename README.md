@@ -2,7 +2,7 @@
 
 WeQ 的独立手机连接客户端。iOS 与 Android 负责扫码、连接、凭据和原生 WebView，业务页面从电脑上的 WeQ Web 服务加载，不维护另一套聊天界面。
 
-当前版本：iOS / Android [0.1.0](https://github.com/weq-devs/WeQ-Remote/releases/tag/v0.1.0)。独立仓库首次发布使用统一版本号，沿用递增的内部构建号；此前 0.3.x 为未发布的开发版本。安装包仍为开发测试用途，未上架应用商店。源码仓库：[weq-devs/WeQ-Remote](https://github.com/weq-devs/WeQ-Remote)（私有，默认分支 `dev`）。发布说明见 [0.1.0](docs/releases/0.1.0.md)。
+当前版本：iOS / Android [0.2.0](https://github.com/weq-devs/WeQ-Remote/releases/tag/v0.2.0)，iOS build 7、Android versionCode 5。安装包仍为开发测试用途，未上架应用商店。源码仓库：[weq-devs/WeQ-Remote](https://github.com/weq-devs/WeQ-Remote)（私有，默认分支 `dev`）。发布说明见 [0.2.0](docs/releases/0.2.0.md)。
 
 当前源码版本为 0.2.0，包含 v4 多入口配对、原生连接页调整及前后台网页保留；发布内容与安装包说明见 [0.2.0](docs/releases/0.2.0.md)。实际发布状态以 [GitHub Releases](https://github.com/weq-devs/WeQ-Remote/releases) 为准。
 
