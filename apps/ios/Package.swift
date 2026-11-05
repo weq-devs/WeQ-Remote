@@ -10,6 +10,6 @@ let package = Package(
                 exclude: ["EmbeddedNetwork.swift", "RemoteModel.swift", "ScannerView.swift", "WeQRemoteApp.swift", "WebContainer.swift"],
                 sources: ["RemoteProtocol.swift", "WebDataStore.swift"]),
         .testTarget(name: "WeQRemoteProtocolTests", dependencies: ["WeQRemote"], path: "Tests",
-                    exclude: ["EmbeddedConnectionTests.swift"], sources: ["RemoteProtocolTests.swift", "WebDataStoreTests.swift"]),
+                    exclude: ["EmbeddedConnectionTests.swift", "WebContainerTests.swift"], sources: ["RemoteProtocolTests.swift", "WebDataStoreTests.swift"]),
     ]
 )

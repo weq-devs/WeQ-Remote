@@ -10,6 +10,8 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate {
     init(configuration: WKWebViewConfiguration, endpoint: URL, fingerprint: String? = nil) {
         self.endpoint = endpoint
         self.fingerprint = fingerprint
+        // 网页背景已有 playsinline；iPhone 还需在创建 WebView 前允许页内播放。
+        configuration.allowsInlineMediaPlayback = true
         view = WKWebView(frame: .zero, configuration: configuration)
         super.init()
         view.navigationDelegate = self
