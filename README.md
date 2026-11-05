@@ -4,7 +4,7 @@ WeQ 的独立手机连接客户端。iOS 与 Android 负责扫码、连接、凭
 
 当前版本：iOS / Android [0.1.0](https://github.com/weq-devs/WeQ-Remote/releases/tag/v0.1.0)。独立仓库首次发布使用统一版本号，沿用递增的内部构建号；此前 0.3.x 为未发布的开发版本。安装包仍为开发测试用途，未上架应用商店。源码仓库：[weq-devs/WeQ-Remote](https://github.com/weq-devs/WeQ-Remote)（私有，默认分支 `dev`）。发布说明见 [0.1.0](docs/releases/0.1.0.md)。
 
-当前源码为 0.2.0 开发版，包含 v4 多入口配对、原生连接页调整及前后台网页保留；尚未创建新标签或 GitHub Release。
+当前源码版本为 0.2.0，包含 v4 多入口配对、原生连接页调整及前后台网页保留；发布内容与安装包说明见 [0.2.0](docs/releases/0.2.0.md)。实际发布状态以 [GitHub Releases](https://github.com/weq-devs/WeQ-Remote/releases) 为准。
 
 开发源码还接入网页设备选文件、麦克风/摄像头授权、外链、文件保存及当前界面截图。
 Android 使用系统文件保存位置，iOS 使用系统分享菜单；这些变化需要更新手机安装包。
