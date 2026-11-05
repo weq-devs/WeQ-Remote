@@ -17,6 +17,8 @@ WeQ 的独立手机连接客户端。iOS 与 Android 负责扫码、连接、凭
 
 ## 目录与构建
 
+两端应用图标复用 WeQ 标识，含 iOS / iPadOS 浅深色版本与 Android 自适应版本；源图、生成入口和平台规格见[图标维护](resources/brand/README.md)。
+
 - `apps/ios`：Swift / SwiftUI，iOS 17 起。见 [iOS 构建说明](apps/ios/README.md)。
 - `apps/android`：Java 原生壳与 Go 用户态网络，Android API 26 起。见 [Android 构建说明](apps/android/README.md)。
 - `scripts/desktop_fixture.py`：跨仓库集成测试入口，不参与产品构建。
