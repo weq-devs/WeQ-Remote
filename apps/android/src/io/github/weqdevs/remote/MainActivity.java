@@ -315,8 +315,10 @@ public final class MainActivity extends Activity {
                 Client client = Androidnet.newMultiClient(directory, routes, pin, authKey == null ? "" : authKey);
                 main.post(() -> {
                     if (revision != generation || !visible) { closeClient(client); return; }
-                    networkDirectory = directory;
-                    if (authKey != null) getPreferences(MODE_PRIVATE).edit().putString("networkState", new java.io.File(directory).getName()).apply();
+                    if (client.usesEmbeddedNetwork()) {
+                        networkDirectory = directory;
+                        if (authKey != null) getPreferences(MODE_PRIVATE).edit().putString("networkState", new java.io.File(directory).getName()).apply();
+                    }
                     node = client; fingerprint = pin; connectionRoutes = routes; online = true; busy = false; next.run();
                 });
             } catch (Exception e) { fail(revision, "无法连接电脑，请检查局域网、Tailscale 服务或重新生成包含 Key 的配对码"); }

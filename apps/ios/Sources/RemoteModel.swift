@@ -91,11 +91,17 @@ final class RemoteModel: ObservableObject {
         return try await network.session()
     }
 
-    private func selectConnection(_ endpoints: [URL], pin: String?, probe: Bool, token: String? = nil) async throws -> RemoteAPI {
+    private func selectConnection(_ endpoints: [URL], pin: String?, probe: Bool, token: String? = nil, invitation: PairingInvitation? = nil) async throws -> RemoteAPI {
         let generation = revision
-        let (_, selected) = try await selectRemoteRoute(endpoints) { endpoint in
+        var enrolled = false
+        let (_, selected) = try await selectRemoteRoute(endpoints, discard: { $0.session.invalidateAndCancel() }) { endpoint in
+            if !enrolled, invitation?.isMultiRoute == true, endpoint.scheme == "http", let authKey = invitation?.authKey, let expiresAt = invitation?.expiresAt {
+                try await self.network.enroll(authKey: authKey, expiresAt: expiresAt)
+                enrolled = true
+            }
             let session = try await self.connectionSession(endpoint: endpoint, fingerprint: endpoint.scheme == "https" ? pin : nil)
             do {
+                try Task.checkCancellation()
                 guard generation == self.revision else { throw CancellationError() }
                 let api = RemoteAPI(endpoint: endpoint, session: session)
                 if probe {
@@ -107,6 +113,7 @@ final class RemoteModel: ObservableObject {
                         try hello.validate()
                     }
                 }
+                try Task.checkCancellation()
                 guard generation == self.revision else { throw CancellationError() }
                 return api
             } catch { session.invalidateAndCancel(); throw error }
@@ -148,7 +155,7 @@ final class RemoteModel: ObservableObject {
             let invitation = try PairingInvitation(invitationText)
             invitationText = ""
             if invitation.fingerprint != nil && !invitation.isMultiRoute { await network.stop() }
-            if let authKey = invitation.authKey {
+            if let authKey = invitation.authKey, !invitation.isMultiRoute {
                 guard !testMode, let expiresAt = invitation.expiresAt else { throw RemoteError.enrollment }
                 invitationText = ""
                 message = "正在入网"
@@ -157,7 +164,7 @@ final class RemoteModel: ObservableObject {
             }
             let newAPI: RemoteAPI
             if let testEndpoint { newAPI = RemoteAPI(endpoint: testEndpoint, session: URLSession(configuration: EmbeddedNetwork.configuration(), delegate: NoRedirectDelegate(), delegateQueue: nil)) }
-            else { newAPI = try await selectConnection(invitation.endpoints, pin: invitation.fingerprint, probe: invitation.isMultiRoute) }
+            else { newAPI = try await selectConnection(invitation.endpoints, pin: invitation.fingerprint, probe: invitation.isMultiRoute, invitation: invitation) }
             let session = newAPI.session
             let token = try DeviceCredential()
             let claim: PairClaim
@@ -195,24 +202,27 @@ final class RemoteModel: ObservableObject {
     private func waitForApproval(_ claim: PairClaim, generation: Int) async {
         defer { if generation == revision { polling = nil } }
         do {
-            while Date().timeIntervalSince1970 * 1000 < claim.expiresAt {
-                try Task.checkCancellation()
-                guard generation == revision, let api, let credential else { return }
-                let approval: PairApproval = try await api.request("v1/pair/\(claim.id.uuidString.lowercased())", token: credential.token)
-                guard generation == revision else { return }
-                guard approval.id == claim.id, approval.scope == "web:access" else { throw RemoteError.response }
-                if approval.approved {
-                    if !testMode && (EmbeddedNetwork.integrationControl == nil || ProcessInfo.processInfo.arguments.contains("--remote-keep-credential")) { try SavedConnection(endpoint: api.endpoint, token: credential.token, fingerprint: fingerprint, endpoints: endpoints, routeFingerprint: routeFingerprint).save() }
-                    paired = true
-                    rememberedComputer = !testMode
-                    reconnectPaused = false
-                    code = nil
-                    await refresh()
-                    return
-                }
-                try await Task.sleep(for: .seconds(2))
-            }
-            throw RemoteError.expired
+            _ = try await waitForRemoteApproval(claim, recover: {
+                guard generation == self.revision else { throw CancellationError() }
+                guard let endpoints = self.endpoints else { return }
+                // 未批准的设备不能请求 status；仅用 hello 找到可达路径。
+                let replacement = try await self.selectConnection(endpoints, pin: self.routeFingerprint, probe: true)
+                guard generation == self.revision else { replacement.session.invalidateAndCancel(); throw CancellationError() }
+                self.api?.session.invalidateAndCancel()
+                self.api = replacement
+                self.fingerprint = replacement.endpoint.scheme == "https" ? self.routeFingerprint : nil
+                self.computerAddress = replacement.endpoint.host
+            }, read: {
+                guard generation == self.revision, let api = self.api, let credential = self.credential else { throw CancellationError() }
+                return try await api.request("v1/pair/\(claim.id.uuidString.lowercased())", token: credential.token, timeout: 3)
+            })
+            guard generation == revision, let api, let credential else { return }
+            if !testMode && (EmbeddedNetwork.integrationControl == nil || ProcessInfo.processInfo.arguments.contains("--remote-keep-credential")) { try SavedConnection(endpoint: api.endpoint, token: credential.token, fingerprint: fingerprint, endpoints: endpoints, routeFingerprint: routeFingerprint).save() }
+            paired = true
+            rememberedComputer = !testMode
+            reconnectPaused = false
+            code = nil
+            await refresh()
         } catch is CancellationError {} catch {
             if generation == revision {
                 disconnect()

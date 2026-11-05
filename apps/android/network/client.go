@@ -206,6 +206,26 @@ func (c *Client) Status() (string, error) {
 	if c.routes != nil {
 		return c.routes.status()
 	}
+	return c.statusContext(context.Background())
+}
+
+// 只有实际选用内嵌路径时，界面才保存新入网身份。
+func (c *Client) UsesEmbeddedNetwork() bool {
+	active := c
+	if c.routes != nil {
+		c.routes.mu.Lock()
+		defer c.routes.mu.Unlock()
+		active = c.routes.active
+	}
+	if active == nil {
+		return false
+	}
+	active.mu.RLock()
+	defer active.mu.RUnlock()
+	return active.server != nil
+}
+
+func (c *Client) statusContext(parent context.Context) (string, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	if c.server == nil {
@@ -215,7 +235,7 @@ func (c *Client) Status() (string, error) {
 	if err != nil {
 		return "", errors.New("network unavailable")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
 	defer cancel()
 	status, err := local.Status(ctx)
 	if err != nil {
@@ -253,6 +273,10 @@ func (c *Client) Request(endpoint, path, method, token, body string) (string, er
 	if c.routes != nil {
 		return c.routes.request(endpoint, path, method, token, body)
 	}
+	return c.requestContext(c.ctx, endpoint, path, method, token, body)
+}
+
+func (c *Client) requestContext(parent context.Context, endpoint, path, method, token, body string) (string, error) {
 	if !c.accepts(endpoint) {
 		return "", errors.New("invalid tailnet endpoint")
 	}
@@ -265,7 +289,10 @@ func (c *Client) Request(endpoint, path, method, token, body string) (string, er
 	if client == nil {
 		return "", errors.New("network closed")
 	}
-	ctx := c.ctx
+	ctx, stop := context.WithCancel(parent)
+	defer stop()
+	stopClosed := context.AfterFunc(c.ctx, stop)
+	defer stopClosed()
 	if path == "/v1/hello" {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, 3*time.Second)

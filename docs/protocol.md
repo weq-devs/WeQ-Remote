@@ -11,16 +11,17 @@
 | 1 | `v, endpoint, invitation` | 内嵌 TS 的 `http://100.64.0.0/10:<port>` |
 | 2 | v1 字段加 `authKey, expiresAt` | 内嵌 TS；Auth Key 仅用于本次入网，过期字段为毫秒时间戳 |
 | 3 | `v, endpoint, invitation, fingerprint` | 私有 IPv4 / CGNAT 的 HTTPS；证书 SHA-256 精确指纹校验 |
-| 4 | `v, endpoint × 1–8, invitation, fingerprint`，可选同时带 `authKey, expiresAt` | 多入口：局域网 HTTPS、WeQ 专用节点 HTTP（内嵌 TS）/ HTTPS（系统路由）；按顺序探测，不接受重复地址 |
+| 4 | `v, endpoint × 1–8, invitation, fingerprint`，可选同时带 `authKey, expiresAt` | 多入口：局域网 HTTPS、WeQ 专用节点 HTTP（内嵌 TS）/ HTTPS（系统路由）；错峰竞速探测，不接受重复地址 |
 
 `invitation` 和 `fingerprint` 是 64 位小写十六进制文本；客户端校验端口为 1–65535。局域网不降级为 HTTP，不接受公网域名或任意自签名证书。内嵌网络代理不可失败后静默直连。Auth Key 不写入源码、日志或普通设置。
 
 ## 配对与访问
 
 - v4 先调用 `GET /v1/hello`，验证 `product: WeQ Remote, protocol: 1`，不消费邀请、不读取账号或授权数据。确认路径可达后只提交一次配对 POST；网络结果不确定时不在其他路径重发 POST。
-- v4 保存全部地址与公共指纹，不保存 Auth Key。恢复连接或只读请求连接失败时可按顺序尝试其他入口；401、协议不兼容、取消与证书校验失败不是自动换路的理由。HTTPS 始终使用公共指纹，HTTP 地址仅通过内嵌 TS。
+- v4 保存全部地址与公共指纹，不保存 Auth Key。初连、恢复连接或只读请求连接失败时，以 150 毫秒间隔启动候选地址探测，首个成功结果胜出并取消其余探测，不逐个累加超时。内嵌 HTTP 地址由同一个 worker 依次探测，节点入网按需启动，不作为 HTTPS 直连的前置条件。入网未完成时，不用新节点身份替换原来保存的身份。401、协议不兼容、取消与证书校验失败仍会结束当前选择，不因换路而忽略；竞速已经成功后取消的其他探测不影响胜出结果。HTTPS 始终使用公共指纹，HTTP 地址仅通过内嵌 TS。
 - `POST /v1/pair`：提交一次性 `invitation`、设备 `name`、随机设备令牌的 SHA-256 `tokenHash`，完整 Web 使用 `scope: web:access`。
 - 返回 `id, code, expiresAt`；手机用自己的原始令牌作为 Bearer 轮询 `GET /v1/pair/:id`，读取 `id, approved, scope`。
+- iOS 批准轮询的单次请求超时为 3 秒，临时连接失败保留本次请求与令牌，在有效期内重试。v4 可重新探测入口后继续读取同一个请求，不重新提交配对 POST；未批准时以 hello 而非 status 探测。授权拒绝、响应不兼容、用户取消和请求过期仍结束配对。
 - 初次配对必须由电脑明确批准。撤销后旧令牌不可读取状态、Web 或继续订阅。
 - `GET /v1/status` 的当前响应为 `product: WeQ Remote, protocol: 1, scope: status:read, online: true`。这里的 `status:read` 是状态响应类别，不能据此推断设备拥有完整 Web 权限。
 - Web 使用 `weq_remote` HttpOnly Cookie 或 Bearer 凭据；HTTP 与 `/trpc-ws` 由电脑端鉴权。手机壳不复制业务 API 定义或依赖桌面私有模块。

@@ -90,6 +90,99 @@ final class RemoteProtocolTests: XCTestCase {
         }
     }
 
+    func testFastRouteDoesNotWaitForBlackholedFirstAddress() async throws {
+        let slow = URL(string: "https://192.168.1.8:7691")!
+        let fast = URL(string: "https://100.64.0.10:7692")!
+        let start = ContinuousClock.now
+        let (selected, _) = try await selectRemoteRoute([slow, fast]) { endpoint in
+            if endpoint == slow {
+                try await Task.sleep(for: .seconds(2))
+                throw URLError(.timedOut)
+            }
+            return "reachable"
+        }
+        XCTAssertEqual(selected, fast)
+        XCTAssertLessThan(ContinuousClock.now - start, .seconds(1))
+    }
+
+    func testDirectRouteDoesNotWaitForEmbeddedEnrollment() async throws {
+        let embedded = URL(string: "http://100.64.0.10:7691")!
+        let direct = URL(string: "https://192.168.1.8:7691")!
+        let start = ContinuousClock.now
+        let (selected, _) = try await selectRemoteRoute([embedded, direct]) { endpoint in
+            if endpoint == embedded { try await Task.sleep(for: .seconds(45)) }
+            return "reachable"
+        }
+        XCTAssertEqual(selected, direct)
+        XCTAssertLessThan(ContinuousClock.now - start, .seconds(1))
+    }
+
+    @MainActor
+    func testLosingSuccessfulProbeIsDisposed() async throws {
+        let first = URL(string: "https://192.168.1.8:7691")!
+        let second = URL(string: "https://100.64.0.10:7692")!
+        var discarded: [URL] = []
+        let (selected, _) = try await selectRemoteRoute([first, second], discard: { discarded.append($0) }) { endpoint in
+            if endpoint == first {
+                // 模拟底层 API 完成时恰好遇到取消，仍返回一个已创建的对象。
+                try? await Task.sleep(for: .seconds(45))
+            }
+            return endpoint
+        }
+        XCTAssertEqual(selected, second)
+        XCTAssertEqual(discarded, [first])
+    }
+
+    @MainActor
+    func testApprovalTimeoutRecoversWithoutDiscardingClaim() async throws {
+        let claim = PairClaim(id: UUID(), code: "123456", expiresAt: 10_000)
+        var reads = 0, recoveries = 0
+        let approval = try await waitForRemoteApproval(claim, now: { 0 }, pause: {}, recover: {
+            recoveries += 1
+        }, read: {
+            reads += 1
+            if reads == 1 { throw URLError(.timedOut) }
+            return PairApproval(id: claim.id, approved: true, scope: "web:access")
+        })
+        XCTAssertTrue(approval.approved)
+        XCTAssertEqual(reads, 2)
+        XCTAssertEqual(recoveries, 1)
+    }
+
+    @MainActor
+    func testApprovalStopsOnExpiryRejectionAndCancellation() async throws {
+        let claim = PairClaim(id: UUID(), code: "123456", expiresAt: 2)
+        var clock = 0.0, reads = 0
+        do {
+            _ = try await waitForRemoteApproval(claim, now: { clock }, pause: { clock += 1 }, recover: {}, read: {
+                reads += 1
+                throw URLError(.timedOut)
+            })
+            XCTFail("expired claim accepted")
+        } catch RemoteError.expired {} catch { XCTFail("unexpected error: \(error)") }
+        XCTAssertEqual(reads, 2)
+        let failures: [Error] = [RemoteError.unauthorized, RemoteError.response, CancellationError()]
+        for failure in failures {
+            var recovered = false
+            do {
+                _ = try await waitForRemoteApproval(claim, now: { 0 }, pause: {}, recover: { recovered = true }, read: { throw failure })
+                XCTFail("rejection swallowed")
+            } catch { XCTAssertFalse(recovered) }
+        }
+    }
+
+    @MainActor
+    func testApprovalDoesNotAcceptAnotherClaimOrScope() async throws {
+        let claim = PairClaim(id: UUID(), code: "123456", expiresAt: 10_000)
+        for approval in [PairApproval(id: UUID(), approved: true, scope: "web:access"),
+                         PairApproval(id: claim.id, approved: true, scope: "status:read")] {
+            do {
+                _ = try await waitForRemoteApproval(claim, now: { 0 }, pause: {}, recover: { XCTFail("invalid response triggered recovery") }, read: { approval })
+                XCTFail("invalid approval accepted")
+            } catch RemoteError.response {} catch { XCTFail("unexpected error: \(error)") }
+        }
+    }
+
     func testRejectsNonTailnetDestinations() {
         for endpoint in ["http://127.0.0.1:7691", "http://192.168.1.1:80", "http://100.128.0.1:7691",
                          "http://100.63.0.1:7691", "http://example.com:80", "http://100.64.0.1:7691/path",

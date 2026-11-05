@@ -184,18 +184,82 @@ func remoteRouteCanRetry(_ error: Error) -> Bool {
             .dnsLookupFailed, .notConnectedToInternet, .cannotLoadFromNetwork].contains(url.code)
 }
 
-// 探测完成才发配对申请；应用层拒绝与取消不能被换地址吞掉。
-func selectRemoteRoute<T>(_ endpoints: [URL], connect: (URL) async throws -> T) async throws -> (URL, T) {
-    var failure: Error = RemoteError.network
-    for endpoint in endpoints {
-        try Task.checkCancellation()
-        do { return (endpoint, try await connect(endpoint)) }
-        catch {
-            guard remoteRouteCanRetry(error) else { throw error }
-            failure = error
+// 只读探测错峰竞速；内嵌节点共用一个 worker，避免重复入网。
+@MainActor
+func selectRemoteRoute<T>(_ endpoints: [URL], discard: @escaping @MainActor (T) -> Void = { _ in }, connect: @escaping @MainActor (URL) async throws -> T) async throws -> (URL, T) {
+    var workers = endpoints.enumerated().filter { $0.element.scheme != "http" }.map { [$0] }
+    let embedded = Array(endpoints.enumerated().filter { $0.element.scheme == "http" })
+    if !embedded.isEmpty { workers.append(embedded) }
+    return try await withThrowingTaskGroup(of: Result<(URL, T), Error>.self) { group in
+        defer { group.cancelAll() }
+        for worker in workers {
+            group.addTask { @MainActor in
+                var failure: Error = RemoteError.network
+                do {
+                    try await Task.sleep(for: .milliseconds(worker[0].offset * 150))
+                    for (_, endpoint) in worker {
+                        try Task.checkCancellation()
+                        do { return .success((endpoint, try await connect(endpoint))) }
+                        catch {
+                            guard remoteRouteCanRetry(error) else { return .failure(error) }
+                            failure = error
+                        }
+                    }
+                    return .failure(failure)
+                } catch { return .failure(error) }
+            }
         }
+        var failure: Error = RemoteError.network
+        do {
+            while let result = try await group.next() {
+                if Task.isCancelled {
+                    if case .success(let connection) = result { discard(connection.1) }
+                    throw CancellationError()
+                }
+                switch result {
+                case .success(let connection):
+                    group.cancelAll()
+                    while let pending = try await group.next() {
+                        if case .success(let other) = pending { discard(other.1) }
+                    }
+                    if Task.isCancelled { discard(connection.1); throw CancellationError() }
+                    return connection
+                case .failure(let error):
+                    guard remoteRouteCanRetry(error) else { throw error }
+                    failure = error
+                }
+            }
+        } catch {
+            group.cancelAll()
+            while let pending = try await group.next() {
+                if case .success(let other) = pending { discard(other.1) }
+            }
+            throw error
+        }
+        throw failure
     }
-    throw failure
+}
+
+@MainActor
+func waitForRemoteApproval(_ claim: PairClaim,
+                          now: () -> Double = { Date().timeIntervalSince1970 * 1000 },
+                          pause: () async throws -> Void = { try await Task.sleep(for: .seconds(2)) },
+                          recover: () async throws -> Void,
+                          read: () async throws -> PairApproval) async throws -> PairApproval {
+    while now() < claim.expiresAt {
+        try Task.checkCancellation()
+        do {
+            let approval = try await read()
+            guard approval.id == claim.id, approval.scope == "web:access" else { throw RemoteError.response }
+            if approval.approved { return approval }
+        } catch {
+            guard remoteRouteCanRetry(error) else { throw error }
+            do { try await recover() }
+            catch { guard remoteRouteCanRetry(error) else { throw error } }
+        }
+        try await pause()
+    }
+    throw RemoteError.expired
 }
 
 struct RemoteHello: Decodable {

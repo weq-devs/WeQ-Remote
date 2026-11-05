@@ -1,6 +1,7 @@
 package androidnet
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -11,7 +12,7 @@ import (
 type remoteRoutes struct {
 	mu        sync.Mutex
 	endpoints []string
-	open      func(string) (*Client, error)
+	open      func(context.Context, string) (*Client, error)
 	active    *Client
 	endpoint  string
 	clients   map[string]*Client
@@ -25,22 +26,21 @@ func NewMultiClient(stateDir, rawEndpoints, fingerprint, authKey string) (*Clien
 		return nil, errors.New("invalid connection routes")
 	}
 	var embedded *Client
-	openEmbedded := func() (*Client, error) {
-		if embedded != nil {
-			return embedded, nil
-		}
+	openEmbedded := func(ctx context.Context) (*Client, error) {
 		var err error
-		if authKey != "" {
-			embedded, err = NewEnrolledClient(stateDir, authKey)
-		} else {
-			embedded, err = NewClient(stateDir)
+		if embedded == nil {
+			if authKey != "" {
+				embedded, err = NewEnrolledClient(stateDir, authKey)
+			} else {
+				embedded, err = NewClient(stateDir)
+			}
 		}
 		if err != nil {
 			return nil, err
 		}
 		deadline := time.Now().Add(45 * time.Second)
 		for time.Now().Before(deadline) {
-			raw, err := embedded.Status()
+			raw, err := embedded.statusContext(ctx)
 			var status struct {
 				State    string `json:"state"`
 				LoginURL string `json:"loginURL"`
@@ -53,11 +53,13 @@ func NewMultiClient(stateDir, rawEndpoints, fingerprint, authKey string) (*Clien
 					break
 				}
 			}
-			time.Sleep(500 * time.Millisecond)
+			select {
+			case <-ctx.Done():
+				return embedded, ctx.Err()
+			case <-time.After(500 * time.Millisecond):
+			}
 		}
-		embedded.Close()
-		embedded = nil
-		return nil, errors.New("Tailscale 入网未完成，请重新生成包含 Key 的配对码")
+		return embedded, errors.New("Tailscale 入网未完成，请重新生成包含 Key 的配对码")
 	}
 	if authKey != "" {
 		if !authKeyPattern.MatchString(authKey) {
@@ -72,20 +74,13 @@ func NewMultiClient(stateDir, rawEndpoints, fingerprint, authKey string) (*Clien
 		if !hasEmbedded {
 			return nil, errors.New("missing embedded connection route")
 		}
-		if _, err := openEmbedded(); err != nil {
-			return nil, err
-		}
-		authKey = ""
 	}
 	routes := &remoteRoutes{endpoints: endpoints, clients: make(map[string]*Client)}
-	routes.open = func(endpoint string) (*Client, error) {
+	routes.open = func(ctx context.Context, endpoint string) (*Client, error) {
 		if strings.HasPrefix(endpoint, "https:") {
 			return NewDirectClient(endpoint, fingerprint)
 		}
-		return openEmbedded()
-	}
-	if embedded != nil {
-		routes.clients["embedded"] = embedded
+		return openEmbedded(ctx)
 	}
 	if err := routes.selectRoute(); err != nil {
 		routes.close()
@@ -112,42 +107,112 @@ func (r *remoteRoutes) selectRoute() error {
 	if r.closed {
 		return errors.New("connection closed")
 	}
-	for _, endpoint := range r.endpoints {
-		client := r.clients[endpoint]
-		if client == nil {
-			var err error
-			client, err = r.open(endpoint)
-			if err != nil {
-				continue
-			}
-			r.clients[endpoint] = client
-		}
-		raw, err := client.Request(endpoint, "/v1/hello", "GET", "", "")
-		if err != nil {
-			var failure *remoteTransportError
-			if errors.As(err, &failure) && failure.retry {
-				continue
-			}
-			return err
-		}
-		var response struct {
-			Status int    `json:"status"`
-			Body   string `json:"body"`
-		}
-		var hello struct {
-			Product  string `json:"product"`
-			Protocol int    `json:"protocol"`
-		}
-		if json.Unmarshal([]byte(raw), &response) != nil || response.Status != 200 || json.Unmarshal([]byte(response.Body), &hello) != nil || hello.Product != "WeQ Remote" || hello.Protocol != 1 {
-			return errors.New("电脑返回了不兼容的数据")
-		}
-		if r.active != nil && r.active != client {
-			r.active.CloseWeb()
-		}
-		r.active, r.endpoint = client, endpoint
-		return nil
+	type candidate struct {
+		endpoint string
+		client   *Client
+		index    int
 	}
-	return errors.New("无法连接电脑，请检查局域网或 Tailscale 连接")
+	type outcome struct {
+		candidate
+		err   error
+		fatal bool
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var workers [][]candidate
+	var embedded []candidate
+	for index, endpoint := range r.endpoints {
+		entry := candidate{endpoint, r.clients[endpoint], index}
+		if strings.HasPrefix(endpoint, "http:") {
+			embedded = append(embedded, entry)
+		} else {
+			workers = append(workers, []candidate{entry})
+		}
+	}
+	if len(embedded) > 0 {
+		workers = append(workers, embedded)
+	}
+	results := make(chan outcome, len(r.endpoints))
+	var pending sync.WaitGroup
+	// 内嵌路径共用一个 worker，其他地址错峰探测；只读探测不消费邀请。
+	for _, worker := range workers {
+		pending.Add(1)
+		go func(entries []candidate) {
+			defer pending.Done()
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(time.Duration(entries[0].index) * 150 * time.Millisecond):
+			}
+			for _, entry := range entries {
+				if ctx.Err() != nil {
+					return
+				}
+				var err error
+				if entry.client == nil {
+					entry.client, err = r.open(ctx, entry.endpoint)
+					if err != nil {
+						results <- outcome{candidate: entry, err: err}
+						continue
+					}
+				}
+				raw, err := entry.client.requestContext(ctx, entry.endpoint, "/v1/hello", "GET", "", "")
+				if err != nil {
+					var failure *remoteTransportError
+					fatal := !(errors.As(err, &failure) && failure.retry)
+					results <- outcome{entry, err, fatal}
+					if fatal {
+						return
+					}
+					continue
+				}
+				var response struct {
+					Status int
+					Body   string
+				}
+				var hello struct {
+					Product  string
+					Protocol int
+				}
+				if json.Unmarshal([]byte(raw), &response) != nil || response.Status != 200 || json.Unmarshal([]byte(response.Body), &hello) != nil || hello.Product != "WeQ Remote" || hello.Protocol != 1 {
+					results <- outcome{entry, errors.New("电脑返回了不兼容的数据"), true}
+					return
+				}
+				results <- outcome{candidate: entry}
+				return
+			}
+		}(worker)
+	}
+	go func() { pending.Wait(); close(results) }()
+	var winner *candidate
+	failure := errors.New("无法连接电脑，请检查局域网或 Tailscale 连接")
+	decided := false
+	for result := range results {
+		if result.client != nil {
+			r.clients[result.endpoint] = result.client
+		}
+		if decided {
+			continue
+		}
+		if result.err == nil {
+			selected := result.candidate
+			winner = &selected
+			decided = true
+			cancel()
+		} else if result.fatal {
+			failure = result.err
+			decided = true
+			cancel()
+		}
+	}
+	if winner == nil {
+		return failure
+	}
+	if r.active != nil && r.active != winner.client {
+		r.active.CloseWeb()
+	}
+	r.active, r.endpoint = winner.client, winner.endpoint
+	return nil
 }
 
 func (r *remoteRoutes) request(endpoint, path, method, token, body string) (string, error) {

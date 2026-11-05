@@ -76,24 +76,34 @@ final class EmbeddedNetwork: ObservableObject {
               expiresAt > Date().timeIntervalSince1970 * 1000 else { throw RemoteError.enrollment }
         await stop()
         try Task.checkCancellation()
+        let previousStateName = stateName
         stateName = Self.enrollmentStateName(authKey)
         enrollmentKey = authKey
         enabled = true
         let generation = revision
         let deadline = ContinuousClock.now + .seconds(45)
-        while ContinuousClock.now < deadline, expiresAt > Date().timeIntervalSince1970 * 1000 {
-            try Task.checkCancellation()
-            guard generation == revision, enabled else { throw CancellationError() }
-            await refresh()
-            guard generation == revision, enabled else { throw CancellationError() }
-            if connected {
-                UserDefaults.standard.set(stateName, forKey: "enrollmentState")
-                return
+        do {
+            while ContinuousClock.now < deadline, expiresAt > Date().timeIntervalSince1970 * 1000 {
+                try Task.checkCancellation()
+                guard generation == revision, enabled else { throw CancellationError() }
+                await refresh()
+                try Task.checkCancellation()
+                guard generation == revision, enabled else { throw CancellationError() }
+                if connected {
+                    UserDefaults.standard.set(stateName, forKey: "enrollmentState")
+                    return
+                }
+                if loginURL != nil || message == "等待网络管理员批准" || message == "网络连接失败，请重试" { break }
+                try await Task.sleep(for: .milliseconds(500))
             }
-            if loginURL != nil || message == "等待网络管理员批准" || message == "网络连接失败，请重试" { break }
-            try await Task.sleep(for: .seconds(1))
+        } catch {
+            if generation == revision {
+                await stop(waitForClose: false)
+                stateName = previousStateName
+            }
+            throw error
         }
-        await stop()
+        if generation == revision { await stop(waitForClose: false); stateName = previousStateName }
         throw RemoteError.enrollment
     }
 
@@ -191,7 +201,7 @@ final class EmbeddedNetwork: ObservableObject {
         return configuration
     }
 
-    func stop(disable: Bool = true) async {
+    func stop(disable: Bool = true, waitForClose: Bool = true) async {
         revision += 1
         enrollmentKey = nil
         if disable { enabled = false }
@@ -202,6 +212,6 @@ final class EmbeddedNetwork: ObservableObject {
         let previous = node
         node = nil
         if let previous { closing = Task { try? await previous.close() } }
-        await closing?.value
+        if waitForClose { await closing?.value }
     }
 }
