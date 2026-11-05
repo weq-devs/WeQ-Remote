@@ -14,6 +14,7 @@ final class WebContainerTests: XCTestCase {
         defer { session.close() }
 
         XCTAssertTrue(session.view.configuration.allowsInlineMediaPlayback)
+        XCTAssertTrue(session.view.uiDelegate === session)
         XCTAssertEqual(session.view.configuration.mediaTypesRequiringUserActionForPlayback, .all)
     }
 }

@@ -1,20 +1,38 @@
 import SwiftUI
 import WebKit
 
+private final class RemoteCaptureHandler: NSObject, WKScriptMessageHandler {
+    weak var owner: RemoteWebSession?
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard message.frameInfo.isMainFrame, let owner, let id = message.body as? String,
+              id.count <= 64, let url = message.frameInfo.request.url,
+              RemoteWebPolicy.sameOrigin(url, endpoint: owner.endpoint) else { return }
+        owner.capture(id)
+    }
+}
+
 @MainActor
-final class RemoteWebSession: NSObject, WKNavigationDelegate {
+final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate {
     let view: WKWebView
     let endpoint: URL
     private let fingerprint: String?
+    private var downloads: [ObjectIdentifier: (WKDownload, URL)] = [:]
+    private var closed = false
 
     init(configuration: WKWebViewConfiguration, endpoint: URL, fingerprint: String? = nil) {
         self.endpoint = endpoint
         self.fingerprint = fingerprint
         // 网页背景已有 playsinline；iPhone 还需在创建 WebView 前允许页内播放。
         configuration.allowsInlineMediaPlayback = true
+        configuration.applicationNameForUserAgent = "WeQRemote"
+        configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
         view = WKWebView(frame: .zero, configuration: configuration)
         super.init()
+        let capture = RemoteCaptureHandler()
+        capture.owner = self
+        configuration.userContentController.add(capture, name: "weqCapture")
         view.navigationDelegate = self
+        view.uiDelegate = self
         view.allowsBackForwardNavigationGestures = true
         view.isInspectable = false
     }
@@ -28,16 +46,150 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate {
 
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
                  decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
-        guard let url = navigationAction.request.url,
-              url.scheme == endpoint.scheme, url.host == endpoint.host, url.port == endpoint.port,
-              url.user == nil, url.password == nil else { decisionHandler(.cancel); return }
-        decisionHandler(.allow)
+        guard !closed, let url = navigationAction.request.url else { decisionHandler(.cancel); return }
+        if RemoteWebPolicy.resource(url, endpoint: endpoint) {
+            decisionHandler(navigationAction.shouldPerformDownload ? .download : .allow)
+            return
+        }
+        decisionHandler(.cancel)
+        if navigationAction.navigationType == .linkActivated || navigationAction.targetFrame == nil {
+            openExternal(url)
+        }
+    }
+
+    private func sameOrigin(_ url: URL) -> Bool {
+        RemoteWebPolicy.sameOrigin(url, endpoint: endpoint)
+    }
+
+    private func openExternal(_ url: URL) {
+        guard RemoteWebPolicy.external(url) else { return }
+        UIApplication.shared.open(url)
+    }
+
+    func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
+                 for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
+        guard !closed, let url = navigationAction.request.url else { return nil }
+        if sameOrigin(url) { webView.load(navigationAction.request) }
+        else { openExternal(url) }
+        return nil
+    }
+
+    func webView(_ webView: WKWebView, requestMediaCapturePermissionFor origin: WKSecurityOrigin,
+                 initiatedByFrame frame: WKFrameInfo, type: WKMediaCaptureType,
+                 decisionHandler: @escaping (WKPermissionDecision) -> Void) {
+        let allowed = !closed && origin.protocol == endpoint.scheme && origin.host == endpoint.host
+            && (origin.port == 0 ? (origin.protocol == "https" ? 443 : 80) : origin.port) == (endpoint.port ?? (endpoint.scheme == "https" ? 443 : 80))
+        decisionHandler(allowed ? .prompt : .deny)
+    }
+
+    func webView(_ webView: WKWebView, decidePolicyFor response: WKNavigationResponse,
+                 decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
+        let attachment = (response.response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Disposition")?.lowercased().hasPrefix("attachment") == true
+        decisionHandler(!closed && (attachment || !response.canShowMIMEType) ? .download : closed ? .cancel : .allow)
+    }
+
+    func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {
+        download.delegate = self
+    }
+
+    func webView(_ webView: WKWebView, navigationResponse: WKNavigationResponse, didBecome download: WKDownload) {
+        download.delegate = self
+    }
+
+    func download(_ download: WKDownload, didReceive challenge: URLAuthenticationChallenge,
+                  completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+        guard !closed else { completionHandler(.cancelAuthenticationChallenge, nil); return }
+        if fingerprint == nil { completionHandler(.performDefaultHandling, nil) }
+        else if let credential = pinnedCredential(challenge, endpoint: endpoint, fingerprint: fingerprint) { completionHandler(.useCredential, credential) }
+        else { completionHandler(.cancelAuthenticationChallenge, nil) }
+    }
+
+    func download(_ download: WKDownload, willPerformHTTPRedirection response: HTTPURLResponse,
+                  newRequest request: URLRequest, decisionHandler: @escaping (WKDownload.RedirectPolicy) -> Void) {
+        decisionHandler(!closed && request.url.map(sameOrigin) == true ? .allow : .cancel)
+    }
+
+    func download(_ download: WKDownload, decideDestinationUsing response: URLResponse,
+                  suggestedFilename: String, completionHandler: @escaping (URL?) -> Void) {
+        guard !closed else { completionHandler(nil); return }
+        do {
+            let directory = FileManager.default.temporaryDirectory.appendingPathComponent("weq-download-\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+            let name = (suggestedFilename as NSString).lastPathComponent
+            let target = directory.appendingPathComponent(name.isEmpty || name == "." || name == ".." ? "download" : name)
+            downloads[ObjectIdentifier(download)] = (download, target)
+            completionHandler(target)
+        } catch { completionHandler(nil); showDownloadError() }
+    }
+
+    func downloadDidFinish(_ download: WKDownload) {
+        guard let (_, file) = downloads.removeValue(forKey: ObjectIdentifier(download)) else { return }
+        shareFile(file)
+    }
+
+    private func shareFile(_ file: URL) {
+        guard !closed, var presenter = view.window?.rootViewController else { removeDownload(file); return }
+        while let presented = presenter.presentedViewController { presenter = presented }
+        let share = UIActivityViewController(activityItems: [file], applicationActivities: nil)
+        share.popoverPresentationController?.sourceView = view
+        share.popoverPresentationController?.sourceRect = CGRect(x: view.bounds.midX, y: view.bounds.midY, width: 1, height: 1)
+        share.completionWithItemsHandler = { _, _, _, _ in try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
+        presenter.present(share, animated: true)
+    }
+
+    fileprivate func capture(_ id: String) {
+        guard !closed else { return }
+        let configuration = WKSnapshotConfiguration()
+        configuration.rect = view.bounds
+        configuration.afterScreenUpdates = true
+        view.takeSnapshot(with: configuration) { [weak self] image, _ in
+            guard let self, !self.closed else { return }
+            do {
+                guard let png = image?.pngData() else { throw RemoteError.response }
+                let directory = FileManager.default.temporaryDirectory.appendingPathComponent("weq-download-\(UUID().uuidString)", isDirectory: true)
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+                let file = directory.appendingPathComponent("WeQ-screenshot.png")
+                do { try png.write(to: file, options: .atomic) }
+                catch { try? FileManager.default.removeItem(at: directory); throw error }
+                self.captureResult(id, ok: true)
+                self.shareFile(file)
+            } catch { self.captureResult(id, ok: false) }
+        }
+    }
+
+    private func captureResult(_ id: String, ok: Bool) {
+        let payload: [String: Any] = ["id": id, "ok": ok, "delivery": "native", "error": ok ? "" : "无法生成截图"]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload), let json = String(data: data, encoding: .utf8) else { return }
+        view.evaluateJavaScript("window.dispatchEvent(new CustomEvent('weq-remote-capture-result',{detail:\(json)}))", completionHandler: nil)
+    }
+
+    func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
+        if let (_, file) = downloads.removeValue(forKey: ObjectIdentifier(download)) { removeDownload(file) }
+        if !closed { showDownloadError() }
+    }
+
+    private func showDownloadError() {
+        guard var presenter = view.window?.rootViewController else { return }
+        while let presented = presenter.presentedViewController { presenter = presented }
+        guard !(presenter is UIAlertController) else { return }
+        let alert = UIAlertController(title: "文件未保存", message: "下载失败，请检查连接后重新下载。", preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "好", style: .default))
+        presenter.present(alert, animated: true)
+    }
+
+    private func removeDownload(_ file: URL) {
+        try? FileManager.default.removeItem(at: file.deletingLastPathComponent())
     }
 
     func close() {
+        closed = true
+        for (_, (download, file)) in downloads { download.cancel { _ in }; removeDownload(file) }
+        downloads.removeAll()
         view.stopLoading()
         // 关闭时允许清空页面，避免来源限制拦住 about:blank，残留旧会话画面。
         view.navigationDelegate = nil
+        view.uiDelegate = nil
+        view.configuration.userContentController.removeScriptMessageHandler(forName: "weqCapture")
         view.loadHTMLString("", baseURL: nil)
     }
 

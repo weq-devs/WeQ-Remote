@@ -312,6 +312,24 @@ final class NoRedirectDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sen
                     completionHandler: @escaping (URLRequest?) -> Void) { completionHandler(nil) }
 }
 
+enum RemoteWebPolicy {
+    static func sameOrigin(_ url: URL, endpoint: URL) -> Bool {
+        func port(_ value: URL) -> Int { value.port ?? (value.scheme == "https" ? 443 : 80) }
+        return url.scheme == endpoint.scheme && url.host == endpoint.host && port(url) == port(endpoint)
+            && url.user == nil && url.password == nil
+    }
+    static func resource(_ url: URL, endpoint: URL) -> Bool {
+        if sameOrigin(url, endpoint: endpoint) { return true }
+        guard url.scheme == "blob", let nested = URL(string: String(url.absoluteString.dropFirst(5))) else { return false }
+        return sameOrigin(nested, endpoint: endpoint)
+    }
+    static func external(_ url: URL) -> Bool {
+        guard url.user == nil, url.password == nil,
+              ["https", "http", "mailto", "tel", "tencent", "mqqapi"].contains(url.scheme?.lowercased() ?? "") else { return false }
+        return !["https", "http"].contains(url.scheme?.lowercased() ?? "") || url.host != nil
+    }
+}
+
 func pinnedCredential(_ challenge: URLAuthenticationChallenge, endpoint: URL?, fingerprint: String?) -> URLCredential? {
     guard let endpoint, let fingerprint, challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
           challenge.protectionSpace.host == endpoint.host, challenge.protectionSpace.port == endpoint.port,

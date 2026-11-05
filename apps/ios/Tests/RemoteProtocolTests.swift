@@ -2,6 +2,25 @@ import XCTest
 @testable import WeQRemote
 
 final class RemoteProtocolTests: XCTestCase {
+    func testWebResourcesAreBoundToExactOriginIncludingBlobURLs() {
+        let endpoint = URL(string: "https://192.168.1.8:7691")!
+        for value in ["https://192.168.1.8:7691/_download/id", "blob:https://192.168.1.8:7691/id"] {
+            XCTAssertTrue(RemoteWebPolicy.resource(URL(string: value)!, endpoint: endpoint))
+        }
+        for value in ["http://192.168.1.8:7691/file", "https://192.168.1.8:7692/file", "https://secret@192.168.1.8:7691/file", "blob:https://192.168.1.8:76910/id", "data:text/html,test", "file:///private/file"] {
+            XCTAssertFalse(RemoteWebPolicy.resource(URL(string: value)!, endpoint: endpoint))
+        }
+        XCTAssertTrue(RemoteWebPolicy.sameOrigin(URL(string: "https://example.com:443/path")!, endpoint: URL(string: "https://example.com")!))
+    }
+
+    func testExternalWebLinksDoNotAllowExecutableSchemesOrCredentials() {
+        for value in ["https://example.com", "mailto:test@example.com", "mqqapi://example"] {
+            XCTAssertTrue(RemoteWebPolicy.external(URL(string: value)!))
+        }
+        for value in ["javascript:alert(1)", "data:text/html,test", "file:///private/file", "https://secret@example.com", "intent://host"] {
+            XCTAssertFalse(RemoteWebPolicy.external(URL(string: value)!))
+        }
+    }
     private func link(endpoint: String = "http://100.64.0.10:7691", extra: String = "") -> String {
         "weq-remote://pair?v=1&endpoint=\(endpoint.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)!)&invitation=\(String(repeating: "a", count: 64))\(extra)"
     }

@@ -48,6 +48,7 @@ public final class MainActivity extends Activity {
     private long enrollmentDeadline;
     private View setupView;
     android.webkit.WebView webView;
+    private WebFeatures webFeatures;
     TextView networkState, computerState, detail, error;
     EditText invitation;
     Button pairButton, verifyButton, disconnectButton;
@@ -412,16 +413,20 @@ public final class MainActivity extends Activity {
                         if (revision != generation || !visible) return;
                         cookies.setCookie(origin, "weq_remote_local=" + localSecret + "; HttpOnly; SameSite=Strict; Path=/", accepted -> {
                             if (revision != generation || !visible) return;
+                            if (webFeatures != null) { webFeatures.close(); webFeatures = null; }
                             if (webView != null) { webView.stopLoading(); webView.destroy(); }
                             webView = new android.webkit.WebView(this);
                             android.webkit.WebSettings settings = webView.getSettings();
                             settings.setJavaScriptEnabled(true); settings.setDomStorageEnabled(true);
+                            settings.setUserAgentString(settings.getUserAgentString() + " WeQRemote");
                             settings.setAllowFileAccess(false); settings.setAllowContentAccess(false);
                             settings.setMixedContentMode(android.webkit.WebSettings.MIXED_CONTENT_NEVER_ALLOW);
                             cookies.setAcceptThirdPartyCookies(webView, false);
+                            webFeatures = new WebFeatures(this, webView, origin);
                             webView.setWebViewClient(new android.webkit.WebViewClient() {
+                                @Override public void onPageFinished(android.webkit.WebView view, String url) { if (webFeatures != null && allowed(Uri.parse(url))) webFeatures.pageReady(); }
                                 private boolean allowed(Uri url) { return "http".equals(url.getScheme()) && "127.0.0.1".equals(url.getHost()) && url.getPort() == Uri.parse(origin).getPort(); }
-                                @Override public boolean shouldOverrideUrlLoading(android.webkit.WebView view, android.webkit.WebResourceRequest request) { return !allowed(request.getUrl()); }
+                                @Override public boolean shouldOverrideUrlLoading(android.webkit.WebView view, android.webkit.WebResourceRequest request) { return request.isForMainFrame() ? webFeatures == null || webFeatures.navigate(request.getUrl()) : !allowed(request.getUrl()); }
                                 @Override public android.webkit.WebResourceResponse shouldInterceptRequest(android.webkit.WebView view, android.webkit.WebResourceRequest request) {
                                     if (allowed(request.getUrl())) return null;
                                     return new android.webkit.WebResourceResponse("text/plain", "UTF-8", 403, "Forbidden", java.util.Collections.emptyMap(), new java.io.ByteArrayInputStream(new byte[0]));
@@ -449,6 +454,7 @@ public final class MainActivity extends Activity {
         });
     }
     private void closeWeb() {
+        if (webFeatures != null) { webFeatures.close(); webFeatures = null; }
         Client active = node;
         if (active != null) worker.execute(active::closeWeb);
         if (webView == null) return;
@@ -481,5 +487,9 @@ public final class MainActivity extends Activity {
         stopNetwork(true); error.setText(message == null ? "连接失败，请重试" : message); render();
         if (!BuildConfig.TESTING && visible) main.postDelayed(reconnectPoll, 5000);
     }); }
-    @Override protected void onActivityResult(int request, int result, Intent data) { super.onActivityResult(request, result, data); if (request == 7 && result == RESULT_OK && data != null) { invitation.setText(data.getStringExtra("invitation")); main.post(this::pair); } }
+    @Override protected void onActivityResult(int request, int result, Intent data) { super.onActivityResult(request, result, data); if (webFeatures != null && webFeatures.result(request, result, data)) return; if (request == 7 && result == RESULT_OK && data != null) { invitation.setText(data.getStringExtra("invitation")); main.post(this::pair); } }
+    @Override public void onRequestPermissionsResult(int request, String[] permissions, int[] results) {
+        super.onRequestPermissionsResult(request, permissions, results);
+        if (request == WebFeatures.MEDIA && webFeatures != null) webFeatures.grantMedia();
+    }
 }
