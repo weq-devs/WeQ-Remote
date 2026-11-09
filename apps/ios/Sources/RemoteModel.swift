@@ -131,16 +131,26 @@ final class RemoteModel: ObservableObject {
     }
 
     // 页面加载完成后才切到全屏网页；失败时留在连接页，保留手动重连入口。
-    private func adoptWebSession(_ session: RemoteWebSession) {
+    func adoptWebSession(_ session: RemoteWebSession) {
         webReady = false
-        session.onReady = { [weak self] in
+        session.onReady = { [weak self, weak session] in
             guard let self, self.webSession === session else { return }
             self.webReady = true
             self.error = nil
         }
-        session.onFailure = { [weak self] error in
+        session.onFailure = { [weak self, weak session] error in
             guard let self, self.webSession === session, !self.webReady else { return }
             self.failWebLoad(error)
+        }
+        session.onLoading = { [weak self, weak session] in
+            guard let self, self.webSession === session else { return }
+            self.webReady = false
+            self.error = nil
+        }
+        session.onDisconnect = { [weak self] in
+            guard let self else { return }
+            self.disconnect()
+            Task { await self.network.stop() }
         }
         webSession = session
     }
@@ -331,6 +341,7 @@ final class RemoteModel: ObservableObject {
 
     func disconnect() {
         reconnectPaused = true
+        webReady = false
         webSession?.close()
         webSession = nil
         revision += 1

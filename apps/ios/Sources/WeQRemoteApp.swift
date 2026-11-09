@@ -45,6 +45,8 @@ struct RemoteView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var scanning = false
     @State private var cameraError = false
+    @State private var confirmingDelete = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var pairingTask: Task<Void, Never>?
     private let actionColor = Color(red: 0.02, green: 0.48, blue: 0.43)
     private var accent: Color {
@@ -67,13 +69,18 @@ struct RemoteView: View {
 
     var body: some View {
         NavigationStack {
-            if let session = model.webSession, model.webReady {
+            ZStack {
+            if let session = model.webSession {
                 // 页面加载完成后才进入全屏网页；不显示任何原生栏或按钮。
                 WebContainer(session: session)
                     .id(ObjectIdentifier(session))
                     .ignoresSafeArea()
                     .toolbar(.hidden, for: .navigationBar)
-            } else {
+                    .opacity(model.webReady ? 1 : 0)
+                    .allowsHitTesting(model.webReady)
+                    .accessibilityHidden(!model.webReady)
+            }
+            if !model.webReady {
             ScrollView {
                 VStack(alignment: .leading, spacing: 32) {
                     VStack(alignment: .leading, spacing: 8) {
@@ -147,9 +154,9 @@ struct RemoteView: View {
                             }
                             if model.rememberedComputer {
                                 HStack {
-                                    Button { model.resumeReconnect(); Task { await model.reconnect() } } label: { Label("重新连接", systemImage: "arrow.clockwise") }.disabled(model.busy)
+                                    Button { model.resumeReconnect(); Task { await model.reconnect() } } label: { Label("重新连接", systemImage: "arrow.clockwise") }.disabled(model.busy || model.webSession != nil)
                                     Spacer()
-                                    Button(role: .destructive) { model.forget(); Task { await network.stop() } } label: { Image(systemName: "trash").frame(width: 44, height: 44) }.accessibilityLabel("删除电脑")
+                                    Button(role: .destructive) { confirmingDelete = true } label: { Image(systemName: "trash").frame(width: 44, height: 44) }.accessibilityLabel("删除电脑")
                                 }
                             }
                         }
@@ -170,8 +177,15 @@ struct RemoteView: View {
             }
             .alert("相机不可用", isPresented: $cameraError) { Button("好", role: .cancel) {} }
                 message: { Text("可在系统设置中允许相机访问，或粘贴电脑的配对链接。") }
+            .alert("删除电脑？", isPresented: $confirmingDelete) {
+                Button("取消", role: .cancel) {}
+                Button("删除电脑", role: .destructive) { model.forget(); Task { await network.stop() } }
+            } message: { Text("将清除本机保存的电脑连接，下次需要重新扫码并在电脑上批准。电脑上的设备授权不会撤销。") }
+            .transition(.opacity)
+            }
             }
         }
+        .animation(.easeOut(duration: reduceMotion ? 0.1 : 0.18), value: model.webReady)
         .tint(accent)
     }
 

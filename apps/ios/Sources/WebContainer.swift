@@ -11,6 +11,16 @@ private final class RemoteCaptureHandler: NSObject, WKScriptMessageHandler {
     }
 }
 
+private final class RemoteShellHandler: NSObject, WKScriptMessageHandler {
+    weak var owner: RemoteWebSession?
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard message.frameInfo.isMainFrame, let owner, message.body as? String == "menu",
+              let url = message.frameInfo.request.url,
+              RemoteWebPolicy.sameOrigin(url, endpoint: owner.endpoint) else { return }
+        owner.openMenu()
+    }
+}
+
 @MainActor
 final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate {
     let view: WKWebView
@@ -21,6 +31,8 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
     // 只有首次页面加载完成才切到全屏网页；失败交回连接页重试。
     var onReady: (() -> Void)?
     var onFailure: ((Error) -> Void)?
+    var onLoading: (() -> Void)?
+    var onDisconnect: (() -> Void)?
 
     init(configuration: WKWebViewConfiguration, endpoint: URL, fingerprint: String? = nil) {
         self.endpoint = endpoint
@@ -34,6 +46,12 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
         let capture = RemoteCaptureHandler()
         capture.owner = self
         configuration.userContentController.add(capture, name: "weqCapture")
+        let shell = RemoteShellHandler()
+        shell.owner = self
+        configuration.userContentController.add(shell, name: "weqShell")
+        configuration.userContentController.addUserScript(WKUserScript(
+            source: "window.weqRemoteShell={openMenu:function(){window.webkit.messageHandlers.weqShell.postMessage('menu')}};",
+            injectionTime: .atDocumentStart, forMainFrameOnly: true))
         view.navigationDelegate = self
         view.uiDelegate = self
         view.allowsBackForwardNavigationGestures = true
@@ -45,6 +63,23 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         guard !closed else { return }
         onReady?()
+    }
+
+    fileprivate func openMenu() {
+        guard !closed, var presenter = view.window?.rootViewController else { return }
+        while let presented = presenter.presentedViewController { presenter = presented }
+        guard !(presenter is UIAlertController) else { return }
+        let menu = UIAlertController(title: nil, message: nil, preferredStyle: .actionSheet)
+        menu.addAction(UIAlertAction(title: "重新加载", style: .default) { [weak self] _ in
+            guard let self, !self.closed else { return }
+            self.onLoading?()
+            self.view.reload()
+        })
+        menu.addAction(UIAlertAction(title: "断开连接", style: .default) { [weak self] _ in self?.onDisconnect?() })
+        menu.addAction(UIAlertAction(title: "取消", style: .cancel))
+        menu.popoverPresentationController?.sourceView = view
+        menu.popoverPresentationController?.sourceRect = CGRect(x: view.bounds.maxX - 24, y: view.safeAreaInsets.top + 24, width: 1, height: 1)
+        presenter.present(menu, animated: true)
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
@@ -104,6 +139,11 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
 
     func webView(_ webView: WKWebView, decidePolicyFor response: WKNavigationResponse,
                  decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
+        if response.isForMainFrame, let http = response.response as? HTTPURLResponse, http.statusCode >= 400 {
+            decisionHandler(.cancel)
+            onFailure?(RemoteError.http(http.statusCode))
+            return
+        }
         let attachment = (response.response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Disposition")?.lowercased().hasPrefix("attachment") == true
         decisionHandler(!closed && (attachment || !response.canShowMIMEType) ? .download : closed ? .cancel : .allow)
     }
@@ -210,6 +250,11 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
         view.navigationDelegate = nil
         view.uiDelegate = nil
         view.configuration.userContentController.removeScriptMessageHandler(forName: "weqCapture")
+        view.configuration.userContentController.removeScriptMessageHandler(forName: "weqShell")
+        onReady = nil
+        onFailure = nil
+        onLoading = nil
+        onDisconnect = nil
         view.loadHTMLString("", baseURL: nil)
     }
 

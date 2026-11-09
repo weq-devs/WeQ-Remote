@@ -55,12 +55,13 @@ public final class MainActivity extends Activity {
     private LinearLayout pairSection;
     private android.widget.ProgressBar progress;
     private boolean webLoaded;
+    private boolean reconnectPaused;
     private TextView pageSubtitle;
     private Button scanButton;
     private final Runnable networkPoll = new Runnable() { public void run() { refreshNetwork(); } };
     private final Runnable approvalPoll = new Runnable() { public void run() { pollApproval(); } };
     private final Runnable reconnectPoll = () -> {
-        if (!visible || busy) return;
+        if (!visible || busy || reconnectPaused) return;
         if (webView != null) verify();
         else if (claimID == null) restoreComputer();
     };
@@ -160,7 +161,7 @@ public final class MainActivity extends Activity {
         LinearLayout.LayoutParams progressParams = new LinearLayout.LayoutParams(-1, dp(4)); progressParams.topMargin = dp(14); content.addView(progress, progressParams);
         detail = text("", 14); detail.setPadding(0, dp(10), 0, dp(10)); content.addView(detail);
         verifyButton = button("验证连通", this::verify); verifyButton.setVisibility(View.GONE); content.addView(verifyButton);
-        Button retry = button("重新连接", () -> restoreComputer()); retry.setCompoundDrawablesWithIntrinsicBounds(android.R.drawable.ic_popup_sync, 0, 0, 0); retry.setVisibility(rememberedComputer ? View.VISIBLE : View.GONE); content.addView(retry); retry.setTag("retry");
+        Button retry = button("重新连接", () -> { reconnectPaused = false; restoreComputer(); }); retry.setCompoundDrawablesWithIntrinsicBounds(android.R.drawable.ic_popup_sync, 0, 0, 0); retry.setVisibility(rememberedComputer ? View.VISIBLE : View.GONE); content.addView(retry); retry.setTag("retry");
         disconnectButton = button("删除电脑", this::forgetComputer); disconnectButton.setVisibility(View.GONE); content.addView(disconnectButton);
         error = text("", 14); error.setTextColor(dark ? Color.rgb(255, 160, 150) : Color.rgb(170, 35, 30)); error.setPadding(0, dp(12), 0, 0); content.addView(error);
         invitation.addTextChangedListener(new android.text.TextWatcher() {
@@ -200,7 +201,40 @@ public final class MainActivity extends Activity {
         View retry = setupView.findViewWithTag("retry"); retry.setVisibility(rememberedComputer && !paired ? View.VISIBLE : View.GONE); retry.setEnabled(!busy);
     }
 
-    private void forgetComputer() { ConnectionStore.delete(this); rememberedComputer = false; Androidnet.clearWebCache(); stopNetwork(true); }
+    private void forgetComputer() {
+        new android.app.AlertDialog.Builder(this).setTitle("删除电脑？")
+            .setMessage("将清除本机保存的电脑连接，下次需要重新扫码并在电脑上批准。电脑上的设备授权不会撤销。")
+            .setNegativeButton("取消", null)
+            .setPositiveButton("删除电脑", (dialog, which) -> {
+                reconnectPaused = true;
+                ConnectionStore.delete(this); rememberedComputer = false; Androidnet.clearWebCache(); stopNetwork(true);
+            }).show();
+    }
+
+    void showConnectionMenu() {
+        if (webView == null || !webLoaded || isFinishing()) return;
+        new android.app.AlertDialog.Builder(this)
+            .setItems(new String[]{"重新加载", "断开连接"}, (dialog, which) -> {
+                if (which == 0) reloadWeb();
+                else {
+                    reconnectPaused = true;
+                    stopNetwork(true);
+                    if (android.animation.ValueAnimator.areAnimatorsEnabled()) {
+                        setupView.setAlpha(0);
+                        setupView.animate().alpha(1).setDuration(180).start();
+                    }
+                }
+            }).setNegativeButton("取消", null).show();
+    }
+
+    private void reloadWeb() {
+        if (webView == null) return;
+        webLoaded = false;
+        error.setText(""); computerState.setText("正在加载 WeQ 页面");
+        android.view.ViewGroup root = (android.view.ViewGroup) webView.getParent().getParent();
+        if (setupView.getParent() == null) root.addView(setupView, new android.view.ViewGroup.LayoutParams(-1, -1));
+        setupView.setAlpha(1); render(); webView.reload();
+    }
 
     private void startNetwork() {
         startNetwork(null);
@@ -292,6 +326,7 @@ public final class MainActivity extends Activity {
         if (busy) return;
         try {
             Invitation link = Invitation.parse(invitation.getText().toString());
+            reconnectPaused = false;
             if (link.multiRoute) {
                 if (link.authKey != null && testControl != null) throw new Exception("测试网络不接受正式入网密钥");
                 startMulti(new org.json.JSONArray(link.endpoints).toString(), link.fingerprint, link.authKey, "", () -> claim(link)); return;
@@ -350,7 +385,7 @@ public final class MainActivity extends Activity {
         return "无法连接电脑，请检查局域网、Tailscale 服务或重新生成包含 Key 的配对码";
     }
     private boolean restoreComputer() {
-        if (busy || testControl != null || invitation.length() > 0) return false;
+        if (reconnectPaused || busy || testControl != null || invitation.length() > 0) return false;
         try {
             JSONObject saved = ConnectionStore.load(this);
             if (saved == null) return false;
@@ -449,15 +484,18 @@ public final class MainActivity extends Activity {
                             cookies.setAcceptThirdPartyCookies(webView, false);
                             webFeatures = new WebFeatures(this, webView, origin);
                             webView.setWebViewClient(new android.webkit.WebViewClient() {
-                                private boolean firstLoad = true;
                                 private boolean allowed(Uri url) { return "http".equals(url.getScheme()) && "127.0.0.1".equals(url.getHost()) && url.getPort() == Uri.parse(origin).getPort(); }
                                 @Override public void onPageFinished(android.webkit.WebView view, String url) {
-                                    if (view != page || !allowed(Uri.parse(url))) return;
-                                    if (firstLoad) { firstLoad = false; showWebPage(); }
+                                    if (view != page || webView != page || !allowed(Uri.parse(url))) return;
                                     if (webFeatures != null) webFeatures.pageReady();
+                                    if (!webLoaded) showWebPage();
                                 }
                                 @Override public void onReceivedError(android.webkit.WebView view, android.webkit.WebResourceRequest request, android.webkit.WebResourceError error) {
-                                    if (view == page && request.isForMainFrame() && !webLoaded) failWebLoad("无法加载 WeQ 页面，请检查电脑与网络后重试。");
+                                    if (webView == page && request.isForMainFrame() && !webLoaded) failWebLoad("无法加载 WeQ 页面，请检查电脑与网络后重试。");
+                                }
+                                @Override public void onReceivedHttpError(android.webkit.WebView view, android.webkit.WebResourceRequest request, android.webkit.WebResourceResponse response) {
+                                    if (webView == page && request.isForMainFrame() && !webLoaded && response.getStatusCode() >= 400)
+                                        failWebLoad("无法加载 WeQ 页面，请检查电脑与网络后重试。");
                                 }
                                 @Override public boolean shouldOverrideUrlLoading(android.webkit.WebView view, android.webkit.WebResourceRequest request) { return request.isForMainFrame() ? webFeatures == null || webFeatures.navigate(request.getUrl()) : !allowed(request.getUrl()); }
                                 @Override public android.webkit.WebResourceResponse shouldInterceptRequest(android.webkit.WebView view, android.webkit.WebResourceRequest request) {
@@ -486,7 +524,11 @@ public final class MainActivity extends Activity {
         if (webLoaded) return;
         webLoaded = true;
         android.view.ViewGroup parent = (android.view.ViewGroup) setupView.getParent();
-        if (parent != null) parent.removeView(setupView);
+        if (parent != null) {
+            if (android.animation.ValueAnimator.areAnimatorsEnabled())
+                setupView.animate().alpha(0).setDuration(180).withEndAction(() -> { if (setupView.getParent() == parent && webLoaded) parent.removeView(setupView); setupView.setAlpha(1); }).start();
+            else parent.removeView(setupView);
+        }
         render();
     }
     private void failWebLoad(String message) {
