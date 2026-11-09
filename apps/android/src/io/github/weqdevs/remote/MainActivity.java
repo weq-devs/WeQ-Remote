@@ -573,7 +573,12 @@ public final class MainActivity extends Activity {
         render();
     }
     @Override public void onBackPressed() {
-        if (webView != null) { if (webView.canGoBack()) webView.goBack(); else stopNetwork(true); }
+        if (webView != null) {
+            final android.webkit.WebView page = webView;
+            page.evaluateJavascript("Boolean(window.weqMobileNavigation && window.weqMobileNavigation.back())", result -> {
+                if (webView == page && !"true".equals(result)) MainActivity.super.onBackPressed();
+            });
+        }
         else super.onBackPressed();
     }
     private JSONObject response(String raw) throws Exception {

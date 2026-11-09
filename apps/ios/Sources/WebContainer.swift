@@ -54,7 +54,7 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
             injectionTime: .atDocumentStart, forMainFrameOnly: true))
         view.navigationDelegate = self
         view.uiDelegate = self
-        view.allowsBackForwardNavigationGestures = true
+        view.allowsBackForwardNavigationGestures = false
         view.isInspectable = false
         // 全屏网页由页面自己的 env(safe-area-inset-*) 处理系统区域，WebView 不再额外内缩。
         view.scrollView.contentInsetAdjustmentBehavior = .never
