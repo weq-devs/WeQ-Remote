@@ -78,6 +78,12 @@ final class WebFeatures extends WebChromeClient {
         blobToken = null; blobOffset = 0;
     }
     public final class ExternalLinks {
+        @android.webkit.JavascriptInterface public void startup(String state, String message) {
+            activity.runOnUiThread(() -> {
+                if (!closed && WebAccess.sameOrigin(origin, view.getUrl()) && activity instanceof MainActivity)
+                    ((MainActivity) activity).receiveWebStartup(view, state, message);
+            });
+        }
         @android.webkit.JavascriptInterface public void openMenu() {
             activity.runOnUiThread(() -> {
                 if (!closed && WebAccess.sameOrigin(origin, view.getUrl()) && activity instanceof MainActivity)
@@ -149,6 +155,7 @@ final class WebFeatures extends WebChromeClient {
     }
     void pageReady() {
         if (closed) return;
+        view.evaluateJavascript("(function(){function report(){var s=window.weqRemoteStartup;if(s)weqRemoteLinks.startup(s.state,s.message||'');}if(!window.__weqStartupListener){window.__weqStartupListener=true;window.addEventListener('weq-remote-startup',report);}report();})()", null);
         view.evaluateJavascript("window.weqRemoteShell={openMenu:function(){weqRemoteLinks.openMenu()}};window.dispatchEvent(new Event('weq-remote-shell-ready'));", null);
         view.evaluateJavascript("(function(){if(window.__weqRemoteLinks)return;window.__weqRemoteLinks=true;document.addEventListener('click',function(e){var a=e.target.closest&&e.target.closest('a[download]');if(a&&a.href.indexOf('blob:')===0){e.preventDefault();weqRemoteLinks.downloadBlob(a.href,a.download||'download');}},true);var original=window.open;window.open=function(url,target,features){if(url&&url!=='about:blank'){try{var parsed=new URL(url,location.href);if(parsed.origin!==location.origin){weqRemoteLinks.open(parsed.href);return null;}}catch(e){return null;}}return original.call(window,url,target,features);};})()", null);
     }

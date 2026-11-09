@@ -156,13 +156,12 @@ final class RemoteModel: ObservableObject {
     }
 
     private func failWebLoad(_ error: Error) {
-        _ = error
         webSession?.close()
         webSession = nil
         webReady = false
         connected = false
         message = "网页加载失败"
-        self.error = "无法加载 WeQ 页面，请检查电脑与网络后重试。"
+        self.error = (error as NSError).domain == "WeQRemoteStartup" ? error.localizedDescription : "无法加载 WeQ 页面，请检查电脑与网络后重试。"
     }
 
     func forget() { SavedConnection.delete(); rememberedComputer = false; network.webDataStore.clear(); disconnect() }

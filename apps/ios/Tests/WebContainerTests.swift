@@ -4,6 +4,36 @@ import WebKit
 
 final class WebContainerTests: XCTestCase {
     @MainActor
+    func testHTMLFinishDoesNotEnterUntilBusinessIsReady() {
+        let session = RemoteWebSession(configuration: WKWebViewConfiguration(),
+                                       endpoint: URL(string: "https://192.168.1.8:7691")!)
+        defer { session.close() }
+        var ready = 0
+        session.onReady = { ready += 1 }
+        session.webView(session.view, didFinish: nil)
+        session.receiveStartup("loading", message: nil)
+        XCTAssertEqual(ready, 0)
+        session.receiveStartup("ready", message: nil)
+        session.receiveStartup("ready", message: nil)
+        XCTAssertEqual(ready, 1)
+    }
+    @MainActor
+    func testStartupErrorsStayHomeAndRestoreActionsCanBeShown() {
+        let session = RemoteWebSession(configuration: WKWebViewConfiguration(),
+                                       endpoint: URL(string: "https://192.168.1.8:7691")!)
+        defer { session.close() }
+        var ready = false
+        var failure: Error?
+        session.onReady = { ready = true }
+        session.onFailure = { failure = $0 }
+        session.receiveStartup("error", message: "合成恢复超时")
+        XCTAssertFalse(ready)
+        XCTAssertEqual(failure?.localizedDescription, "合成恢复超时")
+        session.webView(session.view, didStartProvisionalNavigation: nil)
+        session.receiveStartup("action-required", message: nil)
+        XCTAssertTrue(ready)
+    }
+    @MainActor
     func testReloadKeepsWebViewAndDisconnectReturnsHomeWithoutResuming() async {
         let model = RemoteModel(network: EmbeddedNetwork())
         let remembered = model.rememberedComputer

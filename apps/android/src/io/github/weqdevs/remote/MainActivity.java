@@ -55,6 +55,9 @@ public final class MainActivity extends Activity {
     private LinearLayout pairSection;
     private android.widget.ProgressBar progress;
     private boolean webLoaded;
+    private final Runnable webStartupTimeout = () -> {
+        if (webView != null && !webLoaded) failWebLoad("WeQ 页面准备超时，请重试并确认电脑已更新到支持页面就绪通知的版本。");
+    };
     private boolean reconnectPaused;
     private TextView pageSubtitle;
     private Button scanButton;
@@ -485,10 +488,14 @@ public final class MainActivity extends Activity {
                             webFeatures = new WebFeatures(this, webView, origin);
                             webView.setWebViewClient(new android.webkit.WebViewClient() {
                                 private boolean allowed(Uri url) { return "http".equals(url.getScheme()) && "127.0.0.1".equals(url.getHost()) && url.getPort() == Uri.parse(origin).getPort(); }
+                                @Override public void onPageStarted(android.webkit.WebView view, String url, android.graphics.Bitmap icon) {
+                                    if (webView != page) return;
+                                    main.removeCallbacks(webStartupTimeout);
+                                    main.postDelayed(webStartupTimeout, 45000);
+                                }
                                 @Override public void onPageFinished(android.webkit.WebView view, String url) {
                                     if (view != page || webView != page || !allowed(Uri.parse(url))) return;
                                     if (webFeatures != null) webFeatures.pageReady();
-                                    if (!webLoaded) showWebPage();
                                 }
                                 @Override public void onReceivedError(android.webkit.WebView view, android.webkit.WebResourceRequest request, android.webkit.WebResourceError error) {
                                     if (webView == page && request.isForMainFrame() && !webLoaded) failWebLoad("无法加载 WeQ 页面，请检查电脑与网络后重试。");
@@ -520,8 +527,14 @@ public final class MainActivity extends Activity {
             } catch (Exception e) { fail(revision, "无法打开 WeQ Web，请检查电脑上的 Web 服务"); }
         });
     }
+    void receiveWebStartup(android.webkit.WebView page, String state, String message) {
+        if (webView != page || webLoaded) return;
+        if ("ready".equals(state) || "action-required".equals(state)) showWebPage();
+        else if ("error".equals(state)) failWebLoad(message == null || message.isEmpty() ? "WeQ 页面启动失败，请重试。" : message.substring(0, Math.min(message.length(), 500)));
+    }
     private void showWebPage() {
         if (webLoaded) return;
+        main.removeCallbacks(webStartupTimeout);
         webLoaded = true;
         android.view.ViewGroup parent = (android.view.ViewGroup) setupView.getParent();
         if (parent != null) {
@@ -532,8 +545,9 @@ public final class MainActivity extends Activity {
         render();
     }
     private void failWebLoad(String message) {
+        final android.webkit.WebView failedPage = webView;
         main.post(() -> {
-            if (webView == null) return;
+            if (webView == null || webView != failedPage) return;
             busy = false; paired = false; restoring = false; webLoaded = false;
             closeWeb();
             error.setText(message); render();
@@ -560,6 +574,7 @@ public final class MainActivity extends Activity {
         shell.requestApplyInsets();
     }
     private void closeWeb() {
+        main.removeCallbacks(webStartupTimeout);
         webLoaded = false;
         if (webFeatures != null) { webFeatures.close(); webFeatures = null; }
         Client active = node;

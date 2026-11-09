@@ -21,6 +21,16 @@ private final class RemoteShellHandler: NSObject, WKScriptMessageHandler {
     }
 }
 
+private final class RemoteStartupHandler: NSObject, WKScriptMessageHandler {
+    weak var owner: RemoteWebSession?
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard message.frameInfo.isMainFrame, let owner, let url = message.frameInfo.request.url,
+              RemoteWebPolicy.sameOrigin(url, endpoint: owner.endpoint),
+              let value = message.body as? [String: String], let state = value["state"] else { return }
+        owner.receiveStartup(state, message: value["message"])
+    }
+}
+
 @MainActor
 final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate {
     let view: WKWebView
@@ -28,7 +38,9 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
     private let fingerprint: String?
     private var downloads: [ObjectIdentifier: (WKDownload, URL)] = [:]
     private var closed = false
-    // 只有首次页面加载完成才切到全屏网页；失败交回连接页重试。
+    private var startupTimeout: Task<Void, Never>?
+    private var startupFinished = false
+    // 正式页面准备完成才切到全屏；HTML 加载完成仍留在首页。
     var onReady: (() -> Void)?
     var onFailure: ((Error) -> Void)?
     var onLoading: (() -> Void)?
@@ -49,6 +61,12 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
         let shell = RemoteShellHandler()
         shell.owner = self
         configuration.userContentController.add(shell, name: "weqShell")
+        let startup = RemoteStartupHandler()
+        startup.owner = self
+        configuration.userContentController.add(startup, name: "weqStartup")
+        configuration.userContentController.addUserScript(WKUserScript(
+            source: "window.addEventListener('weq-remote-startup',function(){if(window.weqRemoteStartup)window.webkit.messageHandlers.weqStartup.postMessage(window.weqRemoteStartup)});",
+            injectionTime: .atDocumentStart, forMainFrameOnly: true))
         configuration.userContentController.addUserScript(WKUserScript(
             source: "window.weqRemoteShell={openMenu:function(){window.webkit.messageHandlers.weqShell.postMessage('menu')}};",
             injectionTime: .atDocumentStart, forMainFrameOnly: true))
@@ -62,7 +80,31 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         guard !closed else { return }
-        onReady?()
+        webView.evaluateJavaScript("if(window.weqRemoteStartup)window.webkit.messageHandlers.weqStartup.postMessage(window.weqRemoteStartup)", completionHandler: nil)
+    }
+
+    func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        startupFinished = false
+        onLoading?()
+        startupTimeout?.cancel()
+        startupTimeout = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(45)) } catch { return }
+            self?.receiveStartup("error", message: "WeQ 页面准备超时，请重试并确认电脑已更新到支持页面就绪通知的版本。")
+        }
+    }
+
+    func receiveStartup(_ state: String, message: String?) {
+        guard !closed, !startupFinished else { return }
+        if state == "ready" || state == "action-required" {
+            startupFinished = true
+            startupTimeout?.cancel()
+            onReady?()
+        } else if state == "error" {
+            startupFinished = true
+            startupTimeout?.cancel()
+            onFailure?(NSError(domain: "WeQRemoteStartup", code: 1,
+                userInfo: [NSLocalizedDescriptionKey: String((message ?? "WeQ 页面启动失败，请重试。").prefix(500))]))
+        }
     }
 
     fileprivate func openMenu() {
@@ -243,6 +285,8 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
 
     func close() {
         closed = true
+        startupTimeout?.cancel()
+        startupTimeout = nil
         for (_, (download, file)) in downloads { download.cancel { _ in }; removeDownload(file) }
         downloads.removeAll()
         view.stopLoading()
@@ -251,6 +295,7 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
         view.uiDelegate = nil
         view.configuration.userContentController.removeScriptMessageHandler(forName: "weqCapture")
         view.configuration.userContentController.removeScriptMessageHandler(forName: "weqShell")
+        view.configuration.userContentController.removeScriptMessageHandler(forName: "weqStartup")
         onReady = nil
         onFailure = nil
         onLoading = nil
