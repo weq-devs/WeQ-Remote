@@ -55,10 +55,23 @@ class UnsignedIPATests(unittest.TestCase):
             output = root / 'unsigned.ipa'
             result = package.package_app(app, output)
             self.assertFalse(result['signed'])
+            self.assertEqual(result['releaseVersion'], '0.3.2')
             with zipfile.ZipFile(output) as archive:
                 self.assertIn('Payload/WeQRemote.app/Info.plist', archive.namelist())
                 self.assertEqual(archive.read('Payload/WeQRemote.app/linked-resource'), b'Info.plist')
                 self.assertTrue((archive.getinfo('Payload/WeQRemote.app/WeQRemote').external_attr >> 16) & 0o111)
+
+    def test_beta_label_is_recorded_separately_from_system_version(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            app = self.app(root)
+            path = app / 'Info.plist'
+            info = plistlib.loads(path.read_bytes())
+            info.update(CFBundleShortVersionString='1.0.0', WeQReleaseVersion='1.0.0b1')
+            path.write_bytes(plistlib.dumps(info))
+            result = package.package_app(app, root / 'beta.ipa')
+            self.assertEqual(result['version'], '1.0.0')
+            self.assertEqual(result['releaseVersion'], '1.0.0b1')
 
     def test_rejects_simulator_signed_wrong_architecture_and_truncated_binary(self):
         for data in (macho(platform=7), macho(signature=True), macho(cpu=0x01000007), b'fake', macho()[:-1]):

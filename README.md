@@ -2,9 +2,9 @@
 
 WeQ 的独立手机连接客户端。iOS 与 Android 负责扫码、连接、凭据和原生 WebView，业务页面从电脑上的 WeQ Web 服务加载，不维护另一套聊天界面。
 
-当前版本：iOS / Android [0.2.0](https://github.com/weq-devs/WeQ-Remote/releases/tag/v0.2.0)，iOS build 7、Android versionCode 5。安装包仍为开发测试用途，未上架应用商店。源码仓库：[weq-devs/WeQ-Remote](https://github.com/weq-devs/WeQ-Remote)（私有，默认分支 `dev`）。发布说明见 [0.2.0](docs/releases/0.2.0.md)。
+当前源码版本：iOS / Android 1.0.0b1，iOS build 8、Android versionCode 6。安装包用于 Beta 测试，未上架应用商店。源码仓库：[weq-devs/WeQ-Remote](https://github.com/weq-devs/WeQ-Remote)（私有，默认分支 `dev`）。发布说明见 [1.0.0b1](docs/releases/1.0.0b1.md)。
 
-当前源码版本为 0.2.0，包含 v4 多入口配对、原生连接页调整及前后台网页保留；发布内容与安装包说明见 [0.2.0](docs/releases/0.2.0.md)。实际发布状态以 [GitHub Releases](https://github.com/weq-devs/WeQ-Remote/releases) 为准。
+1.0.0b1 包含全屏网页、连接菜单、三段式连接首页、启动阶段显示与恢复连接修复。两端应用内显示 1.0.0b1；iOS 系统版本字段为 1.0.0，Beta 标识单独保存。实际发布状态以 [GitHub Releases](https://github.com/weq-devs/WeQ-Remote/releases) 为准。
 
 开发源码还接入网页设备选文件、麦克风/摄像头授权、外链、文件保存及当前界面截图。
 连接时留在首页并显示资源下载、恢复检查、账号初始化、界面绘制等实际阶段，真实界面渲染后才进入；会话和好友等业务列表在界面内异步加载，不阻塞启动。失败或超时在首页提示重试，需电脑网页和手机安装包同时更新。

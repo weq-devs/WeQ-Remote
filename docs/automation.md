@@ -66,15 +66,17 @@ python3 apps/ios/scripts/build_unsigned_ipa.py
 
 ## GitHub Release
 
-当前对外版本为 iOS / Android 0.2.0（iOS build 7、Android versionCode 5）；此前 0.3.x 为未发布的开发版本，以下历史构建回执保留原值。
+当前源码为 iOS / Android 1.0.0b1（iOS 系统版本 1.0.0、build 8，Android versionCode 6），实际发布状态以 GitHub Releases 为准；以下历史构建回执保留原值。
 
-`.github/workflows/release.yml` 只支持手动触发，且必须运行在已存在的 `vMAJOR.MINOR.PATCH` 标签上；在分支上误触发会失败，不创建标签或发布。发布前先经用户授权提交并推送版本、文档及标签，再执行：
+`.github/workflows/release.yml` 只支持手动触发，且必须运行在已存在的 `vMAJOR.MINOR.PATCH` 或 `vMAJOR.MINOR.PATCHbN` 标签上（N 为不带前导零的正整数）；Beta 自动标记为 Pre-release，不替换 Latest 正式版。在分支上误触发会失败，不创建标签或发布。发布前先经用户授权提交并推送版本、文档及标签，再执行：
 
 ```sh
-gh workflow run release.yml --ref v0.2.0
+gh workflow run release.yml --ref v1.0.0b1
 ```
 
 Release 复用同一标签提交的 CI、Android 普通 APK 和 iOS 未签名 IPA 工作流，各自使用独立并发组，避免可复用工作流相互取消。三个流程全部成功后，发布 Job 只下载当前运行 ID / attempt 的两端产物。`scripts/release_assets.py` 复核版本、SHA-256、干净源码提交、IPA 实际身份 / 真机二进制与两端来源记录；仅将普通 APK、未签名 IPA、两份来源记录和汇总 `SHA256SUMS` 作为附件。
+
+iOS 的系统版本字段只允许数字和点，Beta 完整标识放在 `Support/Info.plist` 的 `WeQReleaseVersion` 中并用于应用内显示；打包来源记录同时保存 `version` 与 `releaseVersion`。发布时分别核对 IPA 的数字版本和完整标识，两者均须与标签匹配。
 
 发布使用 `gh release create --verify-tag`，不会隐式新建标签，不覆盖已有 Release 或附件。GitHub CLI 先准备草稿并上传附件，全部成功后发布；失败不冒称已发布，不自动删除现场或重写标签。Release 附件不受 Actions Artifact 的 3 天保留期限制。源码构建、GitHub 发布不等于商店上架或签名安装，具体边界见 [0.1.0 发布说明](releases/0.1.0.md)。
 

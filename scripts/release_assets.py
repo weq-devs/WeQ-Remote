@@ -18,8 +18,8 @@ IDENTITY = 'io.github.weqdevs.remote'
 
 
 def version_from_tag(tag):
-    if not re.fullmatch(r'v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)', tag):
-        raise ValueError('Expected an existing vMAJOR.MINOR.PATCH tag')
+    if not re.fullmatch(r'v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:b[1-9][0-9]*)?', tag):
+        raise ValueError('Expected an existing vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCHbN tag')
     return tag[1:]
 
 
@@ -51,6 +51,7 @@ def checked_artifact(directory, filename):
 
 def prepare(tag, commit, artifacts, output):
     version = version_from_tag(tag)
+    ios_version = version.split('b', 1)[0]
     if not re.fullmatch('[0-9a-f]{40}', commit):
         raise ValueError('Expected full source commit')
     android, android_digest = checked_artifact(artifacts / 'android', f'weq-remote-{version}-arm64.apk')
@@ -62,7 +63,9 @@ def prepare(tag, commit, artifacts, output):
     for record in (ios, apk):
         if record.get('sourceCommit') != commit or record.get('sourceDirty') is not False:
             raise ValueError('Artifact source commit/cleanliness mismatch')
-    if (ios['artifact'].get('version') != version or ios['artifact'].get('signed') is not False
+    if (ios['artifact'].get('version') != ios_version
+            or ios['artifact'].get('releaseVersion', ios['artifact'].get('version')) != version
+            or ios['artifact'].get('signed') is not False
             or ios['artifact'].get('bundleIdentifier') != IDENTITY or ios['artifact'].get('sha256') != ipa_digest):
         raise ValueError('iOS provenance mismatch')
     if (apk['identity'].get('versionName') != version or apk['identity'].get('name') != IDENTITY
@@ -71,7 +74,8 @@ def prepare(tag, commit, artifacts, output):
     with zipfile.ZipFile(ipa) as archive:
         root = 'Payload/WeQRemote.app/'
         info = plistlib.loads(archive.read(root + 'Info.plist'))
-        if (info.get('CFBundleIdentifier') != IDENTITY or info.get('CFBundleShortVersionString') != version
+        if (info.get('CFBundleIdentifier') != IDENTITY or info.get('CFBundleShortVersionString') != ios_version
+                or info.get('WeQReleaseVersion', info.get('CFBundleShortVersionString')) != version
                 or info.get('CFBundleSupportedPlatforms') != ['iPhoneOS']):
             raise ValueError('IPA identity/version mismatch')
         for name in archive.namelist():

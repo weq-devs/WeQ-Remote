@@ -84,4 +84,6 @@ def package_app(app, output):
         staging.unlink(missing_ok=True)
     digest = hashlib.sha256(output.read_bytes()).hexdigest()
     return {'filename': output.name, 'sha256': digest, 'bundleIdentifier': info['CFBundleIdentifier'],
-            'version': info['CFBundleShortVersionString'], 'build': info['CFBundleVersion'], 'signed': False}
+            'version': info['CFBundleShortVersionString'],
+            'releaseVersion': info.get('WeQReleaseVersion', info['CFBundleShortVersionString']),
+            'build': info['CFBundleVersion'], 'signed': False}

@@ -23,11 +23,12 @@ COMMIT = 'a' * 40
 
 
 class ReleaseAssetsTests(unittest.TestCase):
-    def artifacts(self, root, ipa_version='0.1.0'):
+    def artifacts(self, root, ipa_version=None, version='0.1.0', ipa_release_version=None):
+        ios_version = version.split('b', 1)[0]
         inputs = root / 'inputs'
         for platform in ('android', 'ios'):
             (inputs / platform).mkdir(parents=True)
-        apk = inputs / 'android/weq-remote-0.1.0-arm64.apk'
+        apk = inputs / 'android' / f'weq-remote-{version}-arm64.apk'
         with zipfile.ZipFile(apk, 'w') as archive:
             archive.writestr('classes.dex', b'synthetic fixture')
         ipa = inputs / 'ios/weq-remote-unsigned.ipa'
@@ -36,7 +37,8 @@ class ReleaseAssetsTests(unittest.TestCase):
         with zipfile.ZipFile(ipa, 'w') as archive:
             prefix = 'Payload/WeQRemote.app/'
             archive.writestr(prefix + 'Info.plist', plistlib.dumps({
-                'CFBundleIdentifier': release.IDENTITY, 'CFBundleShortVersionString': ipa_version,
+                'CFBundleIdentifier': release.IDENTITY, 'CFBundleShortVersionString': ipa_version or ios_version,
+                'WeQReleaseVersion': ipa_release_version or version,
                 'CFBundleSupportedPlatforms': ['iPhoneOS']}))
             archive.writestr(prefix + 'WeQRemote', binary)
             archive.writestr(prefix + 'Frameworks/TailscaleKit.framework/TailscaleKit', binary)
@@ -45,15 +47,50 @@ class ReleaseAssetsTests(unittest.TestCase):
             (path.parent / 'SHA256SUMS').write_text(digest + '  ./' + path.name + '\n')
             record = {'sourceCommit': COMMIT, 'sourceDirty': False}
             if path == apk:
-                record.update(identity={'name': release.IDENTITY, 'versionName': '0.1.0', 'versionCode': '4'},
+                record.update(identity={'name': release.IDENTITY, 'versionName': version, 'versionCode': '4'},
                               filename=apk.name, sha256=digest)
                 name = 'android-build.json'
             else:
-                record['artifact'] = {'version': '0.1.0', 'signed': False,
+                record['artifact'] = {'version': ios_version, 'releaseVersion': version, 'signed': False,
                                       'bundleIdentifier': release.IDENTITY, 'sha256': digest}
                 name = 'build.json'
             (path.parent / name).write_text(json.dumps(record))
         return inputs
+
+    def test_beta_release_preserves_label_with_numeric_ios_version(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            inputs = self.artifacts(root, version='1.0.0b1')
+            release.prepare('v1.0.0b1', COMMIT, inputs, root / 'release')
+            self.assertTrue((root / 'release/weq-remote-1.0.0b1-ios-arm64-unsigned.ipa').is_file())
+            self.assertTrue((root / 'release/weq-remote-1.0.0b1-android-arm64.apk').is_file())
+
+    def test_beta_label_and_numeric_version_checked_independently(self):
+        for overrides in ({'ipa_release_version': '1.0.0b2'}, {'ipa_version': '1.0.1'}):
+            with self.subTest(overrides=overrides), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                inputs = self.artifacts(root, version='1.0.0b1', **overrides)
+                with self.assertRaisesRegex(ValueError, 'IPA identity/version'):
+                    release.prepare('v1.0.0b1', COMMIT, inputs, root / 'release')
+                self.assertFalse((root / 'release').exists())
+
+    def test_beta_provenance_requires_release_label(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            inputs = self.artifacts(root, version='1.0.0b1')
+            path = inputs / 'ios/build.json'
+            record = json.loads(path.read_text())
+            del record['artifact']['releaseVersion']
+            path.write_text(json.dumps(record))
+            with self.assertRaisesRegex(ValueError, 'iOS provenance'):
+                release.prepare('v1.0.0b1', COMMIT, inputs, root / 'release')
+
+    def test_beta_tag_format(self):
+        for tag in ('v1.0.0b1', 'v1.0.0b12'):
+            self.assertEqual(release.version_from_tag(tag), tag[1:])
+        for tag in ('v1.0.0b0', 'v1.0.0b01', 'v1.0.0b', 'v1.0.0b1/escape', 'v1.0.0b1;echo secret'):
+            with self.subTest(tag=tag), self.assertRaises(ValueError):
+                release.version_from_tag(tag)
 
     def test_prepare_whitelisted_versioned_files_and_checksums(self):
         with tempfile.TemporaryDirectory() as directory:
