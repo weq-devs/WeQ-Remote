@@ -14,6 +14,7 @@ final class RemoteModel: ObservableObject {
     @Published private(set) var checkedAt: Date?
     @Published private(set) var error: String?
     @Published private(set) var webSession: RemoteWebSession?
+    @Published private(set) var webReady = false
     @Published private(set) var rememberedComputer = false
     let network: EmbeddedNetwork
     private var api: RemoteAPI?
@@ -127,6 +128,31 @@ final class RemoteModel: ObservableObject {
             } catch { session.invalidateAndCancel(); throw error }
         }
         return selected
+    }
+
+    // 页面加载完成后才切到全屏网页；失败时留在连接页，保留手动重连入口。
+    private func adoptWebSession(_ session: RemoteWebSession) {
+        webReady = false
+        session.onReady = { [weak self] in
+            guard let self, self.webSession === session else { return }
+            self.webReady = true
+            self.error = nil
+        }
+        session.onFailure = { [weak self] error in
+            guard let self, self.webSession === session, !self.webReady else { return }
+            self.failWebLoad(error)
+        }
+        webSession = session
+    }
+
+    private func failWebLoad(_ error: Error) {
+        _ = error
+        webSession?.close()
+        webSession = nil
+        webReady = false
+        connected = false
+        message = "网页加载失败"
+        self.error = "无法加载 WeQ 页面，请检查电脑与网络后重试。"
     }
 
     func forget() { SavedConnection.delete(); rememberedComputer = false; network.webDataStore.clear(); disconnect() }
@@ -264,7 +290,7 @@ final class RemoteModel: ObservableObject {
             if webSession == nil, !testMode {
                 let session = try await network.webSession(endpoint: api.endpoint, token: credential.token, fingerprint: fingerprint)
                 guard generation == revision else { session.close(); return }
-                webSession = session
+                adoptWebSession(session)
             }
             latency = requestMillis
             checkedAt = Date()
@@ -286,7 +312,7 @@ final class RemoteModel: ObservableObject {
                         guard generation == revision else { web?.close(); replacement.api.session.invalidateAndCancel(); return }
                         api.session.invalidateAndCancel(); self.api = replacement.api
                         adopted = true
-                        if let web { webSession?.close(); webSession = web }
+                        if let web { webSession?.close(); adoptWebSession(web) }
                         fingerprint = pin; computerAddress = replacement.api.endpoint.host
                         latency = replacement.latencyMillis; connected = true; message = "电脑在线"; self.error = nil; checkedAt = Date()
                         return

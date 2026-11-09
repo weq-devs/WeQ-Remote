@@ -51,17 +51,28 @@ struct RemoteView: View {
         Color(uiColor: UIColor { $0.userInterfaceStyle == .dark ? UIColor(red: 0.36, green: 0.83, blue: 0.75, alpha: 1) : UIColor(red: 0.02, green: 0.48, blue: 0.43, alpha: 1) })
     }
 
+    // 网页加载出来之前留在连接页，用原生进度替代空白的全屏网页。
+    private var loadingStage: String? {
+        if model.webSession != nil, !model.webReady { return "正在加载 WeQ 页面" }
+        if model.code != nil { return "等待电脑确认" }
+        if model.busy { return "正在连接电脑" }
+        return nil
+    }
+
+    private var loadingDetail: String {
+        if model.code != nil { return "请在电脑上核对校验码并允许访问" }
+        if model.webSession != nil, !model.webReady { return model.computerAddress ?? "正在从电脑加载页面" }
+        return model.computerAddress ?? "正在准备与电脑的连接"
+    }
+
     var body: some View {
         NavigationStack {
-            if let session = model.webSession {
+            if let session = model.webSession, model.webReady {
+                // 页面加载完成后才进入全屏网页；不显示任何原生栏或按钮。
                 WebContainer(session: session)
                     .id(ObjectIdentifier(session))
-                    // 网页占满整个屏幕，原生操作收进右侧悬浮菜单，不再占用顶端栏高度。
+                    .ignoresSafeArea()
                     .toolbar(.hidden, for: .navigationBar)
-                    .safeAreaInset(edge: .top, spacing: 0) {
-                        if let error = model.error { connectionNotice(error) }
-                    }
-                    .overlay(alignment: .trailing) { webControls(session: session) }
             } else {
             ScrollView {
                 VStack(alignment: .leading, spacing: 32) {
@@ -71,6 +82,21 @@ struct RemoteView: View {
                         Text("WeQ Remote").font(.system(size: 30, weight: .semibold))
                         Text(model.rememberedComputer ? "我的电脑" : "连接电脑").font(.title3).foregroundStyle(.secondary)
                     }.padding(.top, 24)
+                    if let stage = loadingStage {
+                        HStack(spacing: 16) {
+                            ProgressView().controlSize(.regular).tint(accent)
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(stage).font(.headline)
+                                Text(loadingDetail).font(.footnote).foregroundStyle(.secondary).lineLimit(2)
+                            }
+                            Spacer(minLength: 0)
+                        }
+                        .padding(20)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 14))
+                        .accessibilityElement(children: .combine)
+                        .accessibilityIdentifier("connectionProgress")
+                    }
                     if model.code == nil && !model.rememberedComputer {
                         VStack(alignment: .leading, spacing: 24) {
                             Button { Task { await scan() } } label: {
@@ -108,7 +134,6 @@ struct RemoteView: View {
                                 Text(model.message == "未配对" && model.rememberedComputer ? "等待连接" : model.message)
                                     .font(.headline).accessibilityIdentifier("computerState")
                                 Spacer()
-                                if model.busy { ProgressView().accessibilityLabel("请求进行中") }
                             }
                             if let host = model.computerAddress { Text(host).font(.subheadline.monospaced()).foregroundStyle(.secondary) }
                             if let code = model.code {
@@ -151,34 +176,6 @@ struct RemoteView: View {
     }
 
     private func pair() { pairingTask = Task { await model.pair() } }
-
-    private func connectionNotice(_ error: String) -> some View {
-        HStack(spacing: 12) {
-            Image(systemName: "wifi.exclamationmark").foregroundStyle(.orange)
-            Text(error).font(.footnote).accessibilityIdentifier("connectionError")
-            Spacer(minLength: 0)
-            Button { Task { await model.refresh() } } label: { Image(systemName: "arrow.clockwise").frame(width: 44, height: 44) }
-                .accessibilityLabel("重试连接").disabled(model.busy)
-        }.padding(.horizontal, 16).padding(.vertical, 4).background(.regularMaterial)
-    }
-
-    // 顶端原生栏改为右侧悬浮菜单，网页因此占满整屏；操作与原先一致。
-    private func webControls(session: RemoteWebSession) -> some View {
-        Menu {
-            Button { session.view.reload() } label: { Label("重新加载", systemImage: "arrow.clockwise") }
-            Button { model.disconnect(); Task { await network.stop() } } label: { Label("断开电脑", systemImage: "xmark") }
-            Button(role: .destructive) { model.forget(); Task { await network.stop() } } label: { Label("删除电脑", systemImage: "trash") }
-        } label: {
-            Image(systemName: "ellipsis")
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .frame(width: 34, height: 44)
-                .background(.ultraThinMaterial, in: Capsule())
-                .opacity(0.72)
-        }
-        .padding(.trailing, 6)
-        .accessibilityLabel("连接操作")
-    }
 
     private func scan() async {
         model.preparePairing()

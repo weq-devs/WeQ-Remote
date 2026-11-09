@@ -53,7 +53,8 @@ public final class MainActivity extends Activity {
     EditText invitation;
     Button pairButton, verifyButton, disconnectButton;
     private LinearLayout pairSection;
-    private TextView webNotice;
+    private android.widget.ProgressBar progress;
+    private boolean webLoaded;
     private TextView pageSubtitle;
     private Button scanButton;
     private final Runnable networkPoll = new Runnable() { public void run() { refreshNetwork(); } };
@@ -76,6 +77,18 @@ public final class MainActivity extends Activity {
         }
         try { rememberedComputer = getIntent().getData() == null && ConnectionStore.load(this) != null; } catch (Exception ignored) { }
         buildUI();
+        // 网页与连接页都铺满整屏；系统栏透明，连接页自己按 insets 留白。
+        if (android.os.Build.VERSION.SDK_INT >= 30) {
+            getWindow().setDecorFitsSystemWindows(false);
+            getWindow().setStatusBarColor(Color.TRANSPARENT);
+            getWindow().setNavigationBarColor(Color.TRANSPARENT);
+            boolean dark = (getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES;
+            android.view.WindowInsetsController controller = getWindow().getInsetsController();
+            if (controller != null) {
+                int mask = android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS | android.view.WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS;
+                controller.setSystemBarsAppearance(dark ? 0 : mask, mask);
+            }
+        }
         if (!BuildConfig.TESTING) getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE);
         invitation.setSaveEnabled(false);
         if (testControl == null) {
@@ -143,6 +156,8 @@ public final class MainActivity extends Activity {
         invitation = new EditText(this); invitation.setHint("粘贴配对链接"); invitation.setTextSize(16); invitation.setBackgroundColor(Color.TRANSPARENT); invitation.setSingleLine(true); invitation.setMinHeight(dp(52)); invitation.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_URI | android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS); invitation.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_GO); invitation.setOnEditorActionListener((view, action, event) -> { if (action == android.view.inputmethod.EditorInfo.IME_ACTION_GO) { pair(); return true; } return false; }); invitation.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO); input.addView(invitation, new LinearLayout.LayoutParams(0, -2, 1));
         pairButton = button("", this::pair); pairButton.setContentDescription("连接电脑"); pairButton.setCompoundDrawablesWithIntrinsicBounds(android.R.drawable.ic_media_play, 0, 0, 0); pairButton.setMinWidth(0); pairButton.setMinimumWidth(0); pairButton.setPadding(dp(12), 0, dp(12), 0); input.addView(pairButton, new LinearLayout.LayoutParams(dp(48), dp(48)));
         computerState = text(rememberedComputer ? "正在连接电脑" : "未配对", 18); computerState.setTypeface(null, android.graphics.Typeface.BOLD); computerState.setPadding(0, dp(32), 0, 0); content.addView(computerState);
+        progress = new android.widget.ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal); progress.setIndeterminate(true); progress.setVisibility(View.GONE);
+        LinearLayout.LayoutParams progressParams = new LinearLayout.LayoutParams(-1, dp(4)); progressParams.topMargin = dp(14); content.addView(progress, progressParams);
         detail = text("", 14); detail.setPadding(0, dp(10), 0, dp(10)); content.addView(detail);
         verifyButton = button("验证连通", this::verify); verifyButton.setVisibility(View.GONE); content.addView(verifyButton);
         Button retry = button("重新连接", () -> restoreComputer()); retry.setCompoundDrawablesWithIntrinsicBounds(android.R.drawable.ic_popup_sync, 0, 0, 0); retry.setVisibility(rememberedComputer ? View.VISIBLE : View.GONE); content.addView(retry); retry.setTag("retry");
@@ -178,6 +193,8 @@ public final class MainActivity extends Activity {
         pairButton.setEnabled(!busy && claimID == null && invitation.length() > 0);
         pairButton.setVisibility(invitation.length() > 0 ? View.VISIBLE : View.GONE);
         verifyButton.setVisibility(paired && BuildConfig.TESTING ? View.VISIBLE : View.GONE); verifyButton.setEnabled(!busy);
+        boolean loading = busy || claimID != null || (paired && !webLoaded);
+        progress.setVisibility(loading ? View.VISIBLE : View.GONE);
         disconnectButton.setVisibility(paired || claimID != null || rememberedComputer ? View.VISIBLE : View.GONE);
         pairSection.setVisibility(paired || claimID != null || rememberedComputer ? View.GONE : View.VISIBLE);
         View retry = setupView.findViewWithTag("retry"); retry.setVisibility(rememberedComputer && !paired ? View.VISIBLE : View.GONE); retry.setEnabled(!busy);
@@ -401,14 +418,14 @@ public final class MainActivity extends Activity {
                 if (!"WeQ Remote".equals(status.getString("product")) || status.getInt("protocol") != 1 || !"status:read".equals(status.getString("scope")) || !status.getBoolean("online")) throw new Exception("电脑返回了不兼容的数据");
                 long elapsed = SystemClock.elapsedRealtime() - started;
                 boolean webReady = client.hasWeb();
-                main.post(() -> { if (revision != generation || !credential.equals(token)) return; busy = false; computerState.setText("电脑在线"); detail.setText("地址  " + address + "\n请求耗时  " + elapsed + " ms\n最近验证  " + DateFormat.getTimeInstance().format(new Date())); if (webNotice != null) webNotice.setVisibility(View.GONE); render(); if (restoring || webView != null && !webReady) { restoring = false; if (visible) openWeb(); } });
+                main.post(() -> { if (revision != generation || !credential.equals(token)) return; busy = false; computerState.setText("电脑在线"); detail.setText("地址  " + address + "\n请求耗时  " + elapsed + " ms\n最近验证  " + DateFormat.getTimeInstance().format(new Date())); render(); if (restoring || webView != null && !webReady) { restoring = false; if (visible) openWeb(); } });
             } catch (Exception e) { fail(revision, e.getMessage()); }
         });
     }
     private void openWeb() {
         final Client client = node; final int revision = generation;
         final String address = endpoint, credential = token, localSecret = Invitation.credential();
-        busy = true; render();
+        busy = true; webLoaded = false; computerState.setText("正在加载 WeQ 页面"); render();
         worker.execute(() -> {
             try {
                 final String origin = client.openWeb(address, credential, localSecret);
@@ -423,6 +440,7 @@ public final class MainActivity extends Activity {
                             if (webFeatures != null) { webFeatures.close(); webFeatures = null; }
                             if (webView != null) { webView.stopLoading(); webView.destroy(); }
                             webView = new android.webkit.WebView(this);
+                            final android.webkit.WebView page = webView;
                             android.webkit.WebSettings settings = webView.getSettings();
                             settings.setJavaScriptEnabled(true); settings.setDomStorageEnabled(true);
                             settings.setUserAgentString(settings.getUserAgentString() + " WeQRemote");
@@ -431,43 +449,86 @@ public final class MainActivity extends Activity {
                             cookies.setAcceptThirdPartyCookies(webView, false);
                             webFeatures = new WebFeatures(this, webView, origin);
                             webView.setWebViewClient(new android.webkit.WebViewClient() {
-                                @Override public void onPageFinished(android.webkit.WebView view, String url) { if (webFeatures != null && allowed(Uri.parse(url))) webFeatures.pageReady(); }
+                                private boolean firstLoad = true;
                                 private boolean allowed(Uri url) { return "http".equals(url.getScheme()) && "127.0.0.1".equals(url.getHost()) && url.getPort() == Uri.parse(origin).getPort(); }
+                                @Override public void onPageFinished(android.webkit.WebView view, String url) {
+                                    if (view != page || !allowed(Uri.parse(url))) return;
+                                    if (firstLoad) { firstLoad = false; showWebPage(); }
+                                    if (webFeatures != null) webFeatures.pageReady();
+                                }
+                                @Override public void onReceivedError(android.webkit.WebView view, android.webkit.WebResourceRequest request, android.webkit.WebResourceError error) {
+                                    if (view == page && request.isForMainFrame() && !webLoaded) failWebLoad("无法加载 WeQ 页面，请检查电脑与网络后重试。");
+                                }
                                 @Override public boolean shouldOverrideUrlLoading(android.webkit.WebView view, android.webkit.WebResourceRequest request) { return request.isForMainFrame() ? webFeatures == null || webFeatures.navigate(request.getUrl()) : !allowed(request.getUrl()); }
                                 @Override public android.webkit.WebResourceResponse shouldInterceptRequest(android.webkit.WebView view, android.webkit.WebResourceRequest request) {
                                     if (allowed(request.getUrl())) return null;
                                     return new android.webkit.WebResourceResponse("text/plain", "UTF-8", 403, "Forbidden", java.util.Collections.emptyMap(), new java.io.ByteArrayInputStream(new byte[0]));
                                 }
                             });
-                            LinearLayout shell = new LinearLayout(this); shell.setOrientation(LinearLayout.VERTICAL);
-                            LinearLayout tools = new LinearLayout(this);
-                            android.widget.ImageButton close = new android.widget.ImageButton(this); close.setImageResource(android.R.drawable.ic_menu_close_clear_cancel); close.setContentDescription("断开电脑"); close.setOnClickListener(view -> stopNetwork(true));
-                            android.widget.ImageButton reload = new android.widget.ImageButton(this); reload.setImageResource(android.R.drawable.ic_popup_sync); reload.setContentDescription("重新加载"); reload.setOnClickListener(view -> webView.reload());
-                            android.widget.ImageButton forget = new android.widget.ImageButton(this); forget.setImageResource(android.R.drawable.ic_menu_delete); forget.setContentDescription("删除电脑"); forget.setOnClickListener(view -> forgetComputer());
-                            tools.addView(close, new LinearLayout.LayoutParams(dp(48), dp(48))); tools.addView(reload, new LinearLayout.LayoutParams(dp(48), dp(48)));
-                            tools.addView(forget, new LinearLayout.LayoutParams(dp(48), dp(48)));
-                            shell.addView(tools);
-                            webNotice = text("", 14); webNotice.setPadding(dp(16), dp(10), dp(16), dp(10)); webNotice.setVisibility(View.GONE); webNotice.setContentDescription("连接状态"); webNotice.setOnClickListener(view -> verify()); shell.addView(webNotice);
-                            shell.addView(webView, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1));
-                            if (android.os.Build.VERSION.SDK_INT >= 30) shell.setOnApplyWindowInsetsListener((view, insets) -> {
-                                android.graphics.Insets bars = insets.getInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.ime());
-                                view.setPadding(bars.left, bars.top, bars.right, bars.bottom); return insets;
-                            });
-                            setContentView(shell); shell.requestApplyInsets(); webView.loadUrl(origin + "/");
+                            // 网页铺满整屏，不再显示任何原生栏或按钮；未加载完时用连接页盖在上面显示进度。
+                            LinearLayout shell = new LinearLayout(this); shell.setOrientation(LinearLayout.VERTICAL); shell.setBackgroundColor(webBackgroundColor());
+                            shell.addView(webView, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.MATCH_PARENT));
+                            if (android.os.Build.VERSION.SDK_INT >= 30 && !webViewHandlesSafeArea()) applyWebInsets(shell);
+                            android.widget.FrameLayout root = new android.widget.FrameLayout(this);
+                            android.view.ViewGroup parent = (android.view.ViewGroup) setupView.getParent();
+                            if (parent != null) parent.removeView(setupView);
+                            root.addView(shell, new android.widget.FrameLayout.LayoutParams(-1, -1));
+                            root.addView(setupView, new android.widget.FrameLayout.LayoutParams(-1, -1));
+                            setContentView(root); render();
+                            webView.loadUrl(origin + "/");
                         });
                     });
                 });
             } catch (Exception e) { fail(revision, "无法打开 WeQ Web，请检查电脑上的 Web 服务"); }
         });
     }
+    private void showWebPage() {
+        if (webLoaded) return;
+        webLoaded = true;
+        android.view.ViewGroup parent = (android.view.ViewGroup) setupView.getParent();
+        if (parent != null) parent.removeView(setupView);
+        render();
+    }
+    private void failWebLoad(String message) {
+        main.post(() -> {
+            if (webView == null) return;
+            busy = false; paired = false; restoring = false; webLoaded = false;
+            closeWeb();
+            error.setText(message); render();
+        });
+    }
+    private int webBackgroundColor() {
+        boolean dark = (getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES;
+        return dark ? Color.rgb(18, 20, 22) : Color.rgb(245, 247, 247);
+    }
+    // Chromium 136 起全屏 WebView 可以把系统栏安全区透传给网页的 env(safe-area-inset-*).
+    private boolean webViewHandlesSafeArea() {
+        try {
+            android.content.pm.PackageInfo info = android.webkit.WebView.getCurrentWebViewPackage();
+            if (info == null || info.versionName == null) return false;
+            return Integer.parseInt(info.versionName.split("\\.")[0]) >= 136;
+        } catch (Exception e) { return false; }
+    }
+    private void applyWebInsets(LinearLayout shell) {
+        shell.setOnApplyWindowInsetsListener((view, insets) -> {
+            android.graphics.Insets bars = insets.getInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.ime());
+            view.setPadding(bars.left, bars.top, bars.right, bars.bottom);
+            return insets;
+        });
+        shell.requestApplyInsets();
+    }
     private void closeWeb() {
+        webLoaded = false;
         if (webFeatures != null) { webFeatures.close(); webFeatures = null; }
         Client active = node;
         if (active != null) worker.execute(active::closeWeb);
         if (webView == null) return;
         webView.stopLoading(); webView.loadUrl("about:blank"); webView.clearHistory(); webView.clearCache(true); webView.destroy(); webView = null;
         android.webkit.CookieManager.getInstance().removeAllCookies(null);
+        android.view.ViewGroup parent = (android.view.ViewGroup) setupView.getParent();
+        if (parent != null) parent.removeView(setupView);
         setContentView(setupView);
+        render();
     }
     @Override public void onBackPressed() {
         if (webView != null) { if (webView.canGoBack()) webView.goBack(); else stopNetwork(true); }
@@ -483,9 +544,8 @@ public final class MainActivity extends Activity {
         if (revision != generation) return;
         boolean revoked = "设备未授权或授权已被撤销，请重新配对".equals(message);
         if (!revoked && webView != null) {
+            // 全屏网页不弹原生提示；页面自己显示重连状态，壳只静默重试。
             busy = false;
-            webNotice.setText(message == null ? "连接暂时不可用，正在重试" : message);
-            webNotice.setVisibility(View.VISIBLE);
             main.removeCallbacks(reconnectPoll);
             if (visible) main.postDelayed(reconnectPoll, 5000);
             return;

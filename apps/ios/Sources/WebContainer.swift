@@ -18,6 +18,9 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
     private let fingerprint: String?
     private var downloads: [ObjectIdentifier: (WKDownload, URL)] = [:]
     private var closed = false
+    // 只有首次页面加载完成才切到全屏网页；失败交回连接页重试。
+    var onReady: (() -> Void)?
+    var onFailure: ((Error) -> Void)?
 
     init(configuration: WKWebViewConfiguration, endpoint: URL, fingerprint: String? = nil) {
         self.endpoint = endpoint
@@ -35,6 +38,23 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
         view.uiDelegate = self
         view.allowsBackForwardNavigationGestures = true
         view.isInspectable = false
+        // 全屏网页由页面自己的 env(safe-area-inset-*) 处理系统区域，WebView 不再额外内缩。
+        view.scrollView.contentInsetAdjustmentBehavior = .never
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        guard !closed else { return }
+        onReady?()
+    }
+
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        guard !closed else { return }
+        onFailure?(error)
+    }
+
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        guard !closed else { return }
+        onFailure?(error)
     }
 
     func webView(_ webView: WKWebView, didReceive challenge: URLAuthenticationChallenge,
