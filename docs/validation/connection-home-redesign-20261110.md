@@ -8,7 +8,7 @@
 
 - **顶部状态条**：小型品牌标记、“WeQ Remote”和连接状态胶囊（未连接 / 连接中 / 等待批准 / 正在进入 / 已连接）。只占一行，不再用 30pt 大标题压住页面。
 - **中部状态区**：同心圆标记居中，下面按状态显示连接阶段、电脑地址、六位校验码或失败原因；加载时圆环内换成进度指示。
-- **底部操作坞**：随状态切换“扫码连接”主按钮 + “粘贴配对链接”输入行，或“重新连接” + “删除电脑”。主操作贴近拇指，输入行自带箭头提交，底部保留一行网络状态小字。
+- **底部操作坞**：随状态切换“扫码连接”主按钮 + “粘贴配对链接”输入行，或“重新连接” + “删除电脑”。主操作贴近拇指，输入行自带箭头提交；最底部是网络状态和版本号两行小字（Android 从包信息读取 versionName，iOS 读 CFBundleShortVersionString）。
 
 两端同步实现，颜色、间距和状态文案一致：iOS 用 SwiftUI，Android 用原生控件（`MainActivity` 首页布局重写，新增 `ic_link`、`ic_arrow_right` 两个矢量图标）。既有行为和标识保留：扫码、链接配对、`pairingLink` / `pairComputer` / `connectionProgress` / `connectionError` / `computerState` 无障碍标识、删除确认、网页全屏切换、加载阶段文案。
 
@@ -27,4 +27,4 @@
 
 ## 本地证据
 
-截图在 `/tmp/weq-design/`（可再生产物，不入 Git）：`final-light.png`、`final-dark.png`、`final-typed.png`、`final-error.png`。iOS 构建日志 `apps/ios/.build/design-build.log`，Android 构建日志 `/tmp/weq-design/android-test-build.log`。
+截图在 `/tmp/weq-design/`（可再生产物，不入 Git）：`final-light.png`、`final-dark.png`、`final-typed.png`、`final-error.png`、`version-no.png`、`version-yes.png`；同一份副本在 `apps/android/.build/design/`。iOS 构建日志 `apps/ios/.build/design-build.log`，Android 构建日志 `/tmp/weq-design/android-test-build.log`。

@@ -47,6 +47,7 @@ public final class MainActivity extends Activity {
     android.webkit.WebView webView;
     private WebFeatures webFeatures;
     TextView networkState, computerState, detail, error, codeView, statusPill;
+    private String appVersion = "";
     EditText invitation;
     Button pairButton, verifyButton, disconnectButton, retryButton;
     android.view.View scanButton;
@@ -344,6 +345,13 @@ public final class MainActivity extends Activity {
         LinearLayout.LayoutParams networkParams = new LinearLayout.LayoutParams(-1, -2);
         networkParams.topMargin = dp(8);
         dock.addView(networkState, networkParams);
+        try { appVersion = getPackageManager().getPackageInfo(getPackageName(), 0).versionName; } catch (Exception ignored) { }
+        TextView version = text(appVersion == null || appVersion.isEmpty() ? "WeQ Remote" : "WeQ Remote " + appVersion, 11);
+        version.setTextColor(muted);
+        version.setGravity(android.view.Gravity.CENTER);
+        LinearLayout.LayoutParams versionParams = new LinearLayout.LayoutParams(-1, -2);
+        versionParams.topMargin = dp(2);
+        dock.addView(version, versionParams);
         invitation.addTextChangedListener(new android.text.TextWatcher() {
             public void beforeTextChanged(CharSequence value, int start, int count, int after) { }
             public void onTextChanged(CharSequence value, int start, int before, int count) { render(); }
