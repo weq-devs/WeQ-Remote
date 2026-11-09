@@ -109,6 +109,7 @@ struct RemoteView: View {
                 .frame(maxWidth: 496)
                 .frame(maxWidth: .infinity)
             }
+            .scrollDisabled(true)
             .scrollDismissesKeyboard(.interactively)
         }
         .background(Color(uiColor: .systemGroupedBackground).ignoresSafeArea())
