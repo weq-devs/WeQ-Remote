@@ -207,8 +207,65 @@ func TestMultiRoutesRejectInvalidDestinationsBeforeStartingNetwork(t *testing.T)
 	pin := strings.Repeat("f", 64)
 	for _, endpoints := range [][]string{nil, {"http://192.168.1.8:80"}, {"https://8.8.8.8:80"}, {"https://192.168.1.8:7691", "https://192.168.1.8:7691"}} {
 		raw, _ := json.Marshal(endpoints)
-		if _, err := NewMultiClient(t.TempDir(), string(raw), pin, ""); err == nil {
+		if _, err := NewMultiClient(t.TempDir(), string(raw), pin, "", ""); err == nil {
 			t.Fatal("invalid routes accepted")
 		}
+	}
+}
+
+func TestRestoreProbeReusesAuthenticatedStatus(t *testing.T) {
+	lan := "https://192.168.1.8:7691"
+	token := strings.Repeat("a", 64)
+	var requests []string
+	routes := &remoteRoutes{endpoints: []string{lan}, clients: make(map[string]*Client), probeToken: token}
+	routes.open = func(_ context.Context, endpoint string) (*Client, error) {
+		return &Client{directEndpoint: endpoint, ctx: context.Background(), http: &http.Client{Transport: assetRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			requests = append(requests, req.Method+" "+req.URL.Path)
+			if req.Header.Get("Authorization") != "Bearer "+token {
+				return &http.Response{StatusCode: 401, Body: io.NopCloser(strings.NewReader(`{}`)), Header: make(http.Header)}, nil
+			}
+			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"product":"WeQ Remote","protocol":1,"scope":"status:read","online":true}`)), Header: make(http.Header)}, nil
+		})}}, nil
+	}
+	defer routes.close()
+	if err := routes.selectRoute(); err != nil {
+		t.Fatal(err)
+	}
+	client := &Client{routes: routes}
+	raw, err := client.Request(lan, "/v1/status", "GET", token, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var envelope struct {
+		Status int    `json:"status"`
+		Body   string `json:"body"`
+	}
+	if json.Unmarshal([]byte(raw), &envelope) != nil || envelope.Status != 200 {
+		t.Fatal("initial route probe was not reused for the first status request")
+	}
+	if len(requests) != 1 || requests[0] != "GET /v1/status" {
+		t.Fatalf("restore verified the connection more than once: %v", requests)
+	}
+	if _, err := client.Request(lan, "/v1/status", "GET", token, ""); err != nil {
+		t.Fatal(err)
+	}
+	if len(requests) != 2 {
+		t.Fatalf("cached probe answered more than one request: %v", requests)
+	}
+}
+
+func TestRestoreProbeRejectsRevokedDevice(t *testing.T) {
+	lan := "https://192.168.1.8:7691"
+	token := strings.Repeat("b", 64)
+	routes := &remoteRoutes{endpoints: []string{lan}, clients: make(map[string]*Client), probeToken: token}
+	routes.open = func(_ context.Context, endpoint string) (*Client, error) {
+		return &Client{directEndpoint: endpoint, ctx: context.Background(), http: &http.Client{Transport: assetRoundTripFunc(func(*http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: 401, Body: io.NopCloser(strings.NewReader(`{"error":"设备未授权"}`)), Header: make(http.Header)}, nil
+		})}}, nil
+	}
+	defer routes.close()
+	err := routes.selectRoute()
+	if err == nil || !strings.Contains(err.Error(), "设备未授权") {
+		t.Fatalf("revoked device must stop route selection, got %v", err)
 	}
 }

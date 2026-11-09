@@ -17,10 +17,14 @@ type remoteRoutes struct {
 	endpoint  string
 	clients   map[string]*Client
 	closed    bool
+	// 已配对设备恢复连接时，选路探测直接读取鉴权状态，结果留给首次状态请求复用。
+	probeToken string
+	probeRaw   string
 }
 
 // NewMultiClient 先探测路径再提交一次配对；原始 Key 不进入保存的连接资料。
-func NewMultiClient(stateDir, rawEndpoints, fingerprint, authKey string) (*Client, error) {
+// 传入已配对令牌时探测改为鉴权状态读取，避免连接时再重复核验一次。
+func NewMultiClient(stateDir, rawEndpoints, fingerprint, authKey, token string) (*Client, error) {
 	var endpoints []string
 	if err := json.Unmarshal([]byte(rawEndpoints), &endpoints); len(rawEndpoints) > 4096 || err != nil || !validRoutes(endpoints, fingerprint) {
 		return nil, errors.New("invalid connection routes")
@@ -75,7 +79,7 @@ func NewMultiClient(stateDir, rawEndpoints, fingerprint, authKey string) (*Clien
 			return nil, errors.New("missing embedded connection route")
 		}
 	}
-	routes := &remoteRoutes{endpoints: endpoints, clients: make(map[string]*Client)}
+	routes := &remoteRoutes{endpoints: endpoints, clients: make(map[string]*Client), probeToken: token}
 	routes.open = func(ctx context.Context, endpoint string) (*Client, error) {
 		if strings.HasPrefix(endpoint, "https:") {
 			return NewDirectClient(endpoint, fingerprint)
@@ -114,8 +118,9 @@ func (r *remoteRoutes) selectRoute() error {
 	}
 	type outcome struct {
 		candidate
-		err   error
-		fatal bool
+		err      error
+		fatal    bool
+		probeRaw string
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -156,11 +161,16 @@ func (r *remoteRoutes) selectRoute() error {
 						continue
 					}
 				}
-				raw, err := entry.client.requestContext(ctx, entry.endpoint, "/v1/hello", "GET", "", "")
+				// 已配对设备用鉴权状态探测；未批准的设备只能读 hello。
+				path, token := "/v1/hello", ""
+				if r.probeToken != "" {
+					path, token = "/v1/status", r.probeToken
+				}
+				raw, err := entry.client.requestContext(ctx, entry.endpoint, path, "GET", token, "")
 				if err != nil {
 					var failure *remoteTransportError
 					fatal := !(errors.As(err, &failure) && failure.retry)
-					results <- outcome{entry, err, fatal}
+					results <- outcome{candidate: entry, err: err, fatal: fatal}
 					if fatal {
 						return
 					}
@@ -170,15 +180,34 @@ func (r *remoteRoutes) selectRoute() error {
 					Status int
 					Body   string
 				}
-				var hello struct {
+				var reply struct {
 					Product  string
 					Protocol int
+					Scope    string
+					Online   bool
 				}
-				if json.Unmarshal([]byte(raw), &response) != nil || response.Status != 200 || json.Unmarshal([]byte(response.Body), &hello) != nil || hello.Product != "WeQ Remote" || hello.Protocol != 1 {
-					results <- outcome{entry, errors.New("电脑返回了不兼容的数据"), true}
+				if json.Unmarshal([]byte(raw), &response) != nil {
+					results <- outcome{candidate: entry, err: errors.New("电脑返回了不兼容的数据"), fatal: true}
 					return
 				}
-				results <- outcome{candidate: entry}
+				if response.Status == 401 {
+					results <- outcome{candidate: entry, err: errors.New("设备未授权或授权已被撤销，请重新配对"), fatal: true}
+					return
+				}
+				if response.Status != 200 || json.Unmarshal([]byte(response.Body), &reply) != nil || reply.Product != "WeQ Remote" || reply.Protocol != 1 {
+					results <- outcome{candidate: entry, err: errors.New("电脑返回了不兼容的数据"), fatal: true}
+					return
+				}
+				probeRaw := ""
+				if path == "/v1/status" {
+					if reply.Scope != "status:read" || !reply.Online {
+						results <- outcome{candidate: entry, err: errors.New("电脑返回了不兼容的数据"), fatal: true}
+						return
+					}
+					// 选路成功的这次状态读取就是本次连接的核验，留给首次状态请求直接使用。
+					probeRaw = raw
+				}
+				results <- outcome{candidate: entry, probeRaw: probeRaw}
 				return
 			}
 		}(worker)
@@ -197,6 +226,7 @@ func (r *remoteRoutes) selectRoute() error {
 		if result.err == nil {
 			selected := result.candidate
 			winner = &selected
+			r.probeRaw = result.probeRaw
 			decided = true
 			cancel()
 		} else if result.fatal {
@@ -221,15 +251,34 @@ func (r *remoteRoutes) request(endpoint, path, method, token, body string) (stri
 	if r.closed || endpoint != r.endpoints[0] || r.active == nil {
 		return "", errors.New("invalid connection")
 	}
+	if cached, ok := r.takeProbe(path, method); ok {
+		return cached, nil
+	}
 	result, err := r.active.Request(r.endpoint, path, method, token, body)
 	// POST 可能已到达电脑，不能在另一条路径重发消费一次性邀请。
 	var failure *remoteTransportError
 	if err != nil && method == "GET" && errors.As(err, &failure) && failure.retry {
 		if err = r.selectRoute(); err == nil {
+			if cached, ok := r.takeProbe(path, method); ok {
+				return cached, nil
+			}
 			return r.active.Request(r.endpoint, path, method, token, body)
 		}
 	}
 	return result, err
+}
+
+// takeProbe 只把选路时已取得的鉴权状态交给紧随其后的首次状态读取；其他请求立即作废这份缓存。
+func (r *remoteRoutes) takeProbe(path, method string) (string, bool) {
+	if r.probeRaw == "" {
+		return "", false
+	}
+	cached := r.probeRaw
+	r.probeRaw = ""
+	if method == "GET" && path == "/v1/status" {
+		return cached, true
+	}
+	return "", false
 }
 
 func (r *remoteRoutes) openWeb(endpoint, token, secret string) (string, error) {

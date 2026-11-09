@@ -56,15 +56,15 @@ final class RemoteModel: ObservableObject {
             guard let saved = try SavedConnection.load() else { rememberedComputer = false; return }
             rememberedComputer = true
             message = "正在连接电脑"
-            let connection = try await selectConnection(saved.endpoints ?? [saved.endpoint], pin: saved.routeFingerprint ?? saved.fingerprint, probe: saved.endpoints != nil, token: saved.token)
-            guard generation == revision else { connection.session.invalidateAndCancel(); return }
+            let selection = try await selectConnection(saved.endpoints ?? [saved.endpoint], pin: saved.routeFingerprint ?? saved.fingerprint, probe: restoreProbe(for: saved.endpoints), token: saved.token)
+            guard generation == revision else { selection.api.session.invalidateAndCancel(); return }
             endpoints = saved.endpoints; routeFingerprint = saved.routeFingerprint
-            fingerprint = connection.endpoint.scheme == "https" ? saved.routeFingerprint ?? saved.fingerprint : nil
-            api = connection
+            fingerprint = selection.api.endpoint.scheme == "https" ? saved.routeFingerprint ?? saved.fingerprint : nil
+            api = selection.api
             credential = try DeviceCredential(token: saved.token)
-            computerAddress = connection.endpoint.host
+            computerAddress = selection.api.endpoint.host
             paired = true
-            await refresh()
+            await refresh(verified: selection)
             if !connected { api?.session.invalidateAndCancel(); api = nil }
         } catch {
             if generation == revision, !Task.isCancelled {
@@ -91,10 +91,10 @@ final class RemoteModel: ObservableObject {
         return try await network.session()
     }
 
-    private func selectConnection(_ endpoints: [URL], pin: String?, probe: Bool, token: String? = nil, invitation: PairingInvitation? = nil) async throws -> RemoteAPI {
+    private func selectConnection(_ endpoints: [URL], pin: String?, probe: RemoteProbe, token: String? = nil, invitation: PairingInvitation? = nil) async throws -> RemoteSelection {
         let generation = revision
         var enrolled = false
-        let (_, selected) = try await selectRemoteRoute(endpoints, discard: { $0.session.invalidateAndCancel() }) { endpoint in
+        let (_, selected) = try await selectRemoteRoute(endpoints, discard: { $0.api.session.invalidateAndCancel() }) { endpoint in
             if !enrolled, invitation?.isMultiRoute == true, endpoint.scheme == "http", let authKey = invitation?.authKey, let expiresAt = invitation?.expiresAt {
                 try await self.network.enroll(authKey: authKey, expiresAt: expiresAt)
                 enrolled = true
@@ -104,18 +104,26 @@ final class RemoteModel: ObservableObject {
                 try Task.checkCancellation()
                 guard generation == self.revision else { throw CancellationError() }
                 let api = RemoteAPI(endpoint: endpoint, session: session)
-                if probe {
-                    if let token {
-                        let status: ComputerStatus = try await api.request("v1/status", token: token, timeout: 3)
-                        try status.validate()
-                    } else {
-                        let hello: RemoteHello = try await api.request("v1/hello", timeout: 3)
-                        try hello.validate()
-                    }
+                var status: ComputerStatus?
+                var latencyMillis: Int?
+                switch probe {
+                case .status where token != nil:
+                    // 已配对设备的一读既用于选路也用于本次连接，不再重复请求。
+                    let start = ContinuousClock.now
+                    let value: ComputerStatus = try await api.request("v1/status", token: token)
+                    try value.validate()
+                    latencyMillis = elapsedMillis(ContinuousClock.now - start)
+                    status = value
+                case .hello, .status:
+                    // 未批准的设备不能读状态，只用 hello 确认路径可达。
+                    let hello: RemoteHello = try await api.request("v1/hello", timeout: 3)
+                    try hello.validate()
+                case .none:
+                    break
                 }
                 try Task.checkCancellation()
                 guard generation == self.revision else { throw CancellationError() }
-                return api
+                return RemoteSelection(api: api, status: status, latencyMillis: latencyMillis)
             } catch { session.invalidateAndCancel(); throw error }
         }
         return selected
@@ -162,9 +170,10 @@ final class RemoteModel: ObservableObject {
                 try await network.enroll(authKey: authKey, expiresAt: expiresAt)
                 guard generation == revision else { throw CancellationError() }
             }
-            let newAPI: RemoteAPI
-            if let testEndpoint { newAPI = RemoteAPI(endpoint: testEndpoint, session: URLSession(configuration: EmbeddedNetwork.configuration(), delegate: NoRedirectDelegate(), delegateQueue: nil)) }
-            else { newAPI = try await selectConnection(invitation.endpoints, pin: invitation.fingerprint, probe: invitation.isMultiRoute, invitation: invitation) }
+            let selection: RemoteSelection
+            if let testEndpoint { selection = RemoteSelection(api: RemoteAPI(endpoint: testEndpoint, session: URLSession(configuration: EmbeddedNetwork.configuration(), delegate: NoRedirectDelegate(), delegateQueue: nil)), status: nil, latencyMillis: nil) }
+            else { selection = try await selectConnection(invitation.endpoints, pin: invitation.fingerprint, probe: invitation.isMultiRoute ? .hello : .none, invitation: invitation) }
+            let newAPI = selection.api
             let session = newAPI.session
             let token = try DeviceCredential()
             let claim: PairClaim
@@ -206,12 +215,12 @@ final class RemoteModel: ObservableObject {
                 guard generation == self.revision else { throw CancellationError() }
                 guard let endpoints = self.endpoints else { return }
                 // 未批准的设备不能请求 status；仅用 hello 找到可达路径。
-                let replacement = try await self.selectConnection(endpoints, pin: self.routeFingerprint, probe: true)
-                guard generation == self.revision else { replacement.session.invalidateAndCancel(); throw CancellationError() }
+                let replacement = try await self.selectConnection(endpoints, pin: self.routeFingerprint, probe: .hello)
+                guard generation == self.revision else { replacement.api.session.invalidateAndCancel(); throw CancellationError() }
                 self.api?.session.invalidateAndCancel()
-                self.api = replacement
-                self.fingerprint = replacement.endpoint.scheme == "https" ? self.routeFingerprint : nil
-                self.computerAddress = replacement.endpoint.host
+                self.api = replacement.api
+                self.fingerprint = replacement.api.endpoint.scheme == "https" ? self.routeFingerprint : nil
+                self.computerAddress = replacement.api.endpoint.host
             }, read: {
                 guard generation == self.revision, let api = self.api, let credential = self.credential else { throw CancellationError() }
                 return try await api.request("v1/pair/\(claim.id.uuidString.lowercased())", token: credential.token, timeout: 3)
@@ -232,22 +241,32 @@ final class RemoteModel: ObservableObject {
     }
 
     func refresh() async {
+        await refresh(verified: nil)
+    }
+
+    // verified 为选路阶段已完成的鉴权状态读取；同一条入口直接沿用，避免连接时重复核验。
+    private func refresh(verified: RemoteSelection?) async {
         guard let api, let credential else { return }
         let generation = revision
         busy = true
         defer { if generation == revision { busy = false } }
         do {
-            let start = ContinuousClock.now
-            let status: ComputerStatus = try await api.request("v1/status", token: credential.token)
-            try status.validate()
+            let requestMillis: Int
+            if let verified, verified.api.endpoint == api.endpoint, verified.status != nil, let probed = verified.latencyMillis {
+                requestMillis = probed
+            } else {
+                let start = ContinuousClock.now
+                let value: ComputerStatus = try await api.request("v1/status", token: credential.token)
+                try value.validate()
+                requestMillis = elapsedMillis(ContinuousClock.now - start)
+            }
             guard generation == revision else { return }
             if webSession == nil, !testMode {
                 let session = try await network.webSession(endpoint: api.endpoint, token: credential.token, fingerprint: fingerprint)
                 guard generation == revision else { session.close(); return }
                 webSession = session
             }
-            let duration = (ContinuousClock.now - start).components
-            latency = Int(duration.seconds) * 1000 + Int(duration.attoseconds / 1_000_000_000_000_000)
+            latency = requestMillis
             checkedAt = Date()
             connected = true
             code = nil
@@ -257,19 +276,19 @@ final class RemoteModel: ObservableObject {
             if generation == revision, !Task.isCancelled {
                 if let endpoints, remoteRouteCanRetry(error) {
                     do {
-                        let replacement = try await selectConnection(endpoints, pin: routeFingerprint, probe: true, token: credential.token)
+                        let replacement = try await selectConnection(endpoints, pin: routeFingerprint, probe: .status, token: credential.token)
                         var adopted = false
-                        defer { if !adopted { replacement.session.invalidateAndCancel() } }
-                        guard generation == revision else { replacement.session.invalidateAndCancel(); return }
-                        let pin = replacement.endpoint.scheme == "https" ? routeFingerprint : nil
-                        let replaceWeb = webSession == nil || webSession?.endpoint != replacement.endpoint
-                        let web = replaceWeb ? try await network.webSession(endpoint: replacement.endpoint, token: credential.token, fingerprint: pin) : nil
-                        guard generation == revision else { web?.close(); replacement.session.invalidateAndCancel(); return }
-                        api.session.invalidateAndCancel(); self.api = replacement
+                        defer { if !adopted { replacement.api.session.invalidateAndCancel() } }
+                        guard generation == revision else { replacement.api.session.invalidateAndCancel(); return }
+                        let pin = replacement.api.endpoint.scheme == "https" ? routeFingerprint : nil
+                        let replaceWeb = webSession == nil || webSession?.endpoint != replacement.api.endpoint
+                        let web = replaceWeb ? try await network.webSession(endpoint: replacement.api.endpoint, token: credential.token, fingerprint: pin) : nil
+                        guard generation == revision else { web?.close(); replacement.api.session.invalidateAndCancel(); return }
+                        api.session.invalidateAndCancel(); self.api = replacement.api
                         adopted = true
                         if let web { webSession?.close(); webSession = web }
-                        fingerprint = pin; computerAddress = replacement.endpoint.host
-                        connected = true; message = "电脑在线"; self.error = nil; checkedAt = Date()
+                        fingerprint = pin; computerAddress = replacement.api.endpoint.host
+                        latency = replacement.latencyMillis; connected = true; message = "电脑在线"; self.error = nil; checkedAt = Date()
                         return
                     } catch { if generation == revision, !Task.isCancelled { fail(error) } }
                 } else { fail(error) }

@@ -92,6 +92,14 @@ final class RemoteProtocolTests: XCTestCase {
         XCTAssertThrowsError(try SavedConnection(endpoint: tailnet, token: saved.token, fingerprint: nil, endpoints: [lan], routeFingerprint: pin).validate())
     }
 
+    func testRestoreProbeReusesAuthenticatedStatusOnlyForMultipleEntrances() {
+        let lan = URL(string: "https://192.168.1.8:7691")!
+        let tail = URL(string: "http://100.64.0.10:7691")!
+        XCTAssertEqual(restoreProbe(for: nil), .none)
+        XCTAssertEqual(restoreProbe(for: [lan]), .none)
+        XCTAssertEqual(restoreProbe(for: [lan, tail]), .status)
+    }
+
     func testRouteFailoverOnlyRetriesConnectionFailures() async throws {
         let lan = URL(string: "https://192.168.1.8:7691")!, tailnet = URL(string: "http://100.64.0.10:7691")!
         var visited: [URL] = []

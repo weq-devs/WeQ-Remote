@@ -277,7 +277,7 @@ public final class MainActivity extends Activity {
             Invitation link = Invitation.parse(invitation.getText().toString());
             if (link.multiRoute) {
                 if (link.authKey != null && testControl != null) throw new Exception("测试网络不接受正式入网密钥");
-                startMulti(new org.json.JSONArray(link.endpoints).toString(), link.fingerprint, link.authKey, () -> claim(link)); return;
+                startMulti(new org.json.JSONArray(link.endpoints).toString(), link.fingerprint, link.authKey, "", () -> claim(link)); return;
             }
             if (link.fingerprint != null) { startDirect(link.endpoint, link.fingerprint, () -> claim(link)); return; }
             if (link.authKey != null) {
@@ -302,7 +302,7 @@ public final class MainActivity extends Activity {
             } catch (Exception e) { fail(revision, "无法创建连接，请重新扫描二维码"); }
         });
     }
-    private void startMulti(String routes, String pin, String authKey, Runnable next) {
+    private void startMulti(String routes, String pin, String authKey, String token, Runnable next) {
         stopNetwork(true); busy = true; final int revision = generation; render();
         worker.execute(() -> {
             try {
@@ -313,7 +313,7 @@ public final class MainActivity extends Activity {
                 String base = new java.io.File(getNoBackupFilesDir(), "tailnet").getAbsolutePath();
                 String directory = authKey != null ? Androidnet.authStateDir(base, authKey) : networkDirectory != null ? networkDirectory : base;
                 if (revision != generation || !visible) return;
-                Client client = Androidnet.newMultiClient(directory, routes, pin, authKey == null ? "" : authKey);
+                Client client = Androidnet.newMultiClient(directory, routes, pin, authKey == null ? "" : authKey, token);
                 main.post(() -> {
                     if (revision != generation || !visible) { closeClient(client); return; }
                     if (client.usesEmbeddedNetwork()) {
@@ -322,8 +322,15 @@ public final class MainActivity extends Activity {
                     }
                     node = client; fingerprint = pin; connectionRoutes = routes; online = true; busy = false; next.run();
                 });
-            } catch (Exception e) { fail(revision, "无法连接电脑，请检查局域网、Tailscale 服务或重新生成包含 Key 的配对码"); }
+            } catch (Exception e) { fail(revision, routeFailureMessage(e)); }
         });
+    }
+    private String routeFailureMessage(Exception e) {
+        // 选路探测已包含鉴权状态读取，撤销授权要在建连阶段直接清凭据，而不是当成普通网络失败。
+        String message = e.getMessage();
+        if (message != null && message.contains("设备未授权")) return "设备未授权或授权已被撤销，请重新配对";
+        if (message != null && message.contains("certificate changed")) return "电脑证书已变化，请删除电脑后重新配对";
+        return "无法连接电脑，请检查局域网、Tailscale 服务或重新生成包含 Key 的配对码";
     }
     private boolean restoreComputer() {
         if (busy || testControl != null || invitation.length() > 0) return false;
@@ -337,7 +344,7 @@ public final class MainActivity extends Activity {
             org.json.JSONArray routes = saved.optJSONArray("endpoints");
             if (routes != null) {
                 if (routes.length() == 0 || !address.equals(routes.getString(0))) throw new Exception("电脑地址无效");
-                startMulti(routes.toString(), pin, null, resume);
+                startMulti(routes.toString(), pin, null, credential, resume);
             }
             else if (!pin.isEmpty()) startDirect(address, pin, resume);
             else { endpoint = address; token = credential; paired = true; restoring = true; enabled = true; startNetwork(); }

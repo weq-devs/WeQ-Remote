@@ -184,6 +184,25 @@ func remoteRouteCanRetry(_ error: Error) -> Bool {
             .dnsLookupFailed, .notConnectedToInternet, .cannotLoadFromNetwork].contains(url.code)
 }
 
+// 连接恢复时的探测方式：已配对设备直接读鉴权状态，结果当作本次连接的校验；
+// 只有尚未批准的设备才用 hello 找可达路径。单入口无需预探测。
+enum RemoteProbe: Equatable { case none, hello, status }
+
+struct RemoteSelection {
+    let api: RemoteAPI
+    let status: ComputerStatus?
+    let latencyMillis: Int?
+}
+
+func restoreProbe(for endpoints: [URL]?) -> RemoteProbe {
+    (endpoints?.count ?? 0) > 1 ? .status : .none
+}
+
+func elapsedMillis(_ duration: Duration) -> Int {
+    let parts = duration.components
+    return Int(parts.seconds) * 1000 + Int(parts.attoseconds / 1_000_000_000_000_000)
+}
+
 // 只读探测错峰竞速；内嵌节点共用一个 worker，避免重复入网。
 @MainActor
 func selectRemoteRoute<T>(_ endpoints: [URL], discard: @escaping @MainActor (T) -> Void = { _ in }, connect: @escaping @MainActor (URL) async throws -> T) async throws -> (URL, T) {
