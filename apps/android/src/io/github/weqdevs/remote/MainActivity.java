@@ -55,6 +55,7 @@ public final class MainActivity extends Activity {
     private LinearLayout pairSection;
     private android.widget.ProgressBar progress;
     private boolean webLoaded;
+    private String webLoadingStage = "正在准备网页连接";
     private final Runnable webStartupTimeout = () -> {
         if (webView != null && !webLoaded) failWebLoad("WeQ 页面准备超时，请重试并确认电脑已更新到支持页面就绪通知的版本。");
     };
@@ -191,6 +192,7 @@ public final class MainActivity extends Activity {
         pageSubtitle.setText(rememberedComputer ? "我的电脑" : "连接电脑");
         scanButton.setEnabled(!busy);
         if (rememberedComputer && busy && !paired) computerState.setText("正在连接电脑");
+        if (webView != null && !webLoaded) computerState.setText(webLoadingStage);
         computerState.setVisibility(busy || paired || claimID != null || rememberedComputer ? View.VISIBLE : View.GONE);
         detail.setVisibility(detail.length() > 0 ? View.VISIBLE : View.GONE);
         detail.setTextSize(claimID != null && !paired ? 28 : 14);
@@ -233,6 +235,7 @@ public final class MainActivity extends Activity {
     private void reloadWeb() {
         if (webView == null) return;
         webLoaded = false;
+        webLoadingStage = "正在下载网页资源";
         error.setText(""); computerState.setText("正在加载 WeQ 页面");
         android.view.ViewGroup root = (android.view.ViewGroup) webView.getParent().getParent();
         if (setupView.getParent() == null) root.addView(setupView, new android.view.ViewGroup.LayoutParams(-1, -1));
@@ -463,7 +466,7 @@ public final class MainActivity extends Activity {
     private void openWeb() {
         final Client client = node; final int revision = generation;
         final String address = endpoint, credential = token, localSecret = Invitation.credential();
-        busy = true; webLoaded = false; computerState.setText("正在加载 WeQ 页面"); render();
+        busy = true; webLoaded = false; webLoadingStage = "正在准备网页连接"; computerState.setText(webLoadingStage); render();
         worker.execute(() -> {
             try {
                 final String origin = client.openWeb(address, credential, localSecret);
@@ -490,8 +493,12 @@ public final class MainActivity extends Activity {
                                 private boolean allowed(Uri url) { return "http".equals(url.getScheme()) && "127.0.0.1".equals(url.getHost()) && url.getPort() == Uri.parse(origin).getPort(); }
                                 @Override public void onPageStarted(android.webkit.WebView view, String url, android.graphics.Bitmap icon) {
                                     if (webView != page) return;
+                                    if (!webLoaded) { webLoadingStage = "正在下载网页资源"; render(); }
                                     main.removeCallbacks(webStartupTimeout);
                                     main.postDelayed(webStartupTimeout, 45000);
+                                }
+                                @Override public void onPageCommitVisible(android.webkit.WebView view, String url) {
+                                    if (webView == page && !webLoaded) { webLoadingStage = "正在初始化 WeQ 页面"; render(); }
                                 }
                                 @Override public void onPageFinished(android.webkit.WebView view, String url) {
                                     if (view != page || webView != page || !allowed(Uri.parse(url))) return;
@@ -529,7 +536,10 @@ public final class MainActivity extends Activity {
     }
     void receiveWebStartup(android.webkit.WebView page, String state, String message) {
         if (webView != page || webLoaded) return;
-        if ("ready".equals(state) || "action-required".equals(state)) showWebPage();
+        if ("loading".equals(state)) {
+            webLoadingStage = message == null || message.isEmpty() ? "正在初始化 WeQ 页面" : message.substring(0, Math.min(message.length(), 100));
+            render();
+        } else if ("ready".equals(state) || "action-required".equals(state)) showWebPage();
         else if ("error".equals(state)) failWebLoad(message == null || message.isEmpty() ? "WeQ 页面启动失败，请重试。" : message.substring(0, Math.min(message.length(), 500)));
     }
     private void showWebPage() {

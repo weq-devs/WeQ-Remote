@@ -4,6 +4,20 @@ import WebKit
 
 final class WebContainerTests: XCTestCase {
     @MainActor
+    func testStartupProgressStaysHomeUntilTheSurfaceIsReady() {
+        let model = RemoteModel(network: EmbeddedNetwork())
+        let session = RemoteWebSession(configuration: WKWebViewConfiguration(),
+                                       endpoint: URL(string: "https://192.168.1.8:7691")!)
+        model.adoptWebSession(session)
+        session.receiveStartup("loading", message: "正在绘制 WeQ 界面")
+        XCTAssertFalse(model.webReady)
+        XCTAssertEqual(model.webLoadingStage, "正在绘制 WeQ 界面")
+        session.receiveStartup("ready", message: nil)
+        XCTAssertTrue(model.webReady)
+        model.disconnect()
+        XCTAssertNil(session.onProgress)
+    }
+    @MainActor
     func testHTMLFinishDoesNotEnterUntilBusinessIsReady() {
         let session = RemoteWebSession(configuration: WKWebViewConfiguration(),
                                        endpoint: URL(string: "https://192.168.1.8:7691")!)

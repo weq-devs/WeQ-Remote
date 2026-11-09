@@ -55,9 +55,9 @@ struct RemoteView: View {
 
     // 网页加载出来之前留在连接页，用原生进度替代空白的全屏网页。
     private var loadingStage: String? {
-        if model.webSession != nil, !model.webReady { return "正在加载 WeQ 页面" }
+        if model.webSession != nil, !model.webReady { return model.webLoadingStage }
         if model.code != nil { return "等待电脑确认" }
-        if model.busy { return "正在连接电脑" }
+        if model.busy { return model.paired ? "正在验证电脑授权" : "正在连接电脑" }
         return nil
     }
 

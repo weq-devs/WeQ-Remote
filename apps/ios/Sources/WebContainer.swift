@@ -44,6 +44,7 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
     var onReady: (() -> Void)?
     var onFailure: ((Error) -> Void)?
     var onLoading: (() -> Void)?
+    var onProgress: ((String) -> Void)?
     var onDisconnect: (() -> Void)?
 
     init(configuration: WKWebViewConfiguration, endpoint: URL, fingerprint: String? = nil) {
@@ -83,9 +84,15 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
         webView.evaluateJavaScript("if(window.weqRemoteStartup)window.webkit.messageHandlers.weqStartup.postMessage(window.weqRemoteStartup)", completionHandler: nil)
     }
 
+    func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        guard !closed, !startupFinished else { return }
+        onProgress?("正在初始化 WeQ 页面")
+    }
+
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         startupFinished = false
         onLoading?()
+        onProgress?("正在下载网页资源")
         startupTimeout?.cancel()
         startupTimeout = Task { [weak self] in
             do { try await Task.sleep(for: .seconds(45)) } catch { return }
@@ -95,7 +102,9 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
 
     func receiveStartup(_ state: String, message: String?) {
         guard !closed, !startupFinished else { return }
-        if state == "ready" || state == "action-required" {
+        if state == "loading" {
+            onProgress?(String((message ?? "正在初始化 WeQ 页面").prefix(100)))
+        } else if state == "ready" || state == "action-required" {
             startupFinished = true
             startupTimeout?.cancel()
             onReady?()
@@ -299,6 +308,7 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
         onReady = nil
         onFailure = nil
         onLoading = nil
+        onProgress = nil
         onDisconnect = nil
         view.loadHTMLString("", baseURL: nil)
     }

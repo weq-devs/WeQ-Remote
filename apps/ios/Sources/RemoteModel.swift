@@ -15,6 +15,7 @@ final class RemoteModel: ObservableObject {
     @Published private(set) var error: String?
     @Published private(set) var webSession: RemoteWebSession?
     @Published private(set) var webReady = false
+    @Published private(set) var webLoadingStage = "正在下载网页资源"
     @Published private(set) var rememberedComputer = false
     let network: EmbeddedNetwork
     private var api: RemoteAPI?
@@ -133,6 +134,11 @@ final class RemoteModel: ObservableObject {
     // 页面加载完成后才切到全屏网页；失败时留在连接页，保留手动重连入口。
     func adoptWebSession(_ session: RemoteWebSession) {
         webReady = false
+        webLoadingStage = "正在下载网页资源"
+        session.onProgress = { [weak self, weak session] stage in
+            guard let self, self.webSession === session else { return }
+            self.webLoadingStage = stage
+        }
         session.onReady = { [weak self, weak session] in
             guard let self, self.webSession === session else { return }
             self.webReady = true
