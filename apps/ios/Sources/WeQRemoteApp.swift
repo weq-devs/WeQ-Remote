@@ -56,13 +56,12 @@ struct RemoteView: View {
             if let session = model.webSession {
                 WebContainer(session: session)
                     .id(ObjectIdentifier(session))
-                    .navigationBarTitleDisplayMode(.inline)
-                    .toolbar { ToolbarItem(placement: .topBarLeading) { Button { model.disconnect(); Task { await network.stop() } } label: { Image(systemName: "xmark") }.accessibilityLabel("断开电脑") } }
-                    .toolbar { ToolbarItem(placement: .topBarTrailing) { Button { session.view.reload() } label: { Image(systemName: "arrow.clockwise") }.accessibilityLabel("重新加载") } }
-                    .toolbar { ToolbarItem(placement: .topBarTrailing) { Button(role: .destructive) { model.forget(); Task { await network.stop() } } label: { Image(systemName: "trash") }.accessibilityLabel("删除电脑") } }
+                    // 网页占满整个屏幕，原生操作收进右侧悬浮菜单，不再占用顶端栏高度。
+                    .toolbar(.hidden, for: .navigationBar)
                     .safeAreaInset(edge: .top, spacing: 0) {
                         if let error = model.error { connectionNotice(error) }
                     }
+                    .overlay(alignment: .trailing) { webControls(session: session) }
             } else {
             ScrollView {
                 VStack(alignment: .leading, spacing: 32) {
@@ -161,6 +160,24 @@ struct RemoteView: View {
             Button { Task { await model.refresh() } } label: { Image(systemName: "arrow.clockwise").frame(width: 44, height: 44) }
                 .accessibilityLabel("重试连接").disabled(model.busy)
         }.padding(.horizontal, 16).padding(.vertical, 4).background(.regularMaterial)
+    }
+
+    // 顶端原生栏改为右侧悬浮菜单，网页因此占满整屏；操作与原先一致。
+    private func webControls(session: RemoteWebSession) -> some View {
+        Menu {
+            Button { session.view.reload() } label: { Label("重新加载", systemImage: "arrow.clockwise") }
+            Button { model.disconnect(); Task { await network.stop() } } label: { Label("断开电脑", systemImage: "xmark") }
+            Button(role: .destructive) { model.forget(); Task { await network.stop() } } label: { Label("删除电脑", systemImage: "trash") }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 34, height: 44)
+                .background(.ultraThinMaterial, in: Capsule())
+                .opacity(0.72)
+        }
+        .padding(.trailing, 6)
+        .accessibilityLabel("连接操作")
     }
 
     private func scan() async {
