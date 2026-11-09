@@ -58,8 +58,9 @@ public final class MainActivity extends Activity {
     private int accentColor, idleDotColor;
     private boolean webLoaded;
     private String webLoadingStage = "正在准备网页连接";
+    private String webStartupProblem;
     private final Runnable webStartupTimeout = () -> {
-        if (webView != null && !webLoaded) failWebLoad("WeQ 页面准备超时，请重试并确认电脑已更新到支持页面就绪通知的版本。");
+        if (webView != null && !webLoaded) failWebLoad(webStartupProblem != null ? webStartupProblem : "WeQ 页面准备超时（" + webLoadingStage + "），请重试并确认电脑已更新到支持页面就绪通知的版本。");
     };
     private boolean reconnectPaused;
     private final Runnable networkPoll = new Runnable() { public void run() { refreshNetwork(); } };
@@ -455,6 +456,7 @@ public final class MainActivity extends Activity {
     private void reloadWeb() {
         if (webView == null) return;
         webLoaded = false;
+        webStartupProblem = null;
         webLoadingStage = "正在下载网页资源";
         error.setText("");
         android.view.ViewGroup root = (android.view.ViewGroup) webView.getParent().getParent();
@@ -569,19 +571,19 @@ public final class MainActivity extends Activity {
         } catch (Exception e) { error.setText("配对链接无效或已过期，请重新生成；旧版邀请需先连接网络"); render(); }
     }
     private void startDirect(String address, String pin, Runnable next) {
-        stopNetwork(true); busy = true; final int revision = generation; render();
+        stopNetwork(true); busy = true; networkState.setText("网络：正在连接系统网络"); final int revision = generation; render();
         worker.execute(() -> {
             try {
                 Client client = Androidnet.newDirectClient(address, pin);
                 main.post(() -> {
                     if (revision != generation || !visible) { closeClient(client); return; }
-                    node = client; fingerprint = pin; online = true; busy = false; next.run();
+                    node = client; fingerprint = pin; online = true; busy = false; networkState.setText("网络：已连接（系统网络）"); next.run();
                 });
             } catch (Exception e) { fail(revision, "无法创建连接，请重新扫描二维码"); }
         });
     }
     private void startMulti(String routes, String pin, String authKey, String token, Runnable next) {
-        stopNetwork(true); busy = true; final int revision = generation; render();
+        stopNetwork(true); busy = true; networkState.setText("网络：正在探测连接入口"); final int revision = generation; render();
         worker.execute(() -> {
             try {
                 Future<?> pendingClose = closing;
@@ -598,6 +600,7 @@ public final class MainActivity extends Activity {
                         networkDirectory = directory;
                         if (authKey != null) getPreferences(MODE_PRIVATE).edit().putString("networkState", new java.io.File(directory).getName()).apply();
                     }
+                    networkState.setText(client.usesEmbeddedNetwork() ? "网络：已连接（内嵌 Tailscale）" : "网络：已连接（系统网络）");
                     node = client; fingerprint = pin; connectionRoutes = routes; online = true; busy = false; next.run();
                 });
             } catch (Exception e) { fail(revision, routeFailureMessage(e)); }
@@ -661,7 +664,7 @@ public final class MainActivity extends Activity {
                 JSONObject approval = response(client.request(address, "/v1/pair/" + id, "GET", credential, ""));
                 if (!id.equals(approval.getString("id")) || !"web:access".equals(approval.getString("scope"))) throw new Exception("电脑返回了不兼容的数据，请升级电脑端");
                 main.post(() -> { if (revision != generation || !id.equals(claimID)) return; if (approval.optBoolean("approved")) {
-                    try { if (!BuildConfig.TESTING || fingerprint != null) { ConnectionStore.save(this, endpoint, token, fingerprint, connectionRoutes); rememberedComputer = true; } paired = true; openWeb(); }
+                    try { if (!BuildConfig.TESTING || fingerprint != null) { ConnectionStore.save(this, endpoint, token, fingerprint, connectionRoutes); rememberedComputer = true; } claimID = null; paired = true; openWeb(); }
                     catch (Exception e) { fail(revision, "无法保存电脑凭据，请重试"); }
                 } else main.postDelayed(approvalPoll, 1500); });
             } catch (Exception e) { fail(revision, e.getMessage()); }
@@ -673,20 +676,18 @@ public final class MainActivity extends Activity {
         busy = true; error.setText(""); render();
         worker.execute(() -> {
             try {
-                long started = SystemClock.elapsedRealtime();
                 Androidnet.setInterfaces(interfaceSnapshot());
                 JSONObject status = response(client.request(address, "/v1/status", "GET", credential, ""));
                 if (!"WeQ Remote".equals(status.getString("product")) || status.getInt("protocol") != 1 || !"status:read".equals(status.getString("scope")) || !status.getBoolean("online")) throw new Exception("电脑返回了不兼容的数据");
-                long elapsed = SystemClock.elapsedRealtime() - started;
                 boolean webReady = client.hasWeb();
-                main.post(() -> { if (revision != generation || !credential.equals(token)) return; busy = false; render(); if (restoring || webView != null && !webLoaded) { restoring = false; if (visible) openWeb(); } });
+                main.post(() -> { if (revision != generation || !credential.equals(token)) return; busy = false; render(); if (WebStartup.shouldOpenWeb(restoring, webView != null, webReady)) { restoring = false; if (visible) openWeb(); } });
             } catch (Exception e) { fail(revision, e.getMessage()); }
         });
     }
     private void openWeb() {
         final Client client = node; final int revision = generation;
         final String address = endpoint, credential = token, localSecret = Invitation.credential();
-        busy = true; webLoaded = false; webLoadingStage = "正在准备网页连接"; computerState.setText(webLoadingStage); render();
+        busy = true; webLoaded = false; webStartupProblem = null; webLoadingStage = "正在准备网页连接"; computerState.setText(webLoadingStage); render();
         worker.execute(() -> {
             try {
                 final String origin = client.openWeb(address, credential, localSecret);
@@ -719,6 +720,8 @@ public final class MainActivity extends Activity {
                                 }
                                 @Override public void onPageCommitVisible(android.webkit.WebView view, String url) {
                                     if (webView == page && !webLoaded) { webLoadingStage = "正在初始化 WeQ 页面"; render(); }
+                                    // 不等待图片等尾部资源完成，尽早订阅并补读网页已经发出的启动状态。
+                                    if (webView == page && allowed(Uri.parse(url)) && webFeatures != null) webFeatures.observeStartup();
                                 }
                                 @Override public void onPageFinished(android.webkit.WebView view, String url) {
                                     if (view != page || webView != page || !allowed(Uri.parse(url))) return;
@@ -726,10 +729,13 @@ public final class MainActivity extends Activity {
                                 }
                                 @Override public void onReceivedError(android.webkit.WebView view, android.webkit.WebResourceRequest request, android.webkit.WebResourceError error) {
                                     if (webView == page && request.isForMainFrame() && !webLoaded) failWebLoad("无法加载 WeQ 页面，请检查电脑与网络后重试。");
+                                    else if (webView == page && allowed(request.getUrl()) && !webLoaded) recordWebResourceFailure(page, request.getUrl().getPath(), 0);
                                 }
                                 @Override public void onReceivedHttpError(android.webkit.WebView view, android.webkit.WebResourceRequest request, android.webkit.WebResourceResponse response) {
                                     if (webView == page && request.isForMainFrame() && !webLoaded && response.getStatusCode() >= 400)
                                         failWebLoad("无法加载 WeQ 页面，请检查电脑与网络后重试。");
+                                    else if (webView == page && allowed(request.getUrl()) && !webLoaded && response.getStatusCode() >= 400)
+                                        recordWebResourceFailure(page, request.getUrl().getPath(), response.getStatusCode());
                                 }
                                 @Override public boolean shouldOverrideUrlLoading(android.webkit.WebView view, android.webkit.WebResourceRequest request) { return request.isForMainFrame() ? webFeatures == null || webFeatures.navigate(request.getUrl()) : !allowed(request.getUrl()); }
                                 @Override public android.webkit.WebResourceResponse shouldInterceptRequest(android.webkit.WebView view, android.webkit.WebResourceRequest request) {
@@ -762,6 +768,16 @@ public final class MainActivity extends Activity {
         } else if ("ready".equals(state) || "action-required".equals(state)) showWebPage();
         else if ("error".equals(state)) failWebLoad(message == null || message.isEmpty() ? "WeQ 页面启动失败，请重试。" : message.substring(0, Math.min(message.length(), 500)));
     }
+    void recordWebConsoleFailure(android.webkit.WebView page, String message) {
+        if (webView != page || webLoaded) return;
+        String problem = WebStartup.consoleProblem(message);
+        if (problem != null) webStartupProblem = problem;
+    }
+    private void recordWebResourceFailure(android.webkit.WebView page, String path, int status) {
+        if (webView != page || webLoaded) return;
+        String problem = WebStartup.resourceProblem(path, status);
+        if (problem != null) failWebLoad(problem);
+    }
     private void showWebPage() {
         if (webLoaded) return;
         main.removeCallbacks(webStartupTimeout);
@@ -777,7 +793,7 @@ public final class MainActivity extends Activity {
     private void failWebLoad(String message) {
         final android.webkit.WebView failedPage = webView;
         main.post(() -> {
-            if (webView == null || webView != failedPage) return;
+            if (webView == null || webView != failedPage || webLoaded) return;
             busy = false; paired = false; restoring = false; webLoaded = false;
             closeWeb();
             error.setText(message); render();

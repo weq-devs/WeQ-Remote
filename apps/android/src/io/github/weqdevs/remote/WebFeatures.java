@@ -153,9 +153,18 @@ final class WebFeatures extends WebChromeClient {
         String detail = "{id:" + org.json.JSONObject.quote(id) + ",ok:" + ok + ",delivery:'native'" + (ok ? "" : ",error:'无法生成截图，请先完成当前下载'") + "}";
         view.evaluateJavascript("window.dispatchEvent(new CustomEvent('weq-remote-capture-result',{detail:" + detail + "}))", null);
     }
-    void pageReady() {
+    void observeStartup() {
         if (closed) return;
         view.evaluateJavascript("(function(){function report(){var s=window.weqRemoteStartup;if(s)weqRemoteLinks.startup(s.state,s.message||'');}if(!window.__weqStartupListener){window.__weqStartupListener=true;window.addEventListener('weq-remote-startup',report);}report();})()", null);
+    }
+    @Override public boolean onConsoleMessage(android.webkit.ConsoleMessage message) {
+        if (!closed && message.messageLevel() == android.webkit.ConsoleMessage.MessageLevel.ERROR && activity instanceof MainActivity)
+            ((MainActivity) activity).recordWebConsoleFailure(view, message.message());
+        return super.onConsoleMessage(message);
+    }
+    void pageReady() {
+        if (closed) return;
+        observeStartup();
         view.evaluateJavascript("window.weqRemoteShell={openMenu:function(){weqRemoteLinks.openMenu()}};window.dispatchEvent(new Event('weq-remote-shell-ready'));", null);
         view.evaluateJavascript("(function(){if(window.__weqRemoteLinks)return;window.__weqRemoteLinks=true;document.addEventListener('click',function(e){var a=e.target.closest&&e.target.closest('a[download]');if(a&&a.href.indexOf('blob:')===0){e.preventDefault();weqRemoteLinks.downloadBlob(a.href,a.download||'download');}},true);var original=window.open;window.open=function(url,target,features){if(url&&url!=='about:blank'){try{var parsed=new URL(url,location.href);if(parsed.origin!==location.origin){weqRemoteLinks.open(parsed.href);return null;}}catch(e){return null;}}return original.call(window,url,target,features);};})()", null);
     }
