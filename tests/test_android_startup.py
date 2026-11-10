@@ -20,9 +20,13 @@ class AndroidStartupTests(unittest.TestCase):
 
     def test_multi_route_updates_network_label(self):
         source = (SOURCE / 'MainActivity.java').read_text()
-        start = source.split('private void startMulti(', 1)[1].split('private String routeFailureMessage', 1)[0]
+        start = source.split('private void startMulti(', 1)[1].split('private void updateConnection(', 1)[0]
         self.assertIn('networkState.setText("网络：正在探测连接入口")', start)
-        self.assertIn('networkState.setText(client.usesEmbeddedNetwork()', start)
+        self.assertIn('boolean embedded = client.usesEmbeddedNetwork();', start)
+        self.assertIn('networkState.setText(embedded ? "网络：已连接（内嵌 Tailscale）" : "网络：已连接（系统网络）")', start)
+        self.assertLess(start.index('client.connectRoutes();'), start.index('boolean embedded ='))
+        # 网络状态在 worker 读取，UI 回调使用快照，避免在主线程查询 Go 客户端。
+        self.assertLess(start.index('boolean embedded ='), start.index('main.post(', start.index('client.connectRoutes();')))
 
     def test_bridge_reads_early_state_and_later_events_without_duplicate_listeners(self):
         source = (SOURCE / 'WebFeatures.java').read_text()

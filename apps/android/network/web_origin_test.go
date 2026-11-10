@@ -81,3 +81,24 @@ func TestProxyReconnectReusesOriginWithFreshLocalSecret(t *testing.T) {
 		t.Fatal("previous local secret remains authorized")
 	}
 }
+
+func TestWebProxyCloseBeforeServeReleasesOrigin(t *testing.T) {
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	address := listener.Addr().String()
+	proxy := &webProxy{server: &http.Server{}, listener: listener}
+	proxy.close()
+	next, err := net.Listen("tcp4", address)
+	if err != nil {
+		t.Fatalf("close before Serve retained the local origin: %v", err)
+	}
+	defer next.Close()
+	// 模拟关闭之后才获得调度的 Serve，不得重新占用已释放的端口。
+	if err := proxy.server.Serve(listener); err != http.ErrServerClosed {
+		t.Fatalf("Serve after close: %v", err)
+	}
+	proxy.close()
+}

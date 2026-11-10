@@ -14,11 +14,14 @@ import (
 
 type webProxy struct {
 	server      *http.Server
+	listener    net.Listener
 	mu          sync.Mutex
 	connections map[net.Conn]struct{}
 }
 
 func (p *webProxy) close() {
+	// Serve 可能尚未启动，不能只依赖 Server 关闭已登记的 listener。
+	_ = p.listener.Close()
 	_ = p.server.Close()
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -106,7 +109,7 @@ func (c *Client) OpenWeb(endpoint, token, localSecret string) (string, error) {
 	proxy.ErrorHandler = func(w http.ResponseWriter, _ *http.Request, _ error) {
 		http.Error(w, "WeQ connection unavailable", http.StatusBadGateway)
 	}
-	p := &webProxy{connections: make(map[net.Conn]struct{})}
+	p := &webProxy{listener: listener, connections: make(map[net.Conn]struct{})}
 	p.server = &http.Server{ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second,
 		ConnState: func(conn net.Conn, state http.ConnState) {
 			p.mu.Lock()
