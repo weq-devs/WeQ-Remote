@@ -26,14 +26,18 @@ final class RemoteModel: ObservableObject {
     private var endpoints: [URL]?
     private var routeFingerprint: String?
     private var reconnectPaused = false
+    private var probingSessions: [UUID: URLSession] = [:]
+
+    var isConnecting: Bool { busy || code != nil || (webSession != nil && !webReady) }
 
     func resumeReconnect() { reconnectPaused = false }
 
     func suspend() {
         // 已配对的网页与节点留在内存；前台恢复只验证，不重建页面。
         guard webSession == nil else { return }
+        let wasPaused = reconnectPaused
         disconnect()
-        resumeReconnect()
+        if !wasPaused { resumeReconnect() }
     }
 
     func preparePairing() {
@@ -97,11 +101,16 @@ final class RemoteModel: ObservableObject {
         let generation = revision
         var enrolled = false
         let (_, selected) = try await selectRemoteRoute(endpoints, discard: { $0.api.session.invalidateAndCancel() }) { endpoint in
+            try Task.checkCancellation()
+            guard generation == self.revision else { throw CancellationError() }
             if !enrolled, invitation?.isMultiRoute == true, endpoint.scheme == "http", let authKey = invitation?.authKey, let expiresAt = invitation?.expiresAt {
                 try await self.network.enroll(authKey: authKey, expiresAt: expiresAt)
                 enrolled = true
             }
             let session = try await self.connectionSession(endpoint: endpoint, fingerprint: endpoint.scheme == "https" ? pin : nil)
+            let probeID = UUID()
+            self.probingSessions[probeID] = session
+            defer { self.probingSessions.removeValue(forKey: probeID) }
             do {
                 try Task.checkCancellation()
                 guard generation == self.revision else { throw CancellationError() }
@@ -194,6 +203,10 @@ final class RemoteModel: ObservableObject {
     var testMode: Bool { testEndpoint != nil }
 
     func pair() async {
+        if rememberedComputer {
+            await updateConnection()
+            return
+        }
         preparePairing()
         guard !busy, polling == nil else { return }
         error = nil
@@ -244,6 +257,44 @@ final class RemoteModel: ObservableObject {
             checkedAt = nil
             message = "等待电脑确认"
             polling = Task { [weak self] in await self?.waitForApproval(claim, generation: generation) }
+        } catch is CancellationError {} catch {
+            if generation == revision { self.error = error.localizedDescription }
+        }
+    }
+
+    private func updateConnection() async {
+        guard !busy, polling == nil else { return }
+        let text = invitationText
+        disconnect()
+        busy = true
+        message = "正在更新连接"
+        let generation = revision
+        defer { if generation == revision { busy = false } }
+        do {
+            guard let saved = try SavedConnection.load() else { throw RemoteError.credential }
+            let invitation = try PairingInvitation(text)
+            // 更新连接时明确应用新 Key，即使随后局域网入口先响应也保留新入网身份。
+            if let key = invitation.authKey, let expiry = invitation.expiresAt {
+                try await network.enroll(authKey: key, expiresAt: expiry)
+            }
+            guard generation == revision else { throw CancellationError() }
+            let selection = try await selectConnection(invitation.endpoints, pin: invitation.fingerprint,
+                                                     probe: .status, token: saved.token)
+            var adopted = false
+            defer { if !adopted { selection.api.session.invalidateAndCancel() } }
+            guard generation == revision else { throw CancellationError() }
+            let updated = try saved.updatingRoutes(from: invitation, selected: selection.api.endpoint)
+            try updated.save()
+            api = selection.api
+            adopted = true
+            credential = try DeviceCredential(token: updated.token)
+            endpoints = updated.endpoints
+            routeFingerprint = updated.routeFingerprint
+            fingerprint = updated.fingerprint
+            computerAddress = updated.endpoint.host
+            paired = true
+            reconnectPaused = false
+            await refresh(verified: selection)
         } catch is CancellationError {} catch {
             if generation == revision { self.error = error.localizedDescription }
         }
@@ -346,6 +397,8 @@ final class RemoteModel: ObservableObject {
 
     func disconnect() {
         reconnectPaused = true
+        for session in probingSessions.values { session.invalidateAndCancel() }
+        probingSessions.removeAll()
         webReady = false
         webSession?.close()
         webSession = nil

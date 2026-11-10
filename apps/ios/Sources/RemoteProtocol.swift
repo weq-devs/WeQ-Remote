@@ -139,6 +139,16 @@ struct SavedConnection: Codable {
         self.endpoints = endpoints; self.routeFingerprint = routeFingerprint
     }
 
+    func updatingRoutes(from invitation: PairingInvitation, selected endpoint: URL) throws -> SavedConnection {
+        guard invitation.endpoints.contains(endpoint) else { throw RemoteError.invitation }
+        let updated = SavedConnection(endpoint: endpoint, token: token,
+                                      fingerprint: endpoint.scheme == "https" ? invitation.fingerprint : nil,
+                                      endpoints: invitation.isMultiRoute ? invitation.endpoints : nil,
+                                      routeFingerprint: invitation.isMultiRoute ? invitation.fingerprint : nil)
+        try updated.validate()
+        return updated
+    }
+
     func validate() throws {
         _ = try DeviceCredential(token: token)
         guard fingerprint == nil ? PairingInvitation.isTailnetEndpoint(endpoint) :

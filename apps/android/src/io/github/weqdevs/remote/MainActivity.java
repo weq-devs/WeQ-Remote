@@ -37,6 +37,8 @@ public final class MainActivity extends Activity {
     private String fingerprint;
     private String connectionRoutes;
     private boolean restoring;
+    private boolean updatingConnection;
+    private Runnable enrollmentAction;
     private boolean rememberedComputer;
     private long expiresAt;
     private String testControl;
@@ -49,7 +51,9 @@ public final class MainActivity extends Activity {
     TextView networkState, computerState, detail, error, codeView, statusPill;
     private String appVersion = "";
     EditText invitation;
-    Button pairButton, verifyButton, disconnectButton, retryButton;
+    Button pairButton, verifyButton, retryButton;
+    android.widget.ImageButton disconnectButton, updateButton;
+    private LinearLayout connectionActions;
     android.view.View scanButton;
     private LinearLayout pairSection;
     private android.widget.ProgressBar progress;
@@ -81,7 +85,7 @@ public final class MainActivity extends Activity {
                 if ("http".equals(uri.getScheme()) && "127.0.0.1".equals(uri.getHost()) && uri.getPort() > 0 && uri.getUserInfo() == null && "".equals(uri.getPath()) && uri.getQuery() == null && uri.getFragment() == null) testControl = control;
             } catch (Exception ignored) { }
         }
-        try { rememberedComputer = getIntent().getData() == null && ConnectionStore.load(this) != null; } catch (Exception ignored) { }
+        try { rememberedComputer = ConnectionStore.load(this) != null; } catch (Exception ignored) { }
         buildUI();
         // 网页与连接页都铺满整屏；系统栏透明，连接页自己按 insets 留白。
         if (android.os.Build.VERSION.SDK_INT >= 30) {
@@ -275,7 +279,7 @@ public final class MainActivity extends Activity {
         scanLabel.setTextColor(actionText);
         scanLabel.setPadding(dp(12), 0, 0, 0);
         scan.addView(scanLabel);
-        scan.setOnClickListener(v -> startActivityForResult(new Intent(this, ScannerActivity.class), 7));
+        scan.setOnClickListener(v -> scanConnection());
         scanButton = scan;
         pairSection.addView(scan, new LinearLayout.LayoutParams(-1, dp(58)));
         LinearLayout input = new LinearLayout(this);
@@ -317,8 +321,21 @@ public final class MainActivity extends Activity {
         pairButton.setOnClickListener(view -> pair());
         input.addView(pairButton, new LinearLayout.LayoutParams(dp(48), dp(48)));
 
+        connectionActions = new LinearLayout(this);
+        connectionActions.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams actionsParams = new LinearLayout.LayoutParams(-1, dp(52));
+        actionsParams.topMargin = dp(12);
+        dock.addView(connectionActions, actionsParams);
+        updateButton = new android.widget.ImageButton(this);
+        updateButton.setImageResource(getResources().getIdentifier("ic_scan", "drawable", getPackageName()));
+        updateButton.setColorFilter(accent);
+        updateButton.setContentDescription("扫码更新连接");
+        updateButton.setBackground(new android.graphics.drawable.RippleDrawable(android.content.res.ColorStateList.valueOf(0x22000000), background(card, border, dp(14)), null));
+        updateButton.setOnClickListener(view -> scanConnection());
+        connectionActions.addView(updateButton, new LinearLayout.LayoutParams(dp(52), dp(52)));
+
         retryButton = new Button(this);
-        retryButton.setText("重新连接");
+        retryButton.setText("连接");
         retryButton.setAllCaps(false);
         retryButton.setTextSize(16);
         retryButton.setTypeface(null, android.graphics.Typeface.BOLD);
@@ -326,22 +343,22 @@ public final class MainActivity extends Activity {
         retryButton.setGravity(android.view.Gravity.CENTER);
         retryButton.setBackground(new android.graphics.drawable.RippleDrawable(android.content.res.ColorStateList.valueOf(0x22000000), background(Color.argb(30, Color.red(accent), Color.green(accent), Color.blue(accent)), Color.argb(30, Color.red(accent), Color.green(accent), Color.blue(accent)), dp(14)), null));
         retryButton.setVisibility(View.GONE);
-        retryButton.setOnClickListener(view -> { reconnectPaused = false; restoreComputer(); });
-        LinearLayout.LayoutParams retryParams = new LinearLayout.LayoutParams(-1, dp(52));
-        retryParams.topMargin = dp(12);
-        dock.addView(retryButton, retryParams);
+        retryButton.setOnClickListener(view -> {
+            if (isConnecting()) { reconnectPaused = true; stopNetwork(true); }
+            else { reconnectPaused = false; restoreComputer(); }
+        });
+        LinearLayout.LayoutParams retryParams = new LinearLayout.LayoutParams(0, dp(52), 1f);
+        retryParams.setMargins(dp(12), 0, dp(12), 0);
+        connectionActions.addView(retryButton, retryParams);
 
-        disconnectButton = new Button(this);
-        disconnectButton.setText("删除电脑");
-        disconnectButton.setAllCaps(false);
-        disconnectButton.setTextSize(15);
-        disconnectButton.setTextColor(errorColor);
-        disconnectButton.setBackground(new android.graphics.drawable.RippleDrawable(android.content.res.ColorStateList.valueOf(0x22000000), null, null));
+        disconnectButton = new android.widget.ImageButton(this);
+        disconnectButton.setImageResource(android.R.drawable.ic_menu_delete);
+        disconnectButton.setColorFilter(errorColor);
+        disconnectButton.setContentDescription("删除电脑");
+        disconnectButton.setBackground(new android.graphics.drawable.RippleDrawable(android.content.res.ColorStateList.valueOf(0x22000000), background(card, border, dp(14)), null));
         disconnectButton.setOnClickListener(view -> forgetComputer());
         disconnectButton.setVisibility(View.GONE);
-        LinearLayout.LayoutParams disconnectParams = new LinearLayout.LayoutParams(-1, dp(48));
-        disconnectParams.topMargin = dp(4);
-        dock.addView(disconnectButton, disconnectParams);
+        connectionActions.addView(disconnectButton, new LinearLayout.LayoutParams(dp(52), dp(52)));
 
         networkState = text("网络：未启动", 11);
         networkState.setTextColor(muted);
@@ -394,8 +411,11 @@ public final class MainActivity extends Activity {
         verifyButton.setEnabled(!busy);
         progress.setVisibility(loading ? View.VISIBLE : View.GONE);
         markIcon.setVisibility(loading ? View.INVISIBLE : View.VISIBLE);
-        retryButton.setVisibility(rememberedComputer && !paired ? View.VISIBLE : View.GONE);
-        retryButton.setEnabled(!busy);
+        connectionActions.setVisibility(paired || rememberedComputer || loading ? View.VISIBLE : View.GONE);
+        updateButton.setVisibility(rememberedComputer ? View.VISIBLE : View.GONE);
+        retryButton.setVisibility(rememberedComputer || loading ? View.VISIBLE : View.GONE);
+        retryButton.setText(isConnecting() ? "停止" : "连接");
+        retryButton.setEnabled(true);
         disconnectButton.setVisibility(paired || claimID != null || rememberedComputer ? View.VISIBLE : View.GONE);
         codeView.setVisibility(claimID != null ? View.VISIBLE : View.GONE);
         statusPill.setText(statusText());
@@ -403,6 +423,14 @@ public final class MainActivity extends Activity {
         computerState.setText(heroTitle());
         detail.setText(heroDetail());
         detail.setVisibility(detail.length() > 0 ? View.VISIBLE : View.GONE);
+    }
+
+    private boolean isConnecting() { return busy || claimID != null || (paired && !webLoaded); }
+
+    private void scanConnection() {
+        reconnectPaused = true;
+        stopNetwork(true);
+        startActivityForResult(new Intent(this, ScannerActivity.class), 7);
     }
 
     private String heroTitle() {
@@ -505,7 +533,14 @@ public final class MainActivity extends Activity {
                     if (restoring && online) { busy = false; verify(); return; }
                     if (restoring && loginURL != null) { stopNetwork(true); error.setText("网络授权需更新，请在电脑重新生成配对码"); return; }
                     if (enrolling != null) {
-                        if (online) { Invitation link = enrolling; enrolling = null; getPreferences(MODE_PRIVATE).edit().putString("networkState", new java.io.File(networkDirectory).getName()).apply(); claim(link); return; }
+                        if (online) {
+                            Invitation link = enrolling; enrolling = null;
+                            Runnable resume = enrollmentAction; enrollmentAction = null;
+                            getPreferences(MODE_PRIVATE).edit().putString("networkState", new java.io.File(networkDirectory).getName()).apply();
+                            busy = false;
+                            if (resume != null) resume.run(); else claim(link);
+                            return;
+                        }
                         if (SystemClock.elapsedRealtime() >= enrollmentDeadline || System.currentTimeMillis() >= enrolling.expiresAt || loginURL != null || "NeedsMachineAuth".equals(state)) {
                             stopNetwork(true); error.setText("入网未完成，请检查 Key 是否已使用、过期或需要管理员批准，再重新生成邀请"); return;
                         }
@@ -537,7 +572,7 @@ public final class MainActivity extends Activity {
     }
     private void stopNetwork(boolean disable) {
         generation++; if (disable) enabled = false;
-        enrolling = null; invitation.setText("");
+        enrolling = null; enrollmentAction = null; invitation.setText("");
         main.removeCallbacks(networkPoll); main.removeCallbacks(approvalPoll); main.removeCallbacks(reconnectPoll);
         Client previous = node; node = null; online = false; loginURL = null; busy = false;
         clearComputer(); networkState.setText(enabled ? "网络：已暂停" : "网络：未启动"); render();
@@ -550,7 +585,7 @@ public final class MainActivity extends Activity {
     private void clearComputer() {
         closeWeb();
         generation++;
-        main.removeCallbacks(approvalPoll); endpoint = null; token = null; fingerprint = null; connectionRoutes = null; claimID = null; paired = false; restoring = false;
+        main.removeCallbacks(approvalPoll); endpoint = null; token = null; fingerprint = null; connectionRoutes = null; claimID = null; paired = false; restoring = false; updatingConnection = false;
         computerState.setText("未配对"); detail.setText(""); error.setText(""); busy = false;
     }
     private void pair() {
@@ -558,6 +593,7 @@ public final class MainActivity extends Activity {
         try {
             Invitation link = Invitation.parse(invitation.getText().toString());
             reconnectPaused = false;
+            if (rememberedComputer) { updateConnection(link); return; }
             if (link.multiRoute) {
                 if (link.authKey != null && testControl != null) throw new Exception("测试网络不接受正式入网密钥");
                 startMulti(new org.json.JSONArray(link.endpoints).toString(), link.fingerprint, link.authKey, "", () -> claim(link)); return;
@@ -596,18 +632,57 @@ public final class MainActivity extends Activity {
                 String base = new java.io.File(getNoBackupFilesDir(), "tailnet").getAbsolutePath();
                 String directory = authKey != null ? Androidnet.authStateDir(base, authKey) : networkDirectory != null ? networkDirectory : base;
                 if (revision != generation || !visible) return;
-                Client client = Androidnet.newMultiClient(directory, routes, pin, authKey == null ? "" : authKey, token);
+                Client client = Androidnet.newPendingMultiClient(directory, routes, pin, authKey == null ? "" : authKey, token);
                 main.post(() -> {
                     if (revision != generation || !visible) { closeClient(client); return; }
-                    if (client.usesEmbeddedNetwork()) {
-                        networkDirectory = directory;
-                        if (authKey != null) getPreferences(MODE_PRIVATE).edit().putString("networkState", new java.io.File(directory).getName()).apply();
-                    }
-                    networkState.setText(client.usesEmbeddedNetwork() ? "网络：已连接（内嵌 Tailscale）" : "网络：已连接（系统网络）");
-                    node = client; fingerprint = pin; connectionRoutes = routes; online = true; busy = false; next.run();
+                    node = client;
+                    worker.execute(() -> {
+                        try {
+                            client.connectRoutes();
+                            boolean embedded = client.usesEmbeddedNetwork();
+                            main.post(() -> {
+                                if (revision != generation || !visible) return;
+                                if (embedded) {
+                                    networkDirectory = directory;
+                                    if (authKey != null) getPreferences(MODE_PRIVATE).edit().putString("networkState", new java.io.File(directory).getName()).apply();
+                                }
+                                networkState.setText(embedded ? "网络：已连接（内嵌 Tailscale）" : "网络：已连接（系统网络）");
+                                fingerprint = pin; connectionRoutes = routes; online = true; busy = false; next.run();
+                            });
+                        } catch (Exception e) { fail(revision, routeFailureMessage(e)); }
+                    });
                 });
             } catch (Exception e) { fail(revision, routeFailureMessage(e)); }
         });
+    }
+    private void updateConnection(Invitation link) throws Exception {
+        JSONObject saved = ConnectionStore.load(this);
+        if (saved == null) throw new Exception("无法读取保存的电脑凭据");
+        final String credential = saved.getString("token");
+        if (!credential.matches("[a-f0-9]{64}")) throw new Exception("电脑凭据无效");
+        Runnable resume = () -> {
+            endpoint = link.endpoint; token = credential; paired = true; restoring = true;
+            updatingConnection = true; verify();
+        };
+        Runnable connect = () -> {
+            if (link.multiRoute) startMulti(new org.json.JSONArray(link.endpoints).toString(), link.fingerprint, null, credential, resume);
+            else if (link.fingerprint != null) startDirect(link.endpoint, link.fingerprint, resume);
+            else resume.run();
+            updatingConnection = true;
+        };
+        if (link.authKey != null) {
+            if (testControl != null) throw new Exception("测试网络不接受正式入网密钥");
+            // 显式更新 Key 时先完成入网，不因局域网先响应而丢掉新 Key。
+            stopNetwork(true); enabled = true;
+            enrolling = link; enrollmentAction = connect; enrollmentDeadline = SystemClock.elapsedRealtime() + 45000;
+            startNetwork(link.authKey);
+        } else if (link.multiRoute || link.fingerprint != null) connect.run();
+        else {
+            stopNetwork(true); enabled = true;
+            endpoint = link.endpoint; token = credential; paired = true; restoring = true;
+            startNetwork();
+        }
+        updatingConnection = true;
     }
     private String routeFailureMessage(Exception e) {
         // 选路探测已包含鉴权状态读取，撤销授权要在建连阶段直接清凭据，而不是当成普通网络失败。
@@ -683,7 +758,15 @@ public final class MainActivity extends Activity {
                 JSONObject status = response(client.request(address, "/v1/status", "GET", credential, ""));
                 if (!"WeQ Remote".equals(status.getString("product")) || status.getInt("protocol") != 1 || !"status:read".equals(status.getString("scope")) || !status.getBoolean("online")) throw new Exception("电脑返回了不兼容的数据");
                 boolean webReady = client.hasWeb();
-                main.post(() -> { if (revision != generation || !credential.equals(token)) return; busy = false; render(); if (WebStartup.shouldOpenWeb(restoring, webView != null, webReady)) { restoring = false; if (visible) openWeb(); } });
+                main.post(() -> {
+                    if (revision != generation || !credential.equals(token)) return;
+                    if (updatingConnection) {
+                        try { ConnectionStore.save(this, endpoint, credential, fingerprint, connectionRoutes); updatingConnection = false; }
+                        catch (Exception e) { fail(revision, "无法保存新的电脑地址，请重试"); return; }
+                    }
+                    busy = false; render();
+                    if (WebStartup.shouldOpenWeb(restoring, webView != null, webReady)) { restoring = false; if (visible) openWeb(); }
+                });
             } catch (Exception e) { fail(revision, e.getMessage()); }
         });
     }
@@ -861,8 +944,10 @@ public final class MainActivity extends Activity {
             if (visible) main.postDelayed(reconnectPoll, 5000);
             return;
         }
-        if (revoked) { ConnectionStore.delete(this); rememberedComputer = false; Androidnet.clearWebCache(); }
+        if (revoked && !updatingConnection) { ConnectionStore.delete(this); rememberedComputer = false; Androidnet.clearWebCache(); }
+        boolean updateFailed = updatingConnection;
         stopNetwork(true); error.setText(message == null ? "连接失败，请重试" : message); render();
+        if (updateFailed) { reconnectPaused = true; return; }
         if (!BuildConfig.TESTING && visible) main.postDelayed(reconnectPoll, 5000);
     }); }
     @Override protected void onActivityResult(int request, int result, Intent data) { super.onActivityResult(request, result, data); if (webFeatures != null && webFeatures.result(request, result, data)) return; if (request == 7 && result == RESULT_OK && data != null) { invitation.setText(data.getStringExtra("invitation")); main.post(this::pair); } }

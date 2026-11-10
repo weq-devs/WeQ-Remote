@@ -17,6 +17,81 @@ import (
 	"time"
 )
 
+func TestPendingRouteCanStopDuringEnrollment(t *testing.T) {
+	client, err := NewPendingMultiClient(t.TempDir(), `["http://100.64.0.10:7691"]`, strings.Repeat("f", 64), "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{})
+	client.routes.open = func(ctx context.Context, _ string) (*Client, error) {
+		close(started)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	result := make(chan error, 1)
+	go func() { result <- client.ConnectRoutes() }()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("route selection did not start")
+	}
+	closed := make(chan struct{})
+	go func() { client.Close(); close(closed) }()
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("stop waited for enrollment timeout")
+	}
+	if err := <-result; err == nil {
+		t.Fatal("stopped selection unexpectedly succeeded")
+	}
+	if err := client.ConnectRoutes(); err == nil {
+		t.Fatal("closed connection restarted")
+	}
+}
+
+func TestMultiRouteStopCancelsAuthenticatedRequest(t *testing.T) {
+	endpoint := "https://192.168.1.8:7691"
+	client, err := NewPendingMultiClient(t.TempDir(), `["`+endpoint+`"]`, strings.Repeat("f", 64), "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{})
+	client.routes.open = func(_ context.Context, address string) (*Client, error) {
+		return &Client{directEndpoint: address, ctx: context.Background(), http: &http.Client{Transport: assetRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if req.URL.Path == "/v1/status" {
+				close(started)
+				<-req.Context().Done()
+				return nil, req.Context().Err()
+			}
+			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"product":"WeQ Remote","protocol":1}`)), Header: make(http.Header)}, nil
+		})}}, nil
+	}
+	if err := client.ConnectRoutes(); err != nil {
+		t.Fatal(err)
+	}
+	result := make(chan error, 1)
+	go func() {
+		_, err := client.Request(endpoint, "/v1/status", "GET", strings.Repeat("a", 64), "")
+		result <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("status request did not start")
+	}
+	closed := make(chan struct{})
+	go func() { client.Close(); close(closed) }()
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("stop waited for HTTP timeout")
+	}
+	if err := <-result; err == nil {
+		t.Fatal("stopped request unexpectedly succeeded")
+	}
+}
+
 func TestFastRouteDoesNotWaitForBlackholedFirstAddress(t *testing.T) {
 	slow, fast := "https://192.168.1.8:7691", "https://100.64.0.10:7692"
 	routes := &remoteRoutes{endpoints: []string{slow, fast}, clients: make(map[string]*Client)}

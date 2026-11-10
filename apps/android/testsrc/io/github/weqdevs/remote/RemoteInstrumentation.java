@@ -89,6 +89,14 @@ public final class RemoteInstrumentation extends Instrumentation {
             MainActivity restored = current;
             waitWeb(restored, "Web 已连接", 30000); waitWeb(restored, "WebSocket 已连接", 15000);
             require(http("/test/devices", "GET").getInt("count") == 1, "reconnect created a new pairing");
+            JSONObject beforeUpdate = ConnectionStore.load(getTargetContext());
+            JSONObject refreshedInvitation = http("/test/invitation", "GET");
+            Intent update = new Intent().setData(android.net.Uri.parse(refreshedInvitation.getString("url")));
+            runOnMainSync(() -> restored.onNewIntent(update));
+            waitForIdleSync();
+            waitWeb(restored, "Web 已连接", 30000); waitWeb(restored, "WebSocket 已连接", 15000);
+            require(beforeUpdate.getString("token").equals(ConnectionStore.load(getTargetContext()).getString("token")), "address update replaced approved token");
+            require(http("/test/devices", "GET").getInt("count") == 1, "address update requested a new pairing");
             android.view.accessibility.AccessibilityNodeInfo active = null;
             long deadline = android.os.SystemClock.elapsedRealtime() + 5000;
             while (android.os.SystemClock.elapsedRealtime() < deadline) {

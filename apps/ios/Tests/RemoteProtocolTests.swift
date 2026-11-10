@@ -100,6 +100,34 @@ final class RemoteProtocolTests: XCTestCase {
         XCTAssertEqual(restoreProbe(for: [lan, tail]), .status)
     }
 
+    func testUpdatingRoutesPreservesApprovedToken() throws {
+        let pin = String(repeating: "b", count: 64)
+        let saved = SavedConnection(endpoint: URL(string: "https://192.168.1.8:7691")!,
+                                    token: String(repeating: "a", count: 64), fingerprint: pin)
+        let lan = URL(string: "https://192.168.2.9:7691")!
+        let tail = URL(string: "http://100.64.0.20:7691")!
+        let text = "weq-remote://pair?v=4&endpoint=\(lan)&endpoint=\(tail)&invitation=\(String(repeating: "c", count: 64))&fingerprint=\(pin)&authKey=tskey-auth-\(String(repeating: "x", count: 24))&expiresAt=\(Int((Date().timeIntervalSince1970 + 120) * 1000))"
+        let invitation = try PairingInvitation(text)
+        for selected in [lan, tail] {
+            let updated = try saved.updatingRoutes(from: invitation, selected: selected)
+            XCTAssertEqual(updated.token, saved.token)
+            XCTAssertEqual(updated.endpoint, selected)
+            XCTAssertEqual(updated.endpoints, [lan, tail])
+            XCTAssertEqual(updated.routeFingerprint, pin)
+            XCTAssertEqual(updated.fingerprint, selected == lan ? pin : nil)
+            let encoded = String(decoding: try JSONEncoder().encode(updated), as: UTF8.self)
+            XCTAssertFalse(encoded.contains("tskey-auth"))
+            XCTAssertFalse(encoded.contains("authKey"))
+        }
+        XCTAssertThrowsError(try saved.updatingRoutes(from: invitation, selected: saved.endpoint))
+        let legacy = try PairingInvitation("weq-remote://pair?v=1&endpoint=\(tail)&invitation=\(String(repeating: "c", count: 64))")
+        let updated = try saved.updatingRoutes(from: legacy, selected: tail)
+        XCTAssertEqual(updated.token, saved.token)
+        XCTAssertNil(updated.fingerprint)
+        XCTAssertNil(updated.endpoints)
+        XCTAssertNil(updated.routeFingerprint)
+    }
+
     func testRouteFailoverOnlyRetriesConnectionFailures() async throws {
         let lan = URL(string: "https://192.168.1.8:7691")!, tailnet = URL(string: "http://100.64.0.10:7691")!
         var visited: [URL] = []

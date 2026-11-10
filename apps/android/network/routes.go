@@ -11,6 +11,8 @@ import (
 
 type remoteRoutes struct {
 	mu        sync.Mutex
+	ctx       context.Context
+	cancel    context.CancelFunc
 	endpoints []string
 	open      func(context.Context, string) (*Client, error)
 	active    *Client
@@ -25,6 +27,19 @@ type remoteRoutes struct {
 // NewMultiClient 先探测路径再提交一次配对；原始 Key 不进入保存的连接资料。
 // 传入已配对令牌时探测改为鉴权状态读取，避免连接时再重复核验一次。
 func NewMultiClient(stateDir, rawEndpoints, fingerprint, authKey, token string) (*Client, error) {
+	client, err := NewPendingMultiClient(stateDir, rawEndpoints, fingerprint, authKey, token)
+	if err != nil {
+		return nil, err
+	}
+	if err := client.ConnectRoutes(); err != nil {
+		client.Close()
+		return nil, err
+	}
+	return client, nil
+}
+
+// NewPendingMultiClient 先创建可关闭的连接句柄，让界面能取消正在进行的探测或入网。
+func NewPendingMultiClient(stateDir, rawEndpoints, fingerprint, authKey, token string) (*Client, error) {
 	var endpoints []string
 	if err := json.Unmarshal([]byte(rawEndpoints), &endpoints); len(rawEndpoints) > 4096 || err != nil || !validRoutes(endpoints, fingerprint) {
 		return nil, errors.New("invalid connection routes")
@@ -80,17 +95,23 @@ func NewMultiClient(stateDir, rawEndpoints, fingerprint, authKey, token string) 
 		}
 	}
 	routes := &remoteRoutes{endpoints: endpoints, clients: make(map[string]*Client), probeToken: token}
+	routes.ctx, routes.cancel = context.WithCancel(context.Background())
 	routes.open = func(ctx context.Context, endpoint string) (*Client, error) {
 		if strings.HasPrefix(endpoint, "https:") {
 			return NewDirectClient(endpoint, fingerprint)
 		}
 		return openEmbedded(ctx)
 	}
-	if err := routes.selectRoute(); err != nil {
-		routes.close()
-		return nil, err
-	}
 	return &Client{routes: routes}, nil
+}
+
+func (c *Client) ConnectRoutes() error {
+	if c.routes == nil {
+		return errors.New("not a multi-route connection")
+	}
+	c.routes.mu.Lock()
+	defer c.routes.mu.Unlock()
+	return c.routes.selectRoute()
 }
 
 func validRoutes(endpoints []string, fingerprint string) bool {
@@ -122,7 +143,11 @@ func (r *remoteRoutes) selectRoute() error {
 		fatal    bool
 		probeRaw string
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	parent := r.ctx
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 	var workers [][]candidate
 	var embedded []candidate
@@ -254,7 +279,11 @@ func (r *remoteRoutes) request(endpoint, path, method, token, body string) (stri
 	if cached, ok := r.takeProbe(path, method); ok {
 		return cached, nil
 	}
-	result, err := r.active.Request(r.endpoint, path, method, token, body)
+	parent := r.ctx
+	if parent == nil {
+		parent = context.Background()
+	}
+	result, err := r.active.requestContext(parent, r.endpoint, path, method, token, body)
 	// POST 可能已到达电脑，不能在另一条路径重发消费一次性邀请。
 	var failure *remoteTransportError
 	if err != nil && method == "GET" && errors.As(err, &failure) && failure.retry {
@@ -262,7 +291,7 @@ func (r *remoteRoutes) request(endpoint, path, method, token, body string) (stri
 			if cached, ok := r.takeProbe(path, method); ok {
 				return cached, nil
 			}
-			return r.active.Request(r.endpoint, path, method, token, body)
+			return r.active.requestContext(parent, r.endpoint, path, method, token, body)
 		}
 	}
 	return result, err
@@ -308,6 +337,9 @@ func (r *remoteRoutes) status() (string, error) {
 }
 
 func (r *remoteRoutes) close() {
+	if r.cancel != nil {
+		r.cancel()
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.closed = true

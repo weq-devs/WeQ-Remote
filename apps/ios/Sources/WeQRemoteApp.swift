@@ -119,7 +119,7 @@ struct RemoteView: View {
         .task { if EmbeddedNetwork.integrationControl != nil { await network.start() } }
         .sheet(isPresented: $scanning) {
             NavigationStack {
-                ScannerView(onScan: { model.invitationText = $0; scanning = false; pairingTask = Task { await model.pair() } }, onError: { scanning = false; cameraError = true })
+                ScannerView(onScan: { model.invitationText = $0; scanning = false; pair() }, onError: { scanning = false; cameraError = true })
                     .ignoresSafeArea(edges: .bottom)
                     .navigationTitle("扫描配对码").navigationBarTitleDisplayMode(.inline)
                     .toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { scanning = false } } }
@@ -260,11 +260,11 @@ struct RemoteView: View {
     // 主操作贴近拇指：底部操作坞随状态切换扫码、链接或已保存电脑的入口。
     @ViewBuilder private var dock: some View {
         VStack(spacing: 12) {
-            if canPair {
+            if model.rememberedComputer || model.isConnecting {
+                reconnectRow
+            } else if canPair {
                 scanButton
                 linkField
-            } else if model.rememberedComputer {
-                reconnectRow
             }
             Text(appVersion.isEmpty ? "WeQ Remote" : "WeQ Remote \(appVersion)")
                 .font(.caption2)
@@ -330,17 +330,31 @@ struct RemoteView: View {
 
     private var reconnectRow: some View {
         HStack(spacing: 12) {
-            Button { model.resumeReconnect(); Task { await model.reconnect() } } label: {
+            if model.rememberedComputer {
+                Button { Task { await scan() } } label: {
+                    Image(systemName: "qrcode.viewfinder").font(.system(size: 20, weight: .medium))
+                        .foregroundStyle(accent)
+                        .frame(width: 52, height: 52)
+                        .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 14))
+                        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Color(uiColor: .separator).opacity(0.45), lineWidth: 0.5))
+                }
+                .accessibilityLabel("扫码更新连接")
+                .accessibilityIdentifier("updateConnection")
+            }
+            Button {
+                if model.isConnecting { stopConnection() }
+                else { model.resumeReconnect(); pairingTask = Task { await model.reconnect() } }
+            } label: {
                 HStack(spacing: 8) {
-                    Image(systemName: "arrow.clockwise").font(.system(size: 15, weight: .semibold))
-                    Text("重新连接").font(.headline)
+                    Image(systemName: model.isConnecting ? "stop.fill" : "arrow.right").font(.system(size: 15, weight: .semibold))
+                    Text(model.isConnecting ? "停止" : "连接").font(.headline)
                 }
                 .foregroundStyle(accent)
                 .frame(maxWidth: .infinity, minHeight: 52)
                 .background(accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 14))
             }
             .buttonStyle(PressableButtonStyle(reduceMotion: reduceMotion))
-            .disabled(model.busy || model.webSession != nil)
+            .accessibilityIdentifier("connectComputer")
             Button(role: .destructive) { confirmingDelete = true } label: {
                 Image(systemName: "trash").font(.system(size: 16, weight: .medium))
                     .foregroundStyle(Color(uiColor: .systemRed))
@@ -354,8 +368,18 @@ struct RemoteView: View {
 
     private func pair() { pairingTask = Task { await model.pair() } }
 
+    private func stopConnection() {
+        pairingTask?.cancel()
+        model.disconnect()
+        pairingTask = Task { await network.stop() }
+    }
+
     private func scan() async {
-        model.preparePairing()
+        pairingTask?.cancel()
+        if model.rememberedComputer {
+            model.disconnect()
+            await network.stop()
+        } else { model.preparePairing() }
         let allowed = await AVCaptureDevice.requestAccess(for: .video)
         if allowed && DataScannerViewController.isSupported && DataScannerViewController.isAvailable { scanning = true }
         else { cameraError = true }

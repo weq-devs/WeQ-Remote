@@ -27,12 +27,32 @@ class ConnectionLayoutTests(unittest.TestCase):
         self.assertIn('ScrollView {', source)
         self.assertNotIn('.scrollDisabled(true)', source)
         for text in ['Text("WeQ Remote")', 'Text(statusText)', 'Text(heroTitle)', 'Text(code)',
-                     'Text("扫码连接")', 'Text("重新连接")']:
+                     'Text("扫码连接")', 'Text(model.isConnecting ? "停止" : "连接")']:
             font = source.split(text, 1)[1].split('.font(', 1)[1].split('\n', 1)[0]
             self.assertNotIn('.system(size:', font, text)
         field = source.split('private var linkField:', 1)[1].split('private var reconnectRow:', 1)[0]
         self.assertIn('.font(.body)', field)
         self.assertIn('.frame(width: 44, height: 44)\n                        .contentShape(Rectangle())', field)
+
+    def test_saved_computer_actions_and_update_do_not_repair(self):
+        ios = (ROOT / 'apps/ios/Sources/WeQRemoteApp.swift').read_text()
+        row = ios.split('private var reconnectRow:', 1)[1].split('private func pair()', 1)[0]
+        self.assertLess(row.index('qrcode.viewfinder'), row.index('Text(model.isConnecting'))
+        self.assertLess(row.index('Text(model.isConnecting'), row.index('"trash"'))
+        self.assertNotIn('.disabled(model.busy', row)
+        model = (ROOT / 'apps/ios/Sources/RemoteModel.swift').read_text()
+        update = model.split('private func updateConnection()', 1)[1].split('private func waitForApproval', 1)[0]
+        self.assertIn('probe: .status, token: saved.token', update)
+        self.assertNotIn('"v1/pair"', update)
+        self.assertNotIn('SavedConnection.delete', update)
+        android = (ANDROID / 'MainActivity.java').read_text()
+        update = android.split('private void updateConnection(Invitation link)', 1)[1].split('private String routeFailureMessage', 1)[0]
+        self.assertIn('token = credential', update)
+        self.assertIn('updatingConnection = true; verify()', update)
+        self.assertNotIn('claim(link)', update)
+        self.assertNotIn('ConnectionStore.delete', update)
+        self.assertIn('retryButton.setText(isConnecting() ? "停止" : "连接")', android)
+        self.assertIn('if (isConnecting()) { reconnectPaused = true; stopNetwork(true); }', android)
 
     @unittest.skipUnless(shutil.which('javac') and shutil.which('java'), '需要 JDK')
     def test_insets_on_legacy_runtime_without_api30_classes(self):
