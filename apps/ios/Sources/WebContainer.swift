@@ -36,6 +36,16 @@ private final class RemoteStartupHandler: NSObject, WKScriptMessageHandler {
     }
 }
 
+private final class RemoteResourceHandler: NSObject, WKScriptMessageHandler {
+    weak var owner: RemoteWebSession?
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard message.frameInfo.isMainFrame, let owner, let url = message.frameInfo.request.url,
+              RemoteWebPolicy.sameOrigin(url, endpoint: owner.endpoint),
+              let progress = WebDownloadProgress(message: message.body) else { return }
+        owner.receiveDownload(progress)
+    }
+}
+
 @MainActor
 final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate {
     let view: WKWebView
@@ -45,11 +55,13 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
     private var closed = false
     private var startupTimeout: Task<Void, Never>?
     private var startupFinished = false
+    private var startupReported = false
     // 正式页面准备完成才切到全屏；HTML 加载完成仍留在首页。
     var onReady: (() -> Void)?
     var onFailure: ((Error) -> Void)?
     var onLoading: (() -> Void)?
     var onProgress: ((String) -> Void)?
+    var onDownload: ((WebDownloadProgress?) -> Void)?
     var onDisconnect: (() -> Void)?
 
     init(configuration: WKWebViewConfiguration, endpoint: URL, fingerprint: String? = nil) {
@@ -70,6 +82,14 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
         let startup = RemoteStartupHandler()
         startup.owner = self
         configuration.userContentController.add(startup, name: "weqStartup")
+        let resources = RemoteResourceHandler()
+        resources.owner = self
+        configuration.userContentController.add(resources, name: "weqResources")
+        if let url = Bundle.main.url(forResource: "web-startup-progress", withExtension: "js"),
+           let source = try? String(contentsOf: url, encoding: .utf8) {
+            configuration.userContentController.addUserScript(WKUserScript(
+                source: source, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        }
         configuration.userContentController.addUserScript(WKUserScript(
             source: "window.addEventListener('weq-remote-startup',function(){if(window.weqRemoteStartup)window.webkit.messageHandlers.weqStartup.postMessage(window.weqRemoteStartup)});",
             injectionTime: .atDocumentStart, forMainFrameOnly: true))
@@ -91,11 +111,13 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
 
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
         guard !closed, !startupFinished else { return }
-        onProgress?("正在初始化 WeQ 页面")
+        onProgress?("正在下载网页资源")
     }
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         startupFinished = false
+        startupReported = false
+        onDownload?(nil)
         onLoading?()
         onProgress?("正在下载网页资源")
         startupTimeout?.cancel()
@@ -107,6 +129,7 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
 
     func receiveStartup(_ state: String, message: String?) {
         guard !closed, !startupFinished else { return }
+        startupReported = true
         if state == "loading" {
             onProgress?(String((message ?? "正在初始化 WeQ 页面").prefix(100)))
         } else if state == "ready" || state == "action-required" {
@@ -118,6 +141,14 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
             startupTimeout?.cancel()
             onFailure?(NSError(domain: "WeQRemoteStartup", code: 1,
                 userInfo: [NSLocalizedDescriptionKey: String((message ?? "WeQ 页面启动失败，请重试。").prefix(500))]))
+        }
+    }
+
+    func receiveDownload(_ progress: WebDownloadProgress) {
+        guard !closed, !startupFinished else { return }
+        onDownload?(progress)
+        if !startupReported {
+            onProgress?(progress.downloading ? "正在下载网页资源" : "正在执行网页脚本")
         }
     }
 
@@ -310,10 +341,12 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
         view.configuration.userContentController.removeScriptMessageHandler(forName: "weqCapture")
         view.configuration.userContentController.removeScriptMessageHandler(forName: "weqShell")
         view.configuration.userContentController.removeScriptMessageHandler(forName: "weqStartup")
+        view.configuration.userContentController.removeScriptMessageHandler(forName: "weqResources")
         onReady = nil
         onFailure = nil
         onLoading = nil
         onProgress = nil
+        onDownload = nil
         onDisconnect = nil
         view.loadHTMLString("", baseURL: nil)
     }

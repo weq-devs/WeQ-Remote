@@ -19,6 +19,8 @@ targets:
       - path: TestSupport/WebSmoke.swift
       - path: Support/Tailscale-LICENSE.txt
         buildPhase: resources
+      - path: ../../resources/web-startup-progress.js
+        buildPhase: resources
     dependencies:
       - framework: ${WEQ_TAILSCALE_FRAMEWORK}
         embed: true

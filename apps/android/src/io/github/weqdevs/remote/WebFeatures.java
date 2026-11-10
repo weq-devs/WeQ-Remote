@@ -37,9 +37,17 @@ final class WebFeatures extends WebChromeClient {
     private volatile HttpURLConnection connection;
     private volatile boolean closed;
     private volatile boolean saving;
+    private final String resourceObserver;
 
     WebFeatures(Activity activity, WebView view, String origin) {
         this.activity = activity; this.view = view; this.origin = origin;
+        String script = "";
+        try (InputStream input = activity.getAssets().open("web-startup-progress.js"); java.io.ByteArrayOutputStream output = new java.io.ByteArrayOutputStream()) {
+            byte[] buffer = new byte[4096]; int count;
+            while ((count = input.read(buffer)) != -1) output.write(buffer, 0, count);
+            script = new String(output.toByteArray(), java.nio.charset.StandardCharsets.UTF_8);
+        } catch (java.io.IOException ignored) { }
+        resourceObserver = script;
         view.setWebChromeClient(this);
         view.addJavascriptInterface(new ExternalLinks(), "weqRemoteLinks");
         view.setDownloadListener((url, agent, disposition, mime, size) -> {
@@ -78,6 +86,17 @@ final class WebFeatures extends WebChromeClient {
         blobToken = null; blobOffset = 0;
     }
     public final class ExternalLinks {
+        @android.webkit.JavascriptInterface public void resources(String payload) {
+            if (payload == null || payload.length() > 512) return;
+            try {
+                org.json.JSONObject value = new org.json.JSONObject(payload);
+                WebDownloadProgress progress = new WebDownloadProgress(value.getInt("completed"), value.getInt("total"), value.getLong("loadedBytes"), value.getLong("totalBytes"));
+                activity.runOnUiThread(() -> {
+                    if (!closed && WebAccess.sameOrigin(origin, view.getUrl()) && activity instanceof MainActivity)
+                        ((MainActivity) activity).receiveWebDownload(view, progress);
+                });
+            } catch (org.json.JSONException | IllegalArgumentException ignored) { }
+        }
         @android.webkit.JavascriptInterface public void startup(String state, String message) {
             activity.runOnUiThread(() -> {
                 if (!closed && WebAccess.sameOrigin(origin, view.getUrl()) && activity instanceof MainActivity)
@@ -154,6 +173,7 @@ final class WebFeatures extends WebChromeClient {
         view.evaluateJavascript("window.dispatchEvent(new CustomEvent('weq-remote-capture-result',{detail:" + detail + "}))", null);
     }
     void observeStartup() {
+        if (!resourceObserver.isEmpty()) view.evaluateJavascript(resourceObserver, null);
         if (closed) return;
         view.evaluateJavascript("(function(){function report(){var s=window.weqRemoteStartup;if(s)weqRemoteLinks.startup(s.state,s.message||'');}if(!window.__weqStartupListener){window.__weqStartupListener=true;window.addEventListener('weq-remote-startup',report);}report();})()", null);
     }

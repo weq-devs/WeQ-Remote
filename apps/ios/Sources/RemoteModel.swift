@@ -16,6 +16,7 @@ final class RemoteModel: ObservableObject {
     @Published private(set) var webSession: RemoteWebSession?
     @Published private(set) var webReady = false
     @Published private(set) var webLoadingStage = "正在下载网页资源"
+    @Published private(set) var webDownload: WebDownloadProgress?
     @Published private(set) var rememberedComputer = false
     let network: EmbeddedNetwork
     private var api: RemoteAPI?
@@ -144,6 +145,11 @@ final class RemoteModel: ObservableObject {
     func adoptWebSession(_ session: RemoteWebSession) {
         webReady = false
         webLoadingStage = "正在下载网页资源"
+        webDownload = nil
+        session.onDownload = { [weak self, weak session] progress in
+            guard let self, self.webSession === session else { return }
+            self.webDownload = progress
+        }
         session.onProgress = { [weak self, weak session] stage in
             guard let self, self.webSession === session else { return }
             self.webLoadingStage = stage
@@ -151,6 +157,7 @@ final class RemoteModel: ObservableObject {
         session.onReady = { [weak self, weak session] in
             guard let self, self.webSession === session else { return }
             self.webReady = true
+            self.webDownload = nil
             self.error = nil
         }
         session.onFailure = { [weak self, weak session] error in
@@ -160,6 +167,7 @@ final class RemoteModel: ObservableObject {
         session.onLoading = { [weak self, weak session] in
             guard let self, self.webSession === session else { return }
             self.webReady = false
+            self.webDownload = nil
             self.error = nil
         }
         session.onDisconnect = { [weak self] in
@@ -171,6 +179,7 @@ final class RemoteModel: ObservableObject {
     }
 
     private func failWebLoad(_ error: Error) {
+        webDownload = nil
         webSession?.close()
         webSession = nil
         webReady = false
@@ -396,6 +405,7 @@ final class RemoteModel: ObservableObject {
     }
 
     func disconnect() {
+        webDownload = nil
         reconnectPaused = true
         for session in probingSessions.values { session.invalidateAndCancel() }
         probingSessions.removeAll()

@@ -174,6 +174,7 @@ struct RemoteView: View {
     }
 
     private var heroTitle: String {
+        if model.webSession != nil, !model.webReady, model.webDownload?.downloading == true { return "正在下载网页资源" }
         if let stage = loadingStage { return stage }
         if model.error != nil { return "连接未通过" }
         if model.rememberedComputer { return "我的电脑" }
@@ -182,7 +183,10 @@ struct RemoteView: View {
 
     private var heroDetail: String {
         if model.code != nil { return "在电脑上核对校验码，并允许这台手机访问" }
-        if model.webSession != nil, !model.webReady { return model.computerAddress ?? "页面准备好后自动进入" }
+        if model.webSession != nil, !model.webReady {
+            if let progress = model.webDownload { return progress.detail }
+            return model.computerAddress ?? "页面准备好后自动进入"
+        }
         if model.busy { return model.computerAddress ?? "正在准备与电脑的连接" }
         if model.error != nil { return model.rememberedComputer ? (model.computerAddress ?? "电脑暂时不可用") : "请确认电脑在线后重试" }
         if model.rememberedComputer { return model.computerAddress ?? "打开后会自动连接上次的电脑" }
@@ -245,7 +249,19 @@ struct RemoteView: View {
             Circle()
                 .strokeBorder(accent.opacity(0.16), lineWidth: 1)
                 .frame(width: 142, height: 142)
-            if loadingStage != nil {
+            if loadingStage != nil, let progress = model.webDownload, progress.downloading {
+                Circle()
+                    .trim(from: 0, to: progress.fraction)
+                    .stroke(accent, style: StrokeStyle(lineWidth: 4, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+                    .frame(width: 138, height: 138)
+                Text("\(Int((progress.fraction * 100).rounded()))%")
+                    .font(.title2.monospacedDigit().weight(.medium))
+                    .foregroundStyle(accent)
+                    .frame(width: 104, height: 60)
+                    .minimumScaleFactor(0.6)
+                    .lineLimit(1)
+            } else if loadingStage != nil {
                 ProgressView().controlSize(.large).tint(accent)
             } else {
                 Image(systemName: model.error != nil ? "exclamationmark.triangle" : "desktopcomputer")
