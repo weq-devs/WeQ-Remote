@@ -150,13 +150,16 @@ public final class MainActivity extends Activity {
         android.widget.FrameLayout page = new android.widget.FrameLayout(this);
         page.setBackgroundColor(pageColor);
         setupView = page;
+        android.widget.ScrollView scroll = new android.widget.ScrollView(this);
+        scroll.setFillViewport(true);
+        page.addView(scroll, new android.widget.FrameLayout.LayoutParams(Math.min(getResources().getDisplayMetrics().widthPixels, dp(496)), -1, android.view.Gravity.TOP | android.view.Gravity.CENTER_HORIZONTAL));
         final LinearLayout content = new LinearLayout(this);
         content.setOrientation(LinearLayout.VERTICAL);
         content.setPadding(pad, dp(8), pad, dp(10));
-        page.addView(content, new android.widget.FrameLayout.LayoutParams(Math.min(getResources().getDisplayMetrics().widthPixels, dp(496)), -1, android.view.Gravity.TOP | android.view.Gravity.CENTER_HORIZONTAL));
+        scroll.addView(content, new android.widget.ScrollView.LayoutParams(-1, -2));
         page.setOnApplyWindowInsetsListener((view, insets) -> {
-            android.graphics.Insets bars = insets.getInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.ime());
-            content.setPadding(pad + bars.left, dp(8) + bars.top, pad + bars.right, dp(10) + bars.bottom);
+            android.graphics.Rect bars = WindowInsetsHelper.contentInsets(insets);
+            scroll.setPadding(bars.left, bars.top, bars.right, bars.bottom);
             return insets;
         });
         page.requestApplyInsets();
@@ -192,7 +195,7 @@ public final class MainActivity extends Activity {
         content.addView(topBar);
 
         android.widget.FrameLayout hero = new android.widget.FrameLayout(this);
-        content.addView(hero, new LinearLayout.LayoutParams(-1, 0, 1f));
+        content.addView(hero, new LinearLayout.LayoutParams(-1, -2, 1f));
         LinearLayout heroColumn = new LinearLayout(this);
         heroColumn.setOrientation(LinearLayout.VERTICAL);
         heroColumn.setGravity(android.view.Gravity.CENTER_HORIZONTAL);
@@ -312,7 +315,7 @@ public final class MainActivity extends Activity {
         playIcon.setTint(actionText);
         pairButton.setCompoundDrawablesWithIntrinsicBounds(playIcon, null, null, null);
         pairButton.setOnClickListener(view -> pair());
-        input.addView(pairButton, new LinearLayout.LayoutParams(dp(40), dp(40)));
+        input.addView(pairButton, new LinearLayout.LayoutParams(dp(48), dp(48)));
 
         retryButton = new Button(this);
         retryButton.setText("重新连接");
@@ -336,7 +339,7 @@ public final class MainActivity extends Activity {
         disconnectButton.setBackground(new android.graphics.drawable.RippleDrawable(android.content.res.ColorStateList.valueOf(0x22000000), null, null));
         disconnectButton.setOnClickListener(view -> forgetComputer());
         disconnectButton.setVisibility(View.GONE);
-        LinearLayout.LayoutParams disconnectParams = new LinearLayout.LayoutParams(-1, dp(44));
+        LinearLayout.LayoutParams disconnectParams = new LinearLayout.LayoutParams(-1, dp(48));
         disconnectParams.topMargin = dp(4);
         dock.addView(disconnectButton, disconnectParams);
 
@@ -813,7 +816,7 @@ public final class MainActivity extends Activity {
     }
     private void applyWebInsets(LinearLayout shell) {
         shell.setOnApplyWindowInsetsListener((view, insets) -> {
-            android.graphics.Insets bars = insets.getInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.ime());
+            android.graphics.Rect bars = WindowInsetsHelper.contentInsets(insets);
             view.setPadding(bars.left, bars.top, bars.right, bars.bottom);
             return insets;
         });

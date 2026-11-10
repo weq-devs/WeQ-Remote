@@ -110,7 +110,6 @@ struct RemoteView: View {
                 .frame(maxWidth: 496)
                 .frame(maxWidth: .infinity)
             }
-            .scrollDisabled(true)
             .scrollDismissesKeyboard(.interactively)
         }
         .background(Color(uiColor: .systemGroupedBackground).ignoresSafeArea())
@@ -143,7 +142,7 @@ struct RemoteView: View {
                 .background(accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 9))
                 .accessibilityHidden(true)
             Text("WeQ Remote")
-                .font(.system(size: 16, weight: .semibold))
+                .font(.headline)
             Spacer(minLength: 8)
             statusPill
         }
@@ -152,7 +151,7 @@ struct RemoteView: View {
     private var statusPill: some View {
         HStack(spacing: 6) {
             Circle().fill(statusTint).frame(width: 6, height: 6)
-            Text(statusText).font(.system(size: 12, weight: .medium))
+            Text(statusText).font(.caption.weight(.medium))
         }
         .foregroundStyle(.secondary)
         .padding(.horizontal, 10)
@@ -195,7 +194,7 @@ struct RemoteView: View {
             heroMark
             VStack(spacing: 10) {
                 Text(heroTitle)
-                    .font(.system(size: 26, weight: .semibold))
+                    .font(.title2.weight(.semibold))
                     .multilineTextAlignment(.center)
                     .accessibilityIdentifier("computerState")
                 Text(heroDetail)
@@ -207,8 +206,9 @@ struct RemoteView: View {
             }
             if let code = model.code {
                 Text(code)
-                    .font(.system(size: 38, weight: .medium, design: .monospaced))
-                    .tracking(5)
+                    .font(.largeTitle.monospaced().weight(.medium))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.5)
                     .textSelection(.enabled)
                     .padding(.horizontal, 26)
                     .padding(.vertical, 14)
@@ -281,7 +281,7 @@ struct RemoteView: View {
         Button { Task { await scan() } } label: {
             HStack(spacing: 12) {
                 Image(systemName: "qrcode.viewfinder").font(.system(size: 21, weight: .medium))
-                Text("扫码连接").font(.system(size: 17, weight: .semibold))
+                Text("扫码连接").font(.headline)
                 Spacer(minLength: 8)
                 Image(systemName: "chevron.right").font(.system(size: 13, weight: .semibold)).opacity(0.65)
             }
@@ -304,7 +304,7 @@ struct RemoteView: View {
             TextField("粘贴配对链接", text: $model.invitationText, axis: .vertical)
                 .textInputAutocapitalization(.never).autocorrectionDisabled()
                 .lineLimit(1...3).privacySensitive().accessibilityIdentifier("pairingLink")
-                .font(.system(size: 15))
+                .font(.body)
                 .submitLabel(.go).onSubmit { pair() }
                 .onChange(of: model.invitationText) { _, value in if !value.isEmpty { model.preparePairing() } }
             if !model.invitationText.isEmpty {
@@ -313,7 +313,10 @@ struct RemoteView: View {
                         .foregroundStyle(actionInk)
                         .frame(width: 34, height: 34)
                         .background(actionFill, in: Circle())
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
                 .accessibilityLabel("连接电脑").accessibilityIdentifier("pairComputer").disabled(model.busy)
             }
         }
@@ -330,7 +333,7 @@ struct RemoteView: View {
             Button { model.resumeReconnect(); Task { await model.reconnect() } } label: {
                 HStack(spacing: 8) {
                     Image(systemName: "arrow.clockwise").font(.system(size: 15, weight: .semibold))
-                    Text("重新连接").font(.system(size: 16, weight: .semibold))
+                    Text("重新连接").font(.headline)
                 }
                 .foregroundStyle(accent)
                 .frame(maxWidth: .infinity, minHeight: 52)

@@ -2,6 +2,8 @@
 
 ## Unreleased - 进行中
 
+- 修复 Android 8–10 连接页及网页安全区接口兼容；两端连接页在横屏、键盘弹出或内容超高时支持滚动，iOS 文字跟随系统字号，并扩大配对按钮点击区域。
+
 ## 1.0.0b1 - 2026-11-10
 
 - 两端应用内版本统一为 1.0.0b1，iOS 系统版本为 1.0.0（build 8），Android versionCode 为 6；发布流程支持 Beta 标签并标记为 GitHub Pre-release。
