@@ -81,6 +81,8 @@ public final class MainActivity extends Activity {
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved);
         go.Seq.setContext(getApplicationContext());
+        try { Androidnet.setWebCacheDirectory(new java.io.File(getCacheDir(), "web-code").getAbsolutePath()); }
+        catch (Exception ignored) { }
         if (BuildConfig.TESTING && getIntent().getBooleanExtra("isolated_ts_test", false)) {
             String control = getIntent().getStringExtra("test_control");
             try {
@@ -922,7 +924,7 @@ public final class MainActivity extends Activity {
         Client active = node;
         if (active != null) worker.execute(active::closeWeb);
         if (webView == null) return;
-        webView.stopLoading(); webView.loadUrl("about:blank"); webView.clearHistory(); webView.clearCache(true); webView.destroy(); webView = null;
+        webView.stopLoading(); webView.loadUrl("about:blank"); webView.clearHistory(); webView.destroy(); webView = null;
         android.webkit.CookieManager.getInstance().removeAllCookies(null);
         android.view.ViewGroup parent = (android.view.ViewGroup) setupView.getParent();
         if (parent != null) parent.removeView(setupView);

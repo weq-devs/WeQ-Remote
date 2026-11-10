@@ -122,7 +122,7 @@ func NewDirectClient(endpoint, fingerprint string) (*Client, error) {
 		return nil, errors.New("invalid direct connection")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	transport := &http.Transport{Proxy: nil, TLSClientConfig: pinnedTLS(fingerprint), MaxIdleConns: 4, IdleConnTimeout: 20 * time.Second, ResponseHeaderTimeout: 12 * time.Second}
+	transport := &http.Transport{Proxy: nil, TLSClientConfig: pinnedTLS(fingerprint), ForceAttemptHTTP2: true, MaxIdleConns: 32, MaxIdleConnsPerHost: 8, IdleConnTimeout: 90 * time.Second, ResponseHeaderTimeout: 12 * time.Second}
 	return &Client{directEndpoint: endpoint, ctx: ctx, cancel: cancel, http: &http.Client{Transport: transport, Timeout: 15 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}, nil
 }
 
@@ -196,7 +196,7 @@ func startClient(stateDir, control, authKey string) (*Client, error) {
 		_ = server.Close()
 		return nil, errors.New("network start failed")
 	}
-	transport := &http.Transport{Proxy: nil, DialContext: server.Dial, MaxIdleConns: 4, IdleConnTimeout: 20 * time.Second, ResponseHeaderTimeout: 12 * time.Second}
+	transport := &http.Transport{Proxy: nil, DialContext: server.Dial, MaxIdleConns: 32, MaxIdleConnsPerHost: 8, IdleConnTimeout: 90 * time.Second, ResponseHeaderTimeout: 12 * time.Second}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Client{server: server, ctx: ctx, cancel: cancel, http: &http.Client{Transport: transport, Timeout: 15 * time.Second,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}, nil

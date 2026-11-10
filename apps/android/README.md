@@ -27,6 +27,8 @@
 
 ## 构建
 
+资源代理立即转发响应头和后续数据，仅完整 EOF 的 immutable 代码资源进入缓存，取消、断流和超限不存半份资源。内存缓存最多 256 项、12 MiB；私有 cacheDir 按电脑与授权分区，磁盘代码缓存按 48 MiB 预算淘汰旧版本，文件原子写入并校验内容摘要。重连不再清空浏览器代码缓存；忘记电脑或授权撤销仍清理代码缓存。HTTPS 原生连接尝试 HTTP/2，并保留 HTTP/1.1 兼容。
+
 使用 Java 原生控件、标准 Android SDK 构建工具与固定版本 gomobile，不需要新下载 Android Studio 或 Gradle。网络模块独立维护 `network/go.mod` / `go.sum`，不升级电脑端依赖。
 
 本机工具：Go 1.27.2、JDK 17、SDK/API 36、Build Tools 36.0.0、NDK 28.2.13676358。

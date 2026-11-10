@@ -1,11 +1,88 @@
 package androidnet
 
 import (
+	"errors"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestWebAssetResponseHeadersDoNotWaitForBody(t *testing.T) {
+	reader, writer := io.Pipe()
+	defer reader.Close()
+	defer writer.Close()
+	cache := &webAssetCache{entries: make(map[string]webAsset)}
+	transport := &webAssetTransport{cache: cache, base: assetRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 200, Header: http.Header{"Cache-Control": {"public, immutable"}, "Content-Type": {"text/javascript"}}, Body: reader, ContentLength: -1}, nil
+	})}
+	request, _ := http.NewRequest("GET", "http://100.64.0.1:7691/assets/index-Abcd1234.js", nil)
+	response := make(chan *http.Response, 1)
+	go func() { result, _ := transport.RoundTrip(request); response <- result }()
+	var result *http.Response
+	select {
+	case result = <-response:
+	case <-time.After(time.Second):
+		t.Fatal("response headers waited for the unread body")
+	}
+	go func() {
+		_, _ = io.WriteString(writer, "first")
+		_ = writer.CloseWithError(errors.New("synthetic disconnect"))
+	}()
+	body, err := io.ReadAll(result.Body)
+	_ = result.Body.Close()
+	if string(body) != "first" || err == nil {
+		t.Fatalf("stream lost data or error: %q %v", body, err)
+	}
+	if len(cache.entries) != 0 {
+		t.Fatal("partial response entered cache")
+	}
+}
+
+func TestCodeCacheSurvivesProcessMemoryAndRejectsPartialClose(t *testing.T) {
+	directory := t.TempDir()
+	calls := 0
+	base := assetRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		calls++
+		return &http.Response{StatusCode: 200, Header: http.Header{"Cache-Control": {"public, immutable"}, "Content-Type": {"text/javascript"}}, Body: io.NopCloser(strings.NewReader("synthetic-code")), ContentLength: 14}, nil
+	})
+	request, _ := http.NewRequest("GET", "http://100.64.0.1:7691/assets/index-Abcd1234.js", nil)
+	open := func() *webAssetTransport {
+		return &webAssetTransport{base: base, cache: &webAssetCache{entries: make(map[string]webAsset), directory: directory}}
+	}
+	first, _ := open().RoundTrip(request)
+	_, _ = first.Body.Read(make([]byte, 3))
+	_ = first.Body.Close()
+	files, _ := filepath.Glob(filepath.Join(directory, "*.json"))
+	if len(files) != 0 {
+		t.Fatal("closing a partial response persisted it")
+	}
+	second, _ := open().RoundTrip(request)
+	_, _ = io.Copy(io.Discard, second.Body)
+	_ = second.Body.Close()
+	third, _ := open().RoundTrip(request)
+	body, err := io.ReadAll(third.Body)
+	_ = third.Body.Close()
+	if err != nil || string(body) != "synthetic-code" || calls != 2 {
+		t.Fatalf("disk cache missed: calls=%d, body=%q, err=%v", calls, body, err)
+	}
+	files, _ = filepath.Glob(filepath.Join(directory, "*.json"))
+	if len(files) != 1 {
+		t.Fatal("missing atomic cache entry")
+	}
+	if err := os.WriteFile(files[0], []byte("corrupt"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	res, _ := open().RoundTrip(request)
+	_, _ = io.Copy(io.Discard, res.Body)
+	_ = res.Body.Close()
+	if calls != 3 {
+		t.Fatal("corrupt entry prevented refetch")
+	}
+}
 
 type assetRoundTripFunc func(*http.Request) (*http.Response, error)
 

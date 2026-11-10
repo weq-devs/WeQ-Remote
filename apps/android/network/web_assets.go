@@ -13,7 +13,7 @@ import (
 
 const webAssetBudget = 12 << 20
 const webAssetLimit = 8 << 20
-const webAssetEntryLimit = 64
+const webAssetEntryLimit = 256
 
 var hashedWebCode = regexp.MustCompile(`^/assets/[^/]+-[A-Za-z0-9_-]{8,}\.(js|css)$`)
 
@@ -23,21 +23,32 @@ type webAsset struct {
 }
 
 type webAssetCache struct {
-	mu      sync.Mutex
-	entries map[string]webAsset
-	size    int
+	mu        sync.Mutex
+	entries   map[string]webAsset
+	size      int
+	directory string
+	disabled  bool
 }
 
 var sharedWebAssets struct {
 	sync.Mutex
-	identity [32]byte
-	cache    *webAssetCache
+	identity  [32]byte
+	cache     *webAssetCache
+	directory string
 }
 
 // ClearWebCache 删除应用内存中的代码资源；不持久保存授权或业务数据。
 func ClearWebCache() {
 	sharedWebAssets.Lock()
 	defer sharedWebAssets.Unlock()
+	if cache := sharedWebAssets.cache; cache != nil {
+		cache.mu.Lock()
+		cache.disabled = true
+		cache.entries = make(map[string]webAsset)
+		cache.size = 0
+		cache.mu.Unlock()
+	}
+	clearWebAssetFiles(sharedWebAssets.directory)
 	sharedWebAssets.cache = nil
 	sharedWebAssets.identity = [32]byte{}
 }
@@ -55,7 +66,14 @@ func cachedWebTransport(base http.RoundTripper, endpoint, token string) http.Rou
 	sharedWebAssets.Lock()
 	defer sharedWebAssets.Unlock()
 	if sharedWebAssets.cache == nil || sharedWebAssets.identity != identity {
-		sharedWebAssets.cache = &webAssetCache{entries: make(map[string]webAsset)}
+		if old := sharedWebAssets.cache; old != nil {
+			old.mu.Lock()
+			old.disabled = true
+			old.entries = make(map[string]webAsset)
+			old.size = 0
+			old.mu.Unlock()
+		}
+		sharedWebAssets.cache = &webAssetCache{entries: make(map[string]webAsset), directory: webAssetDirectory(sharedWebAssets.directory, identity)}
 		sharedWebAssets.identity = identity
 	}
 	return &webAssetTransport{base: base, cache: sharedWebAssets.cache}
@@ -68,6 +86,9 @@ func (t *webAssetTransport) RoundTrip(req *http.Request) (*http.Response, error)
 	key := req.URL.RequestURI() + "\n" + req.Header.Get("Accept-Encoding")
 	t.cache.mu.Lock()
 	asset, found := t.cache.entries[key]
+	if !found && !t.cache.disabled {
+		asset, found = readWebAsset(t.cache.directory, key)
+	}
 	t.cache.mu.Unlock()
 	if found {
 		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: asset.header.Clone(),
@@ -97,31 +118,57 @@ func (t *webAssetTransport) RoundTrip(req *http.Request) (*http.Response, error)
 			return response, nil
 		}
 	}
-	body, readErr := io.ReadAll(io.LimitReader(response.Body, webAssetLimit+1))
-	if readErr != nil {
-		_ = response.Body.Close()
-		return nil, readErr
-	}
-	if len(body) > webAssetLimit {
-		response.Body = &prefixedWebBody{Reader: io.MultiReader(bytes.NewReader(body), response.Body), Closer: response.Body}
-		return response, nil
-	}
-	_ = response.Body.Close()
-	response.Body = io.NopCloser(bytes.NewReader(body))
-	t.cache.mu.Lock()
-	defer t.cache.mu.Unlock()
-	if _, exists := t.cache.entries[key]; !exists {
-		if t.cache.size+len(body) > webAssetBudget || len(t.cache.entries) >= webAssetEntryLimit {
-			t.cache.entries = make(map[string]webAsset)
-			t.cache.size = 0
-		}
-		t.cache.entries[key] = webAsset{header: response.Header.Clone(), body: body}
-		t.cache.size += len(body)
-	}
+	response.Body = &cachingWebBody{source: response.Body, cache: t.cache, key: key, header: response.Header.Clone(), expected: response.ContentLength}
 	return response, nil
 }
 
-type prefixedWebBody struct {
-	io.Reader
-	io.Closer
+// 不预读响应体；浏览器立即收到响应头及后续数据，仅完整 EOF 才提交缓存。
+type cachingWebBody struct {
+	source   io.ReadCloser
+	cache    *webAssetCache
+	key      string
+	header   http.Header
+	expected int64
+	buffer   bytes.Buffer
+	failed   bool
+	complete bool
+}
+
+func (b *cachingWebBody) Read(p []byte) (int, error) {
+	n, err := b.source.Read(p)
+	if !b.failed && !b.complete {
+		if b.buffer.Len()+n > webAssetLimit {
+			b.failed = true
+			b.buffer.Reset()
+		} else {
+			_, _ = b.buffer.Write(p[:n])
+		}
+		if err == io.EOF && !b.failed && (b.expected < 0 || int64(b.buffer.Len()) == b.expected) {
+			b.complete = true
+			b.cache.put(b.key, webAsset{header: b.header, body: b.buffer.Bytes()})
+		} else if err != nil {
+			b.failed = true
+		}
+	}
+	return n, err
+}
+
+func (b *cachingWebBody) Close() error { b.failed = true; return b.source.Close() }
+
+func (c *webAssetCache) put(key string, asset webAsset) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.disabled {
+		return
+	}
+	if _, exists := c.entries[key]; exists {
+		return
+	}
+	if c.size+len(asset.body) > webAssetBudget || len(c.entries) >= webAssetEntryLimit {
+		c.entries = make(map[string]webAsset)
+		c.size = 0
+	}
+	c.entries[key] = asset
+	c.size += len(asset.body)
+	writeWebAsset(c.directory, key, asset)
 }

@@ -188,7 +188,17 @@ final class RemoteModel: ObservableObject {
         self.error = (error as NSError).domain == "WeQRemoteStartup" ? error.localizedDescription : "无法加载 WeQ 页面，请检查电脑与网络后重试。"
     }
 
-    func forget() { SavedConnection.delete(); rememberedComputer = false; network.webDataStore.clear(); disconnect() }
+    func forget() {
+        let saved = try? SavedConnection.load()
+        network.webDataStore.clear()
+        if let saved {
+            _ = network.webDataStore.dataStore(endpoint: saved.endpoint, token: saved.token, fingerprint: saved.fingerprint)
+            network.webDataStore.clear()
+        }
+        SavedConnection.delete()
+        rememberedComputer = false
+        disconnect()
+    }
 
     init(network: EmbeddedNetwork) {
         self.network = network
