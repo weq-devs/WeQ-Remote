@@ -4,6 +4,15 @@ import WebKit
 
 final class WebContainerTests: XCTestCase {
     @MainActor
+    func testWebKeyboardDoesNotAddAFormNavigationToolbar() {
+        let session = RemoteWebSession(configuration: WKWebViewConfiguration(),
+                                       endpoint: URL(string: "https://192.168.1.8:7691")!)
+        defer { session.close() }
+        XCTAssertTrue(session.view is RemoteWebView)
+        XCTAssertNil(session.view.inputAccessoryView)
+        XCTAssertEqual(session.view.scrollView.contentInsetAdjustmentBehavior, .never)
+    }
+    @MainActor
     func testStartupProgressStaysHomeUntilTheSurfaceIsReady() {
         let model = RemoteModel(network: EmbeddedNetwork())
         let session = RemoteWebSession(configuration: WKWebViewConfiguration(),

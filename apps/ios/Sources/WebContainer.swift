@@ -1,6 +1,11 @@
 import SwiftUI
 import WebKit
 
+final class RemoteWebView: WKWebView {
+    // WebKit 将编辑响应者的附加栏转交给 WebView；聊天操作由网页输入区提供。
+    override var inputAccessoryView: UIView? { nil }
+}
+
 private final class RemoteCaptureHandler: NSObject, WKScriptMessageHandler {
     weak var owner: RemoteWebSession?
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
@@ -54,7 +59,7 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
         configuration.allowsInlineMediaPlayback = true
         configuration.applicationNameForUserAgent = "WeQRemote"
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
-        view = WKWebView(frame: .zero, configuration: configuration)
+        view = RemoteWebView(frame: .zero, configuration: configuration)
         super.init()
         let capture = RemoteCaptureHandler()
         capture.owner = self
