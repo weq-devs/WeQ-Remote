@@ -74,9 +74,9 @@ func (c *Client) OpenWeb(endpoint, token, localSecret string) (string, error) {
 		return "", errors.New("web view already open")
 	}
 	target, _ := url.Parse(endpoint)
-	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	listener, err := listenWebOrigin(token)
 	if err != nil {
-		return "", errors.New("web listener failed")
+		return "", errors.New("网页本地端口不可用，请稍后重新连接")
 	}
 	origin := "http://" + listener.Addr().String()
 	proxy := httputil.NewSingleHostReverseProxy(target)

@@ -81,7 +81,10 @@ public final class MainActivity extends Activity {
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved);
         go.Seq.setContext(getApplicationContext());
-        try { Androidnet.setWebCacheDirectory(new java.io.File(getCacheDir(), "web-code").getAbsolutePath()); }
+        try {
+            Androidnet.setWebStorageDirectory(new java.io.File(getNoBackupFilesDir(), "web-origins").getAbsolutePath());
+            Androidnet.setWebCacheDirectory(new java.io.File(getCacheDir(), "web-code").getAbsolutePath());
+        }
         catch (Exception ignored) { }
         if (BuildConfig.TESTING && getIntent().getBooleanExtra("isolated_ts_test", false)) {
             String control = getIntent().getStringExtra("test_control");
