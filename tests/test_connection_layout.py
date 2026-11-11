@@ -12,8 +12,26 @@ ANDROID = ROOT / 'apps/android/src/io/github/weqdevs/remote'
 class ConnectionLayoutTests(unittest.TestCase):
     def test_insets_use_shared_compatibility_entry(self):
         source = (ANDROID / 'MainActivity.java').read_text()
-        self.assertEqual(source.count('WindowInsetsHelper.contentInsets(insets)'), 2)
+        self.assertEqual(source.count('WindowInsetsHelper.contentInsets(insets)'), 3)
         self.assertNotIn('WindowInsets.Type.', source)
+
+    def test_details_are_in_menus_not_home_footer(self):
+        ios = (ROOT / 'apps/ios/Sources/WeQRemoteApp.swift').read_text()
+        dock = ios.split('@ViewBuilder private var dock:', 1)[1].split('private var canPair:', 1)[0]
+        self.assertNotIn('versionInfo', dock)
+        self.assertNotIn('tailscaleStatus', dock)
+        self.assertIn('model.showingDetails = true', ios)
+        self.assertIn('Toggle("检查测试版"', ios)
+        self.assertIn('Label(model.checkingUpdates', ios)
+        android = (ANDROID / 'MainActivity.java').read_text()
+        self.assertNotIn('dock.addView(networkState', android)
+        self.assertIn('more.setOnClickListener(view -> showDetailsMenu())', android)
+        self.assertIn('prerelease.setText("检查测试版")', android)
+        for source in [ios, android]:
+            self.assertIn('连接可能已中断，正在重试…', source)
+        self.assertIn('main.postDelayed(reconnectPoll, 15000)', android)
+        self.assertIn('health.failed()', android)
+        self.assertIn('health.succeeded(', android)
 
     def test_android_content_can_outgrow_viewport(self):
         source = (ANDROID / 'MainActivity.java').read_text()

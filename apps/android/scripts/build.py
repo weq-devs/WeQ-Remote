@@ -118,6 +118,7 @@ def main():
             archive.write(path, 'lib/arm64-v8a/' + path.name, compress_type=zipfile.ZIP_DEFLATED, compresslevel=6)
         archive.writestr('assets/THIRD_PARTY_LICENSES.txt', '\n'.join(licenses))
         archive.write(ROOT.parents[1] / 'resources/web-startup-progress.js', 'assets/web-startup-progress.js')
+        archive.write(ROOT.parents[1] / 'resources/update-mirrors.json', 'assets/update-mirrors.json')
         project_license = ROOT.parents[1] / 'LICENSE'
         if project_license.is_file():
             archive.write(project_license, 'assets/WEQ_LICENSE.txt')

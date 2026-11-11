@@ -30,8 +30,8 @@ struct WeQRemoteApp: App {
                     } else if scenePhase == .active {
                         while !Task.isCancelled {
                             if !model.testMode && EmbeddedNetwork.integrationControl == nil && !ProcessInfo.processInfo.arguments.contains("--remote-web-smoke-test") { await model.reconnect() }
-                            if model.connected || model.error != nil && !model.rememberedComputer { return }
-                            do { try await Task.sleep(for: .seconds(5)) } catch { return }
+                            if model.error != nil && !model.rememberedComputer && model.webSession == nil { return }
+                            do { try await Task.sleep(for: .seconds(model.connected ? 15 : 5)) } catch { return }
                         }
                     }
                 }
@@ -65,11 +65,6 @@ struct RemoteView: View {
         return nil
     }
 
-    private var appVersion: String {
-        Bundle.main.infoDictionary?["WeQReleaseVersion"] as? String
-            ?? Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? ""
-    }
-
     var body: some View {
         NavigationStack {
             ZStack {
@@ -82,6 +77,18 @@ struct RemoteView: View {
                     .opacity(model.webReady ? 1 : 0)
                     .allowsHitTesting(model.webReady)
                     .accessibilityHidden(!model.webReady)
+                    .safeAreaInset(edge: .top, spacing: 0) {
+                        if model.webReady && model.health.suspected {
+                            Text("连接可能已中断，正在重试…")
+                                .font(.subheadline)
+                                .frame(maxWidth: .infinity)
+                                .padding(12)
+                                .foregroundStyle(Color(uiColor: .label))
+                                .background(Color(uiColor: .secondarySystemBackground))
+                                .accessibilityIdentifier("connectionWarning")
+                                .accessibilityAddTraits(.updatesFrequently)
+                        }
+                    }
             }
             if !model.webReady {
                 connectionPage
@@ -91,6 +98,42 @@ struct RemoteView: View {
         }
         .animation(.easeOut(duration: reduceMotion ? 0.1 : 0.18), value: model.webReady)
         .tint(accent)
+        .sheet(isPresented: $model.showingDetails) { detailsSheet }
+    }
+
+    private var detailsSheet: some View {
+        NavigationStack {
+            List {
+                Section("连接详情") {
+                    Text(model.connectionDetails).font(.subheadline).textSelection(.enabled)
+                    if model.paired {
+                        Button("立即检查") { Task { await model.reconnect() } }.disabled(model.busy)
+                    }
+                    if let session = model.webSession, model.webReady {
+                        Button("重新加载") { model.showingDetails = false; session.reload() }
+                        Button("断开连接") {
+                            model.showingDetails = false
+                            model.disconnect()
+                            Task { await network.stop() }
+                        }
+                    }
+                }
+                Section("软件更新") {
+                    Toggle("检查测试版", isOn: Binding(get: { model.includePrerelease }, set: { model.setPrerelease($0) }))
+                        .disabled(model.checkingUpdates)
+                    Button { Task { await model.checkUpdates() } } label: {
+                        Label(model.checkingUpdates ? "正在检查更新…" : "检查更新", systemImage: "arrow.triangle.2.circlepath")
+                    }.disabled(model.checkingUpdates)
+                    Text(model.updateMessage).font(.subheadline).foregroundStyle(.secondary)
+                    ForEach(Array(model.updateDownloads.prefix(3).enumerated()), id: \.offset) { index, mirror in
+                        Link(index == 0 ? "下载更新（\(mirror.label)）" : "备用下载（\(mirror.label)）", destination: mirror.downloadURL)
+                    }
+                    if let url = model.releaseURL { Link("查看发布说明", destination: url) }
+                }
+            }
+            .navigationTitle("更多").navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { model.showingDetails = false } } }
+        }.tint(accent)
     }
 
     // 首页是三段式：顶部状态条、居中状态区、底部操作坞。内容不再全挤在顶部。
@@ -143,8 +186,15 @@ struct RemoteView: View {
                 .accessibilityHidden(true)
             Text("WeQ Remote")
                 .font(.headline)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
             Spacer(minLength: 8)
             statusPill
+            Button { model.showingDetails = true } label: {
+                Image(systemName: "ellipsis").frame(width: 44, height: 44)
+            }
+            .accessibilityLabel("更多")
+            .accessibilityIdentifier("connectionMenu")
         }
     }
 
@@ -282,10 +332,6 @@ struct RemoteView: View {
                 scanButton
                 linkField
             }
-            Text(appVersion.isEmpty ? "WeQ Remote" : "WeQ Remote \(appVersion)")
-                .font(.caption2)
-                .foregroundStyle(Color(uiColor: .tertiaryLabel))
-                .padding(.top, 2)
         }
     }
 
@@ -298,8 +344,6 @@ struct RemoteView: View {
             HStack(spacing: 12) {
                 Image(systemName: "qrcode.viewfinder").font(.system(size: 21, weight: .medium))
                 Text("扫码连接").font(.headline)
-                Spacer(minLength: 8)
-                Image(systemName: "chevron.right").font(.system(size: 13, weight: .semibold)).opacity(0.65)
             }
             .foregroundStyle(actionInk)
             .padding(.horizontal, 20)

@@ -21,6 +21,8 @@ targets:
         buildPhase: resources
       - path: ../../resources/web-startup-progress.js
         buildPhase: resources
+      - path: ../../resources/update-mirrors.json
+        buildPhase: resources
     dependencies:
       - framework: ${WEQ_TAILSCALE_FRAMEWORK}
         embed: true

@@ -92,6 +92,10 @@ with log_path.open('w') as log:
             (BUILD / (('lan-' if args.lan else '') + ('connected-dark.png' if mode == 'yes' else 'connected-light.png'))).write_bytes(screenshot)
             pairing = call(adb + ['exec-out', 'run-as', package, 'cat', 'files/pairing.png'])
             (BUILD / ('pairing-dark.png' if mode == 'yes' else 'pairing-light.png')).write_bytes(pairing)
+            if args.lan:
+                for name in ('connection-warning', 'connection-recovered'):
+                    image = call(adb + ['exec-out', 'run-as', package, 'cat', f'files/{name}.png'])
+                    (BUILD / (name + ('-dark.png' if mode == 'yes' else '-light.png'))).write_bytes(image)
             call(adb + ['shell', 'am', 'force-stop', package])
         print('PASS: light/dark WebView; ' + ('LAN TLS + persisted reconnect' if args.lan else 'embedded TS') + '; pairing; HTTP/WebSocket; revocation')
     finally:

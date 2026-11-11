@@ -5,6 +5,20 @@ import WebKit
 @MainActor
 enum WebSmoke {
     static func run(model: RemoteModel, network: EmbeddedNetwork) async {
+        if ProcessInfo.processInfo.arguments.contains("--remote-update-smoke-test") {
+            let original = model.includePrerelease
+            model.setPrerelease(ProcessInfo.processInfo.arguments.contains("--remote-test-prerelease"))
+            defer { UserDefaults.standard.set(original, forKey: "checkPrerelease") }
+            model.showingDetails = true
+            await model.checkUpdates()
+            let output = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("update-smoke.json")
+            try? JSONSerialization.data(withJSONObject: ["message": model.updateMessage, "includePrerelease": model.includePrerelease]).write(to: output, options: .atomic)
+            return
+        }
+        if ProcessInfo.processInfo.arguments.contains("--remote-menu-smoke-test") {
+            model.showingDetails = true
+            return
+        }
         let lan = ProcessInfo.processInfo.arguments.contains("--remote-lan-smoke-test")
         guard ProcessInfo.processInfo.arguments.contains("--remote-web-smoke-test"), lan || EmbeddedNetwork.integrationControl != nil else { return }
         let output = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("web-smoke.json")

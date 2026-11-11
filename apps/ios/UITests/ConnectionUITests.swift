@@ -4,6 +4,41 @@ final class ConnectionUITests: XCTestCase {
     private let base = URL(string: "http://127.0.0.1:45198")!
 
     @MainActor
+    func testConnectionDetailsAndPersistentPrereleasePreference() {
+        let app = XCUIApplication()
+        app.launchArguments = ["-AppleInterfaceStyle", "Light"]
+        app.launch()
+        XCTAssertTrue(app.buttons["connectionMenu"].waitForExistence(timeout: 15))
+        let home = XCTAttachment(screenshot: app.screenshot())
+        home.name = "Remote home light"; home.lifetime = .keepAlways; add(home)
+        app.buttons["connectionMenu"].tap()
+        let toggle = app.switches["检查测试版"]
+        XCTAssertTrue(toggle.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["检查更新"].exists)
+        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "Tailscale：")).firstMatch.exists)
+        let original = toggle.value as? String
+        toggle.tap()
+        let expected = toggle.value as? String
+        XCTAssertNotEqual(original, expected)
+        let details = XCTAttachment(screenshot: app.screenshot())
+        details.name = "Remote connection details light"; details.lifetime = .keepAlways; add(details)
+        app.terminate()
+        app.launchArguments = ["-AppleInterfaceStyle", "Dark"]
+        app.launch()
+        XCTAssertTrue(app.buttons["connectionMenu"].waitForExistence(timeout: 15))
+        let darkHome = XCTAttachment(screenshot: app.screenshot())
+        darkHome.name = "Remote home dark"; darkHome.lifetime = .keepAlways; add(darkHome)
+        app.buttons["connectionMenu"].tap()
+        XCTAssertTrue(toggle.waitForExistence(timeout: 5))
+        XCTAssertEqual(toggle.value as? String, expected)
+        toggle.tap()
+        XCTAssertEqual(toggle.value as? String, original)
+        let darkDetails = XCTAttachment(screenshot: app.screenshot())
+        darkDetails.name = "Remote connection details dark"; darkDetails.lifetime = .keepAlways; add(darkDetails)
+        app.terminate()
+    }
+
+    @MainActor
     func testLANBackgroundResume() async throws {
         let (data, _) = try await URLSession.shared.data(from: base.appendingPathComponent("test/invitation"))
         let invitation = try JSONDecoder().decode(TestInvitation.self, from: data)

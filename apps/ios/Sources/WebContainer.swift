@@ -62,7 +62,7 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
     var onLoading: (() -> Void)?
     var onProgress: ((String) -> Void)?
     var onDownload: ((WebDownloadProgress?) -> Void)?
-    var onDisconnect: (() -> Void)?
+    var onMenu: (() -> Void)?
 
     init(configuration: WKWebViewConfiguration, endpoint: URL, fingerprint: String? = nil) {
         self.endpoint = endpoint
@@ -153,20 +153,14 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
     }
 
     fileprivate func openMenu() {
-        guard !closed, var presenter = view.window?.rootViewController else { return }
-        while let presented = presenter.presentedViewController { presenter = presented }
-        guard !(presenter is UIAlertController) else { return }
-        let menu = UIAlertController(title: nil, message: nil, preferredStyle: .actionSheet)
-        menu.addAction(UIAlertAction(title: "重新加载", style: .default) { [weak self] _ in
-            guard let self, !self.closed else { return }
-            self.onLoading?()
-            self.view.reload()
-        })
-        menu.addAction(UIAlertAction(title: "断开连接", style: .default) { [weak self] _ in self?.onDisconnect?() })
-        menu.addAction(UIAlertAction(title: "取消", style: .cancel))
-        menu.popoverPresentationController?.sourceView = view
-        menu.popoverPresentationController?.sourceRect = CGRect(x: view.bounds.maxX - 24, y: view.safeAreaInsets.top + 24, width: 1, height: 1)
-        presenter.present(menu, animated: true)
+        guard !closed else { return }
+        onMenu?()
+    }
+
+    func reload() {
+        guard !closed else { return }
+        onLoading?()
+        view.reload()
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
@@ -347,7 +341,7 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
         onLoading = nil
         onProgress = nil
         onDownload = nil
-        onDisconnect = nil
+        onMenu = nil
         view.loadHTMLString("", baseURL: nil)
     }
 

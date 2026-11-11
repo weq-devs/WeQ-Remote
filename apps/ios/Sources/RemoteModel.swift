@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import UIKit
 
 @MainActor
 final class RemoteModel: ObservableObject {
@@ -18,6 +19,13 @@ final class RemoteModel: ObservableObject {
     @Published private(set) var webLoadingStage = "正在下载网页资源"
     @Published private(set) var webDownload: WebDownloadProgress?
     @Published private(set) var rememberedComputer = false
+    @Published private(set) var health = ConnectionHealth()
+    @Published private(set) var checkingUpdates = false
+    @Published private(set) var updateMessage = "尚未检查"
+    @Published private(set) var releaseURL: URL?
+    @Published private(set) var updateDownloads: [UpdateMirror] = []
+    @Published private(set) var includePrerelease = UserDefaults.standard.bool(forKey: "checkPrerelease")
+    @Published var showingDetails = false
     let network: EmbeddedNetwork
     private var api: RemoteAPI?
     private var credential: DeviceCredential?
@@ -31,9 +39,67 @@ final class RemoteModel: ObservableObject {
 
     var isConnecting: Bool { busy || code != nil || (webSession != nil && !webReady) }
 
+    var appVersion: String {
+        Bundle.main.infoDictionary?["WeQReleaseVersion"] as? String
+            ?? Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "未知"
+    }
+    var versionInfo: String {
+        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "未知"
+        return "WeQ Remote \(appVersion) (\(build)) · \(UIDevice.current.systemName) \(UIDevice.current.systemVersion)"
+    }
+    var connectionRoute: String {
+        guard let api else { return "未选择" }
+        return api.endpoint.scheme == "http" ? "内嵌 Tailscale" : "系统网络（HTTPS）"
+    }
+    var tailscaleStatus: String {
+        if api?.endpoint.scheme == "https" {
+            return network.enabled ? "\(network.message)（未用于当前入口）" : "未使用（系统网络）"
+        }
+        return network.message
+    }
+    var connectionDetails: String {
+        let checked = health.checkedAt?.formatted(date: .omitted, time: .standard) ?? "尚未验证"
+        let latency = health.latency.map { "\($0) ms" } ?? "—"
+        return "连接：\(api == nil ? "未连接" : health.status)\n电脑：\(api?.endpoint.absoluteString ?? "未选择")\n连接方式：\(connectionRoute)\nTailscale：\(tailscaleStatus)\n最近成功：\(checked)\n请求耗时：\(latency)\n\(versionInfo)"
+    }
+
+    func checkUpdates() async {
+        guard !checkingUpdates else { return }
+        checkingUpdates = true
+        releaseURL = nil
+        updateDownloads = []
+        defer { checkingUpdates = false }
+        do {
+            guard let current = ReleaseVersion(appVersion) else { throw RemoteError.response }
+            guard let url = Bundle.main.url(forResource: "update-mirrors", withExtension: "json") else { throw RemoteError.response }
+            let prefixes = try JSONDecoder().decode([String].self, from: Data(contentsOf: url))
+            updateMessage = "正在读取发布版本…"
+            let release = try await UpdateMirrors.release(includePrerelease: includePrerelease)
+            updateMessage = "测速中（\(prefixes.count) 个源）"
+            let ranked = try await UpdateMirrors.resolve(prefixes: prefixes, release: release)
+            guard let best = ranked.first else { throw RemoteError.response }
+            let version = best.manifest.version
+            releaseURL = URL(string: "https://github.com/weq-devs/WeQ-Remote/releases/tag/v\(version.text)")
+            if version > current { updateDownloads = ranked }
+            let result = version > current ? "发现新版本 v\(version.text)\n当前 v\(appVersion) → v\(version.text)" : version == current ? "已是最新版本\n当前 v\(appVersion)" : "当前 v\(appVersion)，最新发布为 v\(version.text)"
+            updateMessage = "\(result)\n已自动选择加速站 \(best.label)（已测速）"
+            if version > current { updateMessage += "\n下载为未签名 IPA，需签名后安装。" }
+        } catch { updateMessage = "检查更新失败，无法读取发布版本或连接加速站，请检查网络后重试。" }
+    }
+
+    func setPrerelease(_ enabled: Bool) {
+        guard !checkingUpdates else { return }
+        UserDefaults.standard.set(enabled, forKey: "checkPrerelease")
+        includePrerelease = enabled
+        updateMessage = "尚未检查"
+        updateDownloads = []
+        releaseURL = nil
+    }
+
     func resumeReconnect() { reconnectPaused = false }
 
     func suspend() {
+        health.suspend()
         // 已配对的网页与节点留在内存；前台恢复只验证，不重建页面。
         guard webSession == nil else { return }
         let wasPaused = reconnectPaused
@@ -170,11 +236,7 @@ final class RemoteModel: ObservableObject {
             self.webDownload = nil
             self.error = nil
         }
-        session.onDisconnect = { [weak self] in
-            guard let self else { return }
-            self.disconnect()
-            Task { await self.network.stop() }
-        }
+        session.onMenu = { [weak self] in self?.showingDetails = true }
         webSession = session
     }
 
@@ -362,6 +424,7 @@ final class RemoteModel: ObservableObject {
         busy = true
         defer { if generation == revision { busy = false } }
         do {
+            if api.endpoint.scheme == "http" { await network.refresh() }
             let requestMillis: Int
             if let verified, verified.api.endpoint == api.endpoint, verified.status != nil, let probed = verified.latencyMillis {
                 requestMillis = probed
@@ -371,7 +434,7 @@ final class RemoteModel: ObservableObject {
                 try value.validate()
                 requestMillis = elapsedMillis(ContinuousClock.now - start)
             }
-            guard generation == revision else { return }
+            guard generation == revision, !Task.isCancelled else { return }
             if webSession == nil, !testMode {
                 let session = try await network.webSession(endpoint: api.endpoint, token: credential.token, fingerprint: fingerprint)
                 guard generation == revision else { session.close(); return }
@@ -379,6 +442,7 @@ final class RemoteModel: ObservableObject {
             }
             latency = requestMillis
             checkedAt = Date()
+            health.succeeded(at: Date(), latency: requestMillis)
             connected = true
             code = nil
             message = "电脑在线"
@@ -400,6 +464,7 @@ final class RemoteModel: ObservableObject {
                         if let web { webSession?.close(); adoptWebSession(web) }
                         fingerprint = pin; computerAddress = replacement.api.endpoint.host
                         latency = replacement.latencyMillis; connected = true; message = "电脑在线"; self.error = nil; checkedAt = Date()
+                        health.succeeded(at: Date(), latency: replacement.latencyMillis)
                         return
                     } catch { if generation == revision, !Task.isCancelled { fail(error) } }
                 } else { fail(error) }
@@ -408,6 +473,7 @@ final class RemoteModel: ObservableObject {
     }
 
     private func fail(_ failure: Error) {
+        if webReady { health.failed() }
         connected = false
         message = "连接未通过"
         error = failure.localizedDescription
@@ -415,6 +481,7 @@ final class RemoteModel: ObservableObject {
     }
 
     func disconnect() {
+        health = ConnectionHealth()
         webDownload = nil
         reconnectPaused = true
         for session in probingSessions.values { session.invalidateAndCancel() }
