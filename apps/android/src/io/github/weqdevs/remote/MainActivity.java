@@ -138,6 +138,13 @@ public final class MainActivity extends Activity {
         if (webView != null) webView.onPause();
         super.onPause();
     }
+    @Override public void onConfigurationChanged(Configuration configuration) {
+        super.onConfigurationChanged(configuration);
+        // 旋转只重排当前界面，保留 WebView、原生选择器回调和在途下载。
+        getWindow().getDecorView().requestApplyInsets();
+        if (webView != null) webView.requestApplyInsets();
+        if (setupView != null) setupView.requestApplyInsets();
+    }
     @Override protected void onDestroy() {
         stopNetwork(true);
         main.removeCallbacksAndMessages(null);
@@ -1089,6 +1096,7 @@ public final class MainActivity extends Activity {
         render();
     }
     @Override public void onBackPressed() {
+        if (webFeatures != null && webFeatures.exitFullscreen()) return;
         if (webView != null) {
             final android.webkit.WebView page = webView;
             page.evaluateJavascript("Boolean(window.weqMobileNavigation && window.weqMobileNavigation.back())", result -> {

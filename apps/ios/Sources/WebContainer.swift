@@ -26,6 +26,17 @@ private final class RemoteShellHandler: NSObject, WKScriptMessageHandler {
     }
 }
 
+private final class RemoteExternalLinkHandler: NSObject, WKScriptMessageHandler {
+    weak var owner: RemoteWebSession?
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard message.frameInfo.isMainFrame, let owner, message.webView === owner.view,
+              let value = message.body as? String, value.count <= 8192,
+              let url = message.frameInfo.request.url,
+              RemoteWebPolicy.sameOrigin(url, endpoint: owner.endpoint) else { return }
+        owner.openRemoteLink(value)
+    }
+}
+
 private final class RemoteStartupHandler: NSObject, WKScriptMessageHandler {
     weak var owner: RemoteWebSession?
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
@@ -48,6 +59,26 @@ private final class RemoteResourceHandler: NSObject, WKScriptMessageHandler {
 
 @MainActor
 final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate {
+    static let externalLinksScript = """
+    (function(){
+        if(window.__weqRemoteExternalLinks)return;
+        window.__weqRemoteExternalLinks=true;
+        window.weqRemoteLinks=Object.assign({},window.weqRemoteLinks,{open:function(url){window.webkit.messageHandlers.weqLinks.postMessage(String(url));}});
+        var original=window.open;
+        window.open=function(url,target,features){
+            if(url&&url!=='about:blank'){
+                try{
+                    var parsed=new URL(url,location.href);
+                    if(parsed.origin!==location.origin&&/^(https?:|mailto:|tel:|tencent:|mqqapi:)$/.test(parsed.protocol)){
+                        window.weqRemoteLinks.open(parsed.href);
+                        return null;
+                    }
+                }catch(error){return null;}
+            }
+            return original.call(window,url,target,features);
+        };
+    })();
+    """
     let view: WKWebView
     let endpoint: URL
     private let fingerprint: String?
@@ -56,6 +87,9 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
     private var startupTimeout: Task<Void, Never>?
     private var startupFinished = false
     private var startupReported = false
+    private var nativeMedia: RemoteNativeMedia?
+    private var dialogQueue: [(id: UUID, alert: UIAlertController, cancel: () -> Void)] = []
+    private var activeDialog: (id: UUID, alert: UIAlertController, cancel: () -> Void)?
     // 正式页面准备完成才切到全屏；HTML 加载完成仍留在首页。
     var onReady: (() -> Void)?
     var onFailure: ((Error) -> Void)?
@@ -79,6 +113,11 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
         let shell = RemoteShellHandler()
         shell.owner = self
         configuration.userContentController.add(shell, name: "weqShell")
+        let links = RemoteExternalLinkHandler()
+        links.owner = self
+        configuration.userContentController.add(links, name: "weqLinks")
+        configuration.userContentController.addUserScript(WKUserScript(
+            source: Self.externalLinksScript, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         let startup = RemoteStartupHandler()
         startup.owner = self
         configuration.userContentController.add(startup, name: "weqStartup")
@@ -96,6 +135,13 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
         configuration.userContentController.addUserScript(WKUserScript(
             source: "window.weqRemoteShell={openMenu:function(){window.webkit.messageHandlers.weqShell.postMessage('menu')}};",
             injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        if endpoint.scheme == "http" {
+            let media = RemoteNativeMedia(view: view, endpoint: endpoint)
+            nativeMedia = media
+            configuration.userContentController.add(media, name: "weqMedia")
+            configuration.userContentController.addUserScript(WKUserScript(
+                source: RemoteNativeMedia.script, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        }
         view.navigationDelegate = self
         view.uiDelegate = self
         view.allowsBackForwardNavigationGestures = false
@@ -115,6 +161,8 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
     }
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        cancelWebDialogs()
+        nativeMedia?.stopAll()
         startupFinished = false
         startupReported = false
         onDownload?(nil)
@@ -198,8 +246,82 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
     }
 
     private func openExternal(_ url: URL) {
-        guard RemoteWebPolicy.external(url) else { return }
+        guard !closed, RemoteWebPolicy.external(url) else { return }
         UIApplication.shared.open(url)
+    }
+
+    fileprivate func openRemoteLink(_ value: String) {
+        guard let url = URL(string: value), !sameOrigin(url) else { return }
+        openExternal(url)
+    }
+
+    private func enqueueWebDialog(_ alert: UIAlertController, id: UUID, cancel: @escaping () -> Void) {
+        guard !closed, view.window != nil else { cancel(); return }
+        dialogQueue.append((id, alert, cancel))
+        showNextWebDialog()
+    }
+
+    private func showNextWebDialog() {
+        guard !closed, activeDialog == nil, !dialogQueue.isEmpty else { return }
+        guard var presenter = view.window?.rootViewController else { cancelWebDialogs(); return }
+        while let presented = presenter.presentedViewController { presenter = presented }
+        let next = dialogQueue.removeFirst()
+        activeDialog = next
+        presenter.present(next.alert, animated: true)
+    }
+
+    private func finishWebDialog(_ id: UUID) {
+        guard activeDialog?.id == id else { return }
+        let alert = activeDialog?.alert
+        activeDialog = nil
+        alert?.dismiss(animated: true) { [weak self] in self?.showNextWebDialog() }
+    }
+
+    private func cancelWebDialogs() {
+        let active = activeDialog
+        let pending = dialogQueue
+        activeDialog = nil; dialogQueue.removeAll()
+        active?.cancel()
+        active?.alert.dismiss(animated: false)
+        for item in pending { item.cancel() }
+    }
+
+    func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String,
+                 initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping () -> Void) {
+        let id = UUID(), result = WebDialogCompletion<Void>(cancelled: ()) { completionHandler() }
+        let alert = UIAlertController(title: "WeQ", message: message, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "好", style: .default) { [weak self] _ in
+            result.finish(()); self?.finishWebDialog(id)
+        })
+        enqueueWebDialog(alert, id: id, cancel: result.cancel)
+    }
+
+    func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String,
+                 initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (Bool) -> Void) {
+        let id = UUID(), result = WebDialogCompletion<Bool>(cancelled: false, callback: completionHandler)
+        let alert = UIAlertController(title: "WeQ", message: message, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel) { [weak self] _ in
+            result.cancel(); self?.finishWebDialog(id)
+        })
+        alert.addAction(UIAlertAction(title: "确定", style: .default) { [weak self] _ in
+            result.finish(true); self?.finishWebDialog(id)
+        })
+        enqueueWebDialog(alert, id: id, cancel: result.cancel)
+    }
+
+    func webView(_ webView: WKWebView, runJavaScriptTextInputPanelWithPrompt prompt: String,
+                 defaultText: String?, initiatedByFrame frame: WKFrameInfo,
+                 completionHandler: @escaping (String?) -> Void) {
+        let id = UUID(), result = WebDialogCompletion<String?>(cancelled: nil, callback: completionHandler)
+        let alert = UIAlertController(title: "WeQ", message: prompt, preferredStyle: .alert)
+        alert.addTextField { $0.text = defaultText }
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel) { [weak self] _ in
+            result.cancel(); self?.finishWebDialog(id)
+        })
+        alert.addAction(UIAlertAction(title: "确定", style: .default) { [weak self, weak alert] _ in
+            result.finish(alert?.textFields?.first?.text ?? ""); self?.finishWebDialog(id)
+        })
+        enqueueWebDialog(alert, id: id, cancel: result.cancel)
     }
 
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
@@ -324,6 +446,9 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
 
     func close() {
         closed = true
+        cancelWebDialogs()
+        nativeMedia?.close()
+        nativeMedia = nil
         startupTimeout?.cancel()
         startupTimeout = nil
         for (_, (download, file)) in downloads { download.cancel { _ in }; removeDownload(file) }
@@ -334,8 +459,10 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
         view.uiDelegate = nil
         view.configuration.userContentController.removeScriptMessageHandler(forName: "weqCapture")
         view.configuration.userContentController.removeScriptMessageHandler(forName: "weqShell")
+        view.configuration.userContentController.removeScriptMessageHandler(forName: "weqLinks")
         view.configuration.userContentController.removeScriptMessageHandler(forName: "weqStartup")
         view.configuration.userContentController.removeScriptMessageHandler(forName: "weqResources")
+        view.configuration.userContentController.removeScriptMessageHandler(forName: "weqMedia")
         onReady = nil
         onFailure = nil
         onLoading = nil

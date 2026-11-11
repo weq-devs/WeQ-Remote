@@ -16,12 +16,18 @@ import org.json.JSONObject;
 public final class RemoteInstrumentation extends Instrumentation {
     private boolean lan;
     private boolean uiOnly;
-    @Override public void onCreate(Bundle arguments) { super.onCreate(arguments); lan = "1".equals(arguments.getString("lan")); uiOnly = "1".equals(arguments.getString("ui")); start(); }
+    private boolean surfacesOnly;
+    @Override public void onCreate(Bundle arguments) { super.onCreate(arguments); lan = "1".equals(arguments.getString("lan")); uiOnly = "1".equals(arguments.getString("ui")); surfacesOnly = "1".equals(arguments.getString("surfaces")); start(); }
     @Override public void onStart() {
         Bundle result = new Bundle();
         MainActivity activity = null;
         try {
             String pkg = getTargetContext().getPackageName();
+            if (surfacesOnly) {
+                testWebSurfaces(pkg);
+                result.putString("stream", "PASS: full screen callback once; close releases surface; orientation retains Activity\n");
+                finish(android.app.Activity.RESULT_OK, result); return;
+            }
             if (uiOnly) {
                 testDetailsMenu(pkg);
                 result.putString("stream", "PASS: home details menu; system and app version; persistent prerelease toggle\n");
@@ -78,6 +84,31 @@ public final class RemoteInstrumentation extends Instrumentation {
             result.putString("stream", "FAIL: " + failure.getClass().getSimpleName() + ": " + failure.getMessage() + "\n");
             finish(android.app.Activity.RESULT_CANCELED, result);
         }
+    }
+    private void testWebSurfaces(String pkg) throws Exception {
+        MainActivity activity = (MainActivity) startActivitySync(new Intent().setComponent(new ComponentName(pkg, MainActivity.class.getName())).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        try {
+            runOnMainSync(() -> {
+                android.webkit.WebView page = new android.webkit.WebView(activity);
+                WebFeatures features = new WebFeatures(activity, page, "http://127.0.0.1:7691");
+                android.view.View surface = new android.view.View(activity);
+                int[] finished = {0};
+                features.onShowCustomView(surface, () -> finished[0]++);
+                require(surface.getParent() != null, "full screen view not attached");
+                require(features.exitFullscreen(), "full screen exit not consumed");
+                require(!features.exitFullscreen(), "full screen exited twice");
+                require(finished[0] == 1 && surface.getParent() == null, "full screen callback not exactly once");
+                features.onShowCustomView(surface, () -> finished[0]++);
+                features.close(); features.close();
+                require(finished[0] == 2 && surface.getParent() == null, "close leaked full screen view");
+                page.destroy();
+                activity.setRequestedOrientation(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);
+            });
+            long deadline = android.os.SystemClock.elapsedRealtime() + 5000;
+            while (activity.getResources().getConfiguration().orientation != android.content.res.Configuration.ORIENTATION_LANDSCAPE && android.os.SystemClock.elapsedRealtime() < deadline) Thread.sleep(100);
+            require(!activity.isDestroyed(), "rotation destroyed Activity");
+            require(activity.getResources().getConfiguration().orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE, "rotation did not occur");
+        } finally { finishActivity(activity); }
     }
     private void testDetailsMenu(String pkg) throws Exception {
         MainActivity activity = (MainActivity) startActivitySync(new Intent().setComponent(new ComponentName(pkg, MainActivity.class.getName())).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));

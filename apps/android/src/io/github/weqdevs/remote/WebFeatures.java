@@ -38,6 +38,10 @@ final class WebFeatures extends WebChromeClient {
     private volatile boolean closed;
     private volatile boolean saving;
     private final String resourceObserver;
+    private android.view.View fullscreen;
+    private CustomViewCallback fullscreenCallback;
+    private int fullscreenSystemUi;
+    private int fullscreenVisibleBars;
 
     WebFeatures(Activity activity, WebView view, String origin) {
         this.activity = activity; this.view = view; this.origin = origin;
@@ -196,6 +200,44 @@ final class WebFeatures extends WebChromeClient {
         catch (RuntimeException error) { cancelChooser(); message("无法打开文件选择器"); }
         return true;
     }
+    @Override @SuppressWarnings("deprecation") public void onShowCustomView(android.view.View content, CustomViewCallback callback) {
+        if (closed) { callback.onCustomViewHidden(); return; }
+        exitFullscreen();
+        android.view.View decor = activity.getWindow().getDecorView();
+        if (!(decor instanceof android.view.ViewGroup) || content.getParent() != null) {
+            callback.onCustomViewHidden(); return;
+        }
+        fullscreen = content; fullscreenCallback = callback;
+        fullscreenSystemUi = decor.getSystemUiVisibility();
+        if (android.os.Build.VERSION.SDK_INT >= 30) {
+            android.view.WindowInsets insets = decor.getRootWindowInsets();
+            fullscreenVisibleBars = insets == null ? android.view.WindowInsets.Type.systemBars() :
+                (insets.isVisible(android.view.WindowInsets.Type.statusBars()) ? android.view.WindowInsets.Type.statusBars() : 0) |
+                (insets.isVisible(android.view.WindowInsets.Type.navigationBars()) ? android.view.WindowInsets.Type.navigationBars() : 0);
+            android.view.WindowInsetsController controller = decor.getWindowInsetsController();
+            if (controller != null) controller.hide(android.view.WindowInsets.Type.systemBars());
+        } else decor.setSystemUiVisibility(fullscreenSystemUi | android.view.View.SYSTEM_UI_FLAG_FULLSCREEN |
+            android.view.View.SYSTEM_UI_FLAG_HIDE_NAVIGATION | android.view.View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
+        ((android.view.ViewGroup) decor).addView(content, new android.view.ViewGroup.LayoutParams(-1, -1));
+        content.requestFocus();
+    }
+    @Override public void onHideCustomView() { exitFullscreen(); }
+    @SuppressWarnings("deprecation") boolean exitFullscreen() {
+        android.view.View content = fullscreen;
+        if (content == null) return false;
+        CustomViewCallback callback = fullscreenCallback;
+        fullscreen = null; fullscreenCallback = null;
+        if (content.getParent() instanceof android.view.ViewGroup)
+            ((android.view.ViewGroup) content.getParent()).removeView(content);
+        android.view.View decor = activity.getWindow().getDecorView();
+        if (android.os.Build.VERSION.SDK_INT >= 30) {
+            android.view.WindowInsetsController controller = decor.getWindowInsetsController();
+            if (controller != null && fullscreenVisibleBars != 0) controller.show(fullscreenVisibleBars);
+        } else decor.setSystemUiVisibility(fullscreenSystemUi);
+        if (callback != null) callback.onCustomViewHidden();
+        view.requestFocus(); view.requestApplyInsets();
+        return true;
+    }
     @Override public void onPermissionRequest(PermissionRequest request) {
         if (closed || !WebAccess.sameOrigin(origin, request.getOrigin().toString())) { request.deny(); return; }
         if (permission != null) permission.deny();
@@ -291,7 +333,7 @@ final class WebFeatures extends WebChromeClient {
     private void message(String text) { Toast.makeText(activity, text, Toast.LENGTH_LONG).show(); }
     private void cancelChooser() { if (chooser != null) { chooser.onReceiveValue(null); chooser = null; } }
     void close() {
-        closed = true; cancelChooser();
+        closed = true; exitFullscreen(); cancelChooser();
         if (permission != null) { permission.deny(); permission = null; }
         downloadURL = null; downloadCookie = null;
         clearPendingBlob();

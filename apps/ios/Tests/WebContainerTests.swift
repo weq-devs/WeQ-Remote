@@ -111,10 +111,10 @@ final class WebContainerTests: XCTestCase {
         XCTAssertEqual(script?.injectionTime, .atDocumentStart)
         XCTAssertEqual(script?.isForMainFrameOnly, true)
         session.onLoading = {}
-        session.onDisconnect = {}
+        session.onMenu = {}
         session.close()
         XCTAssertNil(session.onLoading)
-        XCTAssertNil(session.onDisconnect)
+        XCTAssertNil(session.onMenu)
     }
     @MainActor
     func testBackgroundVideoStaysInlineWithoutChangingPlaybackPolicy() {
@@ -129,5 +129,31 @@ final class WebContainerTests: XCTestCase {
         XCTAssertTrue(session.view.configuration.allowsInlineMediaPlayback)
         XCTAssertTrue(session.view.uiDelegate === session)
         XCTAssertEqual(session.view.configuration.mediaTypesRequiringUserActionForPlayback, .all)
+    }
+    @MainActor
+    func testNativeMediaBridgeIsOnlyInjectedForTheHttpCaptureFallback() {
+        for scheme in ["http", "https"] {
+            let session = RemoteWebSession(configuration: WKWebViewConfiguration(),
+                                           endpoint: URL(string: "\(scheme)://192.168.1.8:7691")!)
+            let script = session.view.configuration.userContentController.userScripts.first { $0.source.contains("window.weqRemoteMedia=") }
+            XCTAssertEqual(script != nil, scheme == "http")
+            if let script {
+                XCTAssertEqual(script.injectionTime, .atDocumentStart)
+                XCTAssertTrue(script.isForMainFrameOnly)
+            }
+            session.close()
+        }
+    }
+    @MainActor
+    func testExternalWindowBridgeIsInjectedBeforeBusinessScriptsAndOnlyForTheMainFrame() {
+        let session = RemoteWebSession(configuration: WKWebViewConfiguration(),
+                                       endpoint: URL(string: "https://192.168.1.8:7691")!)
+        defer { session.close() }
+        let script = session.view.configuration.userContentController.userScripts.first {
+            $0.source == RemoteWebSession.externalLinksScript
+        }
+        XCTAssertNotNil(script)
+        XCTAssertEqual(script?.injectionTime, .atDocumentStart)
+        XCTAssertEqual(script?.isForMainFrameOnly, true)
     }
 }
