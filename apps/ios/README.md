@@ -23,6 +23,20 @@ xcodebuild -project apps/ios/WeQRemote.xcodeproj -scheme WeQRemote \
 
 真机安装需要有效的开发签名和包含目标设备的描述文件；可通过 Xcode 或 `devicectl device install app` 安装。无签名真机构建不等于可安装 IPA，不上传到 TestFlight/App Store，也不替换其他 App。
 
+### SideStore 本机源
+
+SideStore 可以安装并续签本项目未签名 IPA。使用与现有安装一致的 Apple
+签名账户，在安装选项中关闭给业务 App 的 Bundle ID 追加 Team ID，保留
+`io.github.weqdevs.remote`；不要先卸载已有同身份应用。重签后的 Keychain
+凭据和冷启动重连需实机验证，不能用未签名构建通过代替。
+
+本机正式打包可运行 `python3 apps/ios/scripts/build_unsigned_ipa.py --publish-local`，
+或通过 `python3 scripts/publish_local_ios.py --ipa /absolute/path/app.ipa`
+发布已有安装包。入口先检查真机 Mach-O、身份及无签名状态，再调用本机
+`ios-app-distribution`；通过 `IOS_APP_DISTRIBUTION` 可指定其 CLI 路径。
+该工具是可选本机集成，不进入产品依赖，不影响 CI，也不自动改版本号。
+SideStore 源使用 IPA 的系统版本与 build，测试版显示名仅作说明。
+
 ### 未签名 IPA
 
 无需证书、Apple ID 或描述文件即可从源码构建真机 arm64 IPA：

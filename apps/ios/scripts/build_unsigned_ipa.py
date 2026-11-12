@@ -31,6 +31,7 @@ def relocate_spec(spec, root):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--output-dir', type=Path)
+    parser.add_argument('--publish-local', action='store_true', help='Publish the completed IPA to the local SideStore source')
     args = parser.parse_args()
     dependency = json.loads((SUPPORT / 'tailscale-dependency.json').read_text())
     if capture(['xcodegen', '--version']) != 'Version: ' + dependency['xcodegenVersion']:
@@ -67,7 +68,10 @@ def main():
                       'xcodegen': dependency['xcodegenVersion'], 'builtAt': datetime.now(timezone.utc).isoformat()}
         (destination / 'build.json').write_text(json.dumps(provenance, indent=2) + '\n')
         (destination / 'SHA256SUMS').write_text(artifact['sha256'] + '  ' + artifact['filename'] + '\n')
-    print(destination / artifact['filename'])
+    ipa = destination / artifact['filename']
+    if args.publish_local:
+        run([os.sys.executable, ROOT.parents[1] / 'scripts/publish_local_ios.py', '--ipa', ipa])
+    print(ipa)
 
 
 if __name__ == '__main__':
