@@ -67,8 +67,21 @@ private final class RemoteConnectionHandler: NSObject, WKScriptMessageHandler {
     }
 }
 
+private final class RemoteWindowLayoutHandler: NSObject, WKScriptMessageHandler {
+    weak var owner: RemoteWebSession?
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard message.frameInfo.isMainFrame, let owner, message.webView === owner.view,
+              message.body as? String == "ready", let url = message.frameInfo.request.url,
+              RemoteWebPolicy.sameOrigin(url, endpoint: owner.endpoint) else { return }
+        owner.publishWindowLayout()
+    }
+}
+
 @MainActor
 final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate {
+    static let windowLayoutScript = """
+    window.webkit.messageHandlers.weqWindowLayout.postMessage('ready');
+    """
     static let connectionHealthScript: String = {
         guard let url = Bundle.main.url(forResource: "web-connection-health", withExtension: "js") else { return "" }
         return (try? String(contentsOf: url, encoding: .utf8)) ?? ""
@@ -101,6 +114,8 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
     private var startupTimeout: Task<Void, Never>?
     private var startupFinished = false
     private var startupReported = false
+    private var navigationGeneration = 0
+    private var windowLayout = RemoteWindowLayout()
     private var nativeMedia: RemoteNativeMedia?
     private var dialogQueue: [(id: UUID, alert: UIAlertController, cancel: () -> Void)] = []
     private var activeDialog: (id: UUID, alert: UIAlertController, cancel: () -> Void)?
@@ -117,6 +132,17 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
         guard !closed else { return }
         let state = warning == .network ? "network" : warning == .connection ? "connection" : "connected"
         view.evaluateJavaScript("window.weqRemoteConnection={state:'\(state)',recovery:\(recovery)};window.dispatchEvent(new Event('weq-remote-connection'));", completionHandler: nil)
+    }
+
+    func updateWindowLayout(_ layout: RemoteWindowLayout) {
+        guard !closed, layout != windowLayout else { return }
+        windowLayout = layout
+        publishWindowLayout()
+    }
+
+    fileprivate func publishWindowLayout(completion: (() -> Void)? = nil) {
+        guard !closed else { return }
+        view.evaluateJavaScript("window.weqRemoteWindowLayout=\(windowLayout.json);window.dispatchEvent(new Event('weq-remote-window-layout'));", completionHandler: { _, _ in completion?() })
     }
 
     init(configuration: WKWebViewConfiguration, endpoint: URL, fingerprint: String? = nil) {
@@ -148,6 +174,11 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
         let connection = RemoteConnectionHandler()
         connection.owner = self
         configuration.userContentController.add(connection, name: "weqConnection")
+        let windowLayout = RemoteWindowLayoutHandler()
+        windowLayout.owner = self
+        configuration.userContentController.add(windowLayout, name: "weqWindowLayout")
+        configuration.userContentController.addUserScript(WKUserScript(
+            source: Self.windowLayoutScript, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         configuration.userContentController.addUserScript(WKUserScript(
             source: Self.connectionHealthScript, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         if let url = Bundle.main.url(forResource: "web-startup-progress", withExtension: "js"),
@@ -187,6 +218,7 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
     }
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        navigationGeneration += 1
         cancelWebDialogs()
         nativeMedia?.stopAll()
         startupFinished = false
@@ -209,7 +241,19 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
         } else if state == "ready" || state == "action-required" {
             startupFinished = true
             startupTimeout?.cancel()
-            onReady?()
+            if view.url == nil || (windowLayout.width > 0 && windowLayout.height > 0 && !windowLayout.hasCornerOverlap) {
+                onReady?()
+            } else {
+                // 首次显示前补发几何值，并等待网页布局提交；不重建 WebView。
+                let generation = navigationGeneration
+                publishWindowLayout { [weak self] in
+                    guard let self, !self.closed, generation == self.navigationGeneration else { return }
+                    self.view.callAsyncJavaScript("await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))); return true;", arguments: [:], in: nil, in: .page) { [weak self] _ in
+                        guard let self, !self.closed, generation == self.navigationGeneration else { return }
+                        self.onReady?()
+                    }
+                }
+            }
         } else if state == "error" {
             startupFinished = true
             startupTimeout?.cancel()
@@ -489,6 +533,7 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
         view.configuration.userContentController.removeScriptMessageHandler(forName: "weqStartup")
         view.configuration.userContentController.removeScriptMessageHandler(forName: "weqResources")
         view.configuration.userContentController.removeScriptMessageHandler(forName: "weqConnection")
+        view.configuration.userContentController.removeScriptMessageHandler(forName: "weqWindowLayout")
         view.configuration.userContentController.removeScriptMessageHandler(forName: "weqMedia")
         onReady = nil
         onFailure = nil
@@ -505,8 +550,32 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
     }
 }
 
-struct WebContainer: UIViewRepresentable {
+struct WebContainer: View {
     let session: RemoteWebSession
+    @Environment(\.layoutDirection) private var direction
+
+    var body: some View {
+        GeometryReader { geometry in
+            if #available(iOS 26.0, *) {
+                let leading = geometry.containerCornerInsets.topLeading
+                let trailing = geometry.containerCornerInsets.topTrailing
+                let left = direction == .leftToRight ? leading : trailing
+                let right = direction == .leftToRight ? trailing : leading
+                RemoteWebContent(session: session, layout: RemoteWindowLayout(
+                    width: geometry.size.width, height: geometry.size.height,
+                    topLeft: .init(width: left.width, height: left.height),
+                    topRight: .init(width: right.width, height: right.height)))
+            } else {
+                RemoteWebContent(session: session, layout: RemoteWindowLayout(
+                    width: geometry.size.width, height: geometry.size.height))
+            }
+        }
+    }
+}
+
+private struct RemoteWebContent: UIViewRepresentable {
+    let session: RemoteWebSession
+    let layout: RemoteWindowLayout
     func makeUIView(context: Context) -> WKWebView { session.view }
-    func updateUIView(_ uiView: WKWebView, context: Context) {}
+    func updateUIView(_ uiView: WKWebView, context: Context) { session.updateWindowLayout(layout) }
 }

@@ -5,6 +5,23 @@ import Combine
 
 final class WebContainerTests: XCTestCase {
     @MainActor
+    func testWindowGeometryBridgeStartsWithTheMainDocument() {
+        let session = RemoteWebSession(configuration: WKWebViewConfiguration(),
+                                       endpoint: URL(string: "https://192.168.1.8:7691")!)
+        defer { session.close() }
+        let script = session.view.configuration.userContentController.userScripts.first {
+            $0.source == RemoteWebSession.windowLayoutScript
+        }
+        XCTAssertEqual(script?.injectionTime, .atDocumentStart)
+        XCTAssertEqual(script?.isForMainFrameOnly, true)
+        let view = session.view
+        session.updateWindowLayout(.init(width: 1024, height: 768,
+            topLeft: .init(width: 100, height: 32)))
+        session.updateWindowLayout(.init(width: 1024, height: 768))
+        XCTAssertTrue(session.view === view)
+        XCTAssertEqual(view.scrollView.contentInsetAdjustmentBehavior, .never)
+    }
+    @MainActor
     func testConnectionWarningDoesNotWaitForAnotherCheckOrReplaceThePage() async throws {
         let model = RemoteModel(network: EmbeddedNetwork())
         model.disconnect() // 不读取保存的电脑或发起真实重连。

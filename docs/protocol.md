@@ -31,6 +31,8 @@
 
 ## 网页与手机壳的本地接口
 
+- iOS 壳提供可选 `window.weqRemoteWindowLayout = {width,height,topLeft:{width,height},topRight:{width,height}}`，坐标为与全屏 WebView 对齐的容器点坐标；iPadOS 26 起取自公开 `GeometryProxy.containerCornerInsets`，按当前布局方向转换为物理左右，旧系统和全屏无角部占位时为零。角部也可能包含系统圆角，不把非零值当作某一种窗口模式。主文档开始时请求当前快照，几何变化后发送 `weq-remote-window-layout`；存在角部占位时，首屏准备好后再同步并等待两帧绘制才显示，无占位时不新增等待。网页根据布局视口换算、只调整相交操作区，普通安全区不重复累加。仅本地布局桥接，无新增网络请求、持久设置或版本协议要求；旧网页忽略该值，旧壳和 Android 不提供时维持原布局。
+
 - 壳向当前电脑网页注入 `window.weqRemoteShell.openMenu()`，网页仅在接口存在时显示连接菜单。iOS 在主文档开始加载时注入；Android 在页面加载完成时注入，并发送本地事件 `weq-remote-shell-ready`，不新增网络请求。
 - 两端提供 `window.weqRemoteLinks.open(absoluteURL)` 将外链交给手机系统，并包装主文档的跨源 `window.open`，让异步业务回调拿到链接后仍可打开，不依赖浏览器瞬时用户激活。iOS 本地消息核对当前 WebView、主框架及电脑来源，沿用 `RemoteWebPolicy.external` 的地址规则；空白窗口、同源链接、Blob 及原有鉴权下载不经外链桥，不把主聊天页改成外部站点。
 - 网页通过 `window.weqRemoteStartup` 保存 `{state, message?}`，变化时发送本地事件 `weq-remote-startup`。`loading` 期间手机留在首页，并显示 `message` 对应的实际阶段；恢复检查、账号探测、必要配置及真实界面绘制完成后以 `ready` 放行。会话、好友、昵称、在线状态等业务数据在正式界面内异步加载，不属于启动等待条件。`error` 将错误交回首页重试；需要用户操作的恢复回执或组件诊断用 `action-required` 展示可操作页面。HTML 加载或查询结束不再视为界面已渲染；两端加载后补读当前状态，避免遗漏早到事件，不轮询、不额外请求。45 秒未完成则在首页报告超时；此能力需同时更新电脑网页与手机安装包，旧网页不会因 HTML 完成而被误判就绪。
