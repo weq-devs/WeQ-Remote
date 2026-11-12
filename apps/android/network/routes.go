@@ -129,6 +129,14 @@ func validRoutes(endpoints []string, fingerprint string) bool {
 }
 
 func (r *remoteRoutes) selectRoute() error {
+	parent := r.ctx
+	if parent == nil {
+		parent = context.Background()
+	}
+	return r.selectRouteContext(parent)
+}
+
+func (r *remoteRoutes) selectRouteContext(parent context.Context) error {
 	if r.closed {
 		return errors.New("connection closed")
 	}
@@ -142,10 +150,6 @@ func (r *remoteRoutes) selectRoute() error {
 		err      error
 		fatal    bool
 		probeRaw string
-	}
-	parent := r.ctx
-	if parent == nil {
-		parent = context.Background()
 	}
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
@@ -268,6 +272,23 @@ func (r *remoteRoutes) selectRoute() error {
 	}
 	r.active, r.endpoint = winner.client, winner.endpoint
 	return nil
+}
+
+func (r *remoteRoutes) checkConnection(ctx context.Context, endpoint, token string, recoverRoutes bool) (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed || endpoint != r.endpoints[0] || r.active == nil {
+		return "", errors.New("invalid connection")
+	}
+	if recoverRoutes {
+		if err := r.selectRouteContext(ctx); err != nil {
+			return "", err
+		}
+	}
+	if cached, ok := r.takeProbe("/v1/status", "GET"); ok {
+		return cached, nil
+	}
+	return r.active.requestContext(ctx, r.endpoint, "/v1/status", "GET", token, "")
 }
 
 func (r *remoteRoutes) request(endpoint, path, method, token, body string) (string, error) {

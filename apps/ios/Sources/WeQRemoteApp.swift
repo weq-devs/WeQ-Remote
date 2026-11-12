@@ -34,7 +34,7 @@ struct WeQRemoteApp: App {
                         while !Task.isCancelled {
                             if !model.testMode && EmbeddedNetwork.integrationControl == nil && !ProcessInfo.processInfo.arguments.contains("--remote-web-smoke-test") { await model.reconnect() }
                             if model.error != nil && !model.rememberedComputer && model.webSession == nil { return }
-                            do { try await Task.sleep(for: .seconds(model.connected ? 15 : 5)) } catch { return }
+                            do { try await Task.sleep(for: .seconds(model.webReady ? model.connectionCheckInterval : model.connected ? 15 : 5)) } catch { return }
                         }
                     }
                 }
@@ -80,18 +80,6 @@ struct RemoteView: View {
                     .opacity(model.webReady ? 1 : 0)
                     .allowsHitTesting(model.webReady)
                     .accessibilityHidden(!model.webReady)
-                    .safeAreaInset(edge: .top, spacing: 0) {
-                        if model.webReady, let warning = model.health.warning {
-                            Text(warning.message)
-                                .font(.subheadline)
-                                .frame(maxWidth: .infinity)
-                                .padding(12)
-                                .foregroundStyle(Color(uiColor: .label))
-                                .background(Color(uiColor: .secondarySystemBackground))
-                                .accessibilityIdentifier("connectionWarning")
-                                .accessibilityAddTraits(.updatesFrequently)
-                        }
-                    }
             }
             if !model.webReady {
                 connectionPage

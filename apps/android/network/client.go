@@ -83,6 +83,7 @@ type Client struct {
 	mu             sync.RWMutex
 	server         *tsnet.Server
 	http           *http.Client
+	checkHTTP      *http.Client
 	ctx            context.Context
 	cancel         context.CancelFunc
 	web            *webProxy
@@ -276,16 +277,58 @@ func (c *Client) Request(endpoint, path, method, token, body string) (string, er
 	return c.requestContext(c.ctx, endpoint, path, method, token, body)
 }
 
+type connectionCheckKey struct{}
+
+// 一轮验证的总预算覆盖所有备用入口；超时仅取消请求，不关闭 Web 或代理。
+func (c *Client) CheckConnection(endpoint, token string, timeoutMillis int64, recoverRoutes bool) (string, error) {
+	if timeoutMillis <= 0 {
+		return "", errors.New("invalid connection timeout")
+	}
+	parent := c.ctx
+	if c.routes != nil {
+		parent = c.routes.ctx
+	}
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(context.WithValue(parent, connectionCheckKey{}, true), time.Duration(timeoutMillis)*time.Millisecond)
+	defer cancel()
+	if c.routes != nil {
+		return c.routes.checkConnection(ctx, endpoint, token, recoverRoutes)
+	}
+	return c.requestContext(ctx, endpoint, "/v1/status", "GET", token, "")
+}
+
+func (c *Client) requestClient(check bool) *http.Client {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.http == nil || !check {
+		return c.http
+	}
+	if c.checkHTTP == nil {
+		copy := *c.http
+		copy.Timeout = 0
+		if transport, ok := copy.Transport.(*http.Transport); ok {
+			clone := transport.Clone()
+			clone.ResponseHeaderTimeout = 0
+			copy.Transport = clone
+		}
+		c.checkHTTP = &copy
+	}
+	return c.checkHTTP
+}
+
 func (c *Client) requestContext(parent context.Context, endpoint, path, method, token, body string) (string, error) {
+	if parent == nil {
+		parent = context.Background()
+	}
 	if !c.accepts(endpoint) {
 		return "", errors.New("invalid tailnet endpoint")
 	}
 	if !(method == "POST" && path == "/v1/pair" || method == "GET" && (path == "/v1/hello" || path == "/v1/status" || claimPath.MatchString(path))) || len(body) > 4096 {
 		return "", errors.New("invalid remote request")
 	}
-	c.mu.RLock()
-	client := c.http
-	c.mu.RUnlock()
+	client := c.requestClient(parent.Value(connectionCheckKey{}) == true)
 	if client == nil {
 		return "", errors.New("network closed")
 	}
@@ -303,6 +346,9 @@ func (c *Client) requestContext(parent context.Context, endpoint, path, method, 
 		return "", errors.New("request failed")
 	}
 	request.Header.Set("Accept", "application/json")
+	if header := deviceInfoHeader(); header != "" {
+		request.Header.Set("X-WeQ-Device", header)
+	}
 	if method == "POST" {
 		request.Header.Set("Content-Type", "application/json")
 	}
@@ -319,9 +365,6 @@ func (c *Client) requestContext(parent context.Context, endpoint, path, method, 
 	defer response.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(response.Body, 65537))
 	if err != nil || len(data) > 65536 {
-	if header := deviceInfoHeader(); header != "" {
-		request.Header.Set("X-WeQ-Device", header)
-	}
 		return "", errors.New("invalid remote response")
 	}
 	output, err := json.Marshal(struct {
@@ -338,6 +381,8 @@ func (c *Client) Close() {
 	}
 	c.mu.Lock()
 	server, client := c.server, c.http
+	checkClient := c.checkHTTP
+	c.checkHTTP = nil
 	web := c.web
 	c.web = nil
 	c.server, c.http = nil, nil
@@ -350,6 +395,9 @@ func (c *Client) Close() {
 	}
 	if client != nil {
 		client.CloseIdleConnections()
+	}
+	if checkClient != nil {
+		checkClient.CloseIdleConnections()
 	}
 	if server != nil {
 		_ = server.Close()

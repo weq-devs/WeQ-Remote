@@ -52,7 +52,24 @@ public final class MainActivity extends Activity {
     private String appVersion = "";
     private ConnectionHealth health = new ConnectionHealth();
     private String connectionRoute = "未选择";
-    private TextView connectionWarning;
+    private android.net.ConnectivityManager connectivity;
+    private android.net.ConnectivityManager.NetworkCallback pathMonitor;
+    private int healthEpoch, connectionRecovery;
+    private boolean eventCheckPending;
+    private long lastEventCheck = -5000;
+    private final Runnable eventCheck = new Runnable() { public void run() {
+        if (!visible || !webLoaded || reconnectPaused) { eventCheckPending = false; return; }
+        if (busy) { main.postDelayed(this, 250); return; }
+        eventCheckPending = false;
+        lastEventCheck = SystemClock.elapsedRealtime();
+        verify();
+    }};
+    private final Runnable healthDeadline = () -> {
+        if (!visible || !this.webLoaded) return;
+        health.evaluate(SystemClock.elapsedRealtime());
+        publishConnectionHealth();
+        scheduleConnectionWarning();
+    };
     private boolean checkingUpdates;
     EditText invitation;
     Button pairButton, verifyButton, retryButton;
@@ -82,9 +99,61 @@ public final class MainActivity extends Activity {
         else if (claimID == null) restoreComputer();
     };
 
+    private void startPathMonitor() {
+        connectivity = (android.net.ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+        if (connectivity == null || pathMonitor != null) return;
+        pathMonitor = new android.net.ConnectivityManager.NetworkCallback() {
+            @Override public void onAvailable(android.net.Network network) { main.post(() -> { if (pathMonitor == this) pathChanged(true); }); }
+            @Override public void onLost(android.net.Network network) { main.post(() -> { if (pathMonitor == this) pathChanged(connectivity.getActiveNetwork() != null); }); }
+        };
+        connectivity.registerDefaultNetworkCallback(pathMonitor);
+        pathChanged(connectivity.getActiveNetwork() != null);
+    }
+
+    private void pathChanged(boolean available) {
+        if (!visible || pathMonitor == null) return;
+        boolean changed = health.networkAvailable != available;
+        health.networkChanged(available, SystemClock.elapsedRealtime());
+        publishConnectionHealth();
+        scheduleConnectionWarning();
+        if (changed) requestConnectionCheck(true);
+    }
+
+    private void requestConnectionCheck(boolean immediately) {
+        if (!visible || !webLoaded || reconnectPaused || eventCheckPending) return;
+        eventCheckPending = true;
+        main.postDelayed(eventCheck, immediately ? 0 : Math.max(0, lastEventCheck + 5000 - SystemClock.elapsedRealtime()));
+    }
+
+    private void scheduleConnectionWarning() {
+        main.removeCallbacks(healthDeadline);
+        if (!visible || !webLoaded) return;
+        Long deadline = health.nextDeadline();
+        if (deadline != null) main.postDelayed(healthDeadline, Math.max(0, deadline - SystemClock.elapsedRealtime()));
+    }
+
+    private void publishConnectionHealth() {
+        if (webLoaded && webFeatures != null) webFeatures.connectionState(health.state(), connectionRecovery);
+    }
+
+    void receiveConnectionFailure(android.webkit.WebView page) {
+        if (webView != page || !webLoaded || !visible || reconnectPaused) return;
+        health.failed(SystemClock.elapsedRealtime());
+        scheduleConnectionWarning();
+        requestConnectionCheck(false);
+    }
+
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved);
         go.Seq.setContext(getApplicationContext());
+        try {
+            android.content.pm.PackageInfo info = getPackageManager().getPackageInfo(getPackageName(), 0);
+            String build = Long.toString(android.os.Build.VERSION.SDK_INT >= 28 ? info.getLongVersionCode() : info.versionCode);
+            Androidnet.setDeviceInfo(new JSONObject().put("platform", "android")
+                .put("model", android.os.Build.MANUFACTURER + " " + android.os.Build.MODEL)
+                .put("osVersion", android.os.Build.VERSION.RELEASE)
+                .put("appVersion", info.versionName).put("appBuild", build).toString());
+        } catch (Exception ignored) { }
         try {
             Androidnet.setWebStorageDirectory(new java.io.File(getNoBackupFilesDir(), "web-origins").getAbsolutePath());
             Androidnet.setWebCacheDirectory(new java.io.File(getCacheDir(), "web-code").getAbsolutePath());
@@ -123,24 +192,25 @@ public final class MainActivity extends Activity {
 
     @Override protected void onResume() {
         super.onResume(); visible = true;
-        if (webView != null) { webView.onResume(); verify(); return; }
+        healthEpoch++;
+        health.resume(SystemClock.elapsedRealtime());
+        startPathMonitor();
+        scheduleConnectionWarning();
+        if (webView != null) { webView.onResume(); requestConnectionCheck(true); verify(); return; }
         if (!BuildConfig.TESTING && invitation.length() > 0) { main.post(this::pair); return; }
         if (node == null && !busy && !restoreComputer() && enabled) startNetwork();
     }
     @Override protected void onStop() {
         visible = false;
+        healthEpoch++;
+        main.removeCallbacks(eventCheck); eventCheckPending = false;
         health.suspend();
+        main.removeCallbacks(healthDeadline);
+        if (connectivity != null && pathMonitor != null) connectivity.unregisterNetworkCallback(pathMonitor);
+        pathMonitor = null;
         main.removeCallbacks(reconnectPoll);
         if (webView == null) stopNetwork(false);
         super.onStop();
-        try {
-            android.content.pm.PackageInfo info = getPackageManager().getPackageInfo(getPackageName(), 0);
-            String build = Long.toString(android.os.Build.VERSION.SDK_INT >= 28 ? info.getLongVersionCode() : info.versionCode);
-            Androidnet.setDeviceInfo(new JSONObject().put("platform", "android")
-                .put("model", android.os.Build.MANUFACTURER + " " + android.os.Build.MODEL)
-                .put("osVersion", android.os.Build.VERSION.RELEASE)
-                .put("appVersion", info.versionName).put("appBuild", build).toString());
-        } catch (Exception ignored) { }
     }
     @Override protected void onPause() {
         if (webView != null) webView.onPause();
@@ -426,7 +496,6 @@ public final class MainActivity extends Activity {
     private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
 
     private void render() {
-        if (connectionWarning != null) connectionWarning.setVisibility(webLoaded && health.suspected ? View.VISIBLE : View.GONE);
         boolean loading = busy || claimID != null || (paired && !webLoaded);
         boolean canPair = claimID == null && !rememberedComputer && !paired;
         pairSection.setVisibility(canPair ? View.VISIBLE : View.GONE);
@@ -722,6 +791,8 @@ public final class MainActivity extends Activity {
         catch (java.util.concurrent.RejectedExecutionException stopped) { Thread cleanup = new Thread(client::close, "weq-network-close"); cleanup.setDaemon(true); cleanup.start(); }
     }
     private void clearComputer() {
+        healthEpoch++; connectionRecovery = 0;
+        main.removeCallbacks(eventCheck); eventCheckPending = false; lastEventCheck = -5000;
         health = new ConnectionHealth(); connectionRoute = "未选择";
         closeWeb();
         generation++;
@@ -893,19 +964,25 @@ public final class MainActivity extends Activity {
         if (node == null || !paired || busy || !visible) return;
         main.removeCallbacks(reconnectPoll);
         final Client client = node; final int revision = generation; final String address = endpoint, credential = token;
+        final long timeout = health.requestTimeout();
+        final boolean recoverRoutes = health.recovering();
+        final boolean liveCheck = webLoaded;
+        final int epoch = healthEpoch;
+        if (webLoaded) { health.beginCheck(SystemClock.elapsedRealtime()); scheduleConnectionWarning(); }
         busy = true; error.setText(""); render();
         worker.execute(() -> {
             try {
                 Androidnet.setInterfaces(interfaceSnapshot());
                 long started = SystemClock.elapsedRealtime();
-                JSONObject status = response(client.request(address, "/v1/status", "GET", credential, ""));
+                JSONObject status = response(liveCheck ? client.checkConnection(address, credential, timeout, recoverRoutes) : client.request(address, "/v1/status", "GET", credential, ""));
                 long milliseconds = SystemClock.elapsedRealtime() - started;
                 if (!"WeQ Remote".equals(status.getString("product")) || status.getInt("protocol") != 1 || !"status:read".equals(status.getString("scope")) || !status.getBoolean("online")) throw new Exception("电脑返回了不兼容的数据");
                 boolean webReady = client.hasWeb();
                 boolean embedded = client.usesEmbeddedNetwork();
-                String tailnet = tailnetState(client, embedded);
+                String tailnet = liveCheck ? (embedded ? "Running" : "Stopped") : tailnetState(client, embedded);
                 main.post(() -> {
                     if (revision != generation || !credential.equals(token)) return;
+                    if (liveCheck && epoch != healthEpoch) { busy = false; requestConnectionCheck(true); return; }
                     if (updatingConnection) {
                         try { ConnectionStore.save(this, endpoint, credential, fingerprint, connectionRoutes); updatingConnection = false; }
                         catch (Exception e) { fail(revision, "无法保存新的电脑地址，请重试"); return; }
@@ -914,14 +991,21 @@ public final class MainActivity extends Activity {
                     if (visible) {
                         connectionRoute = embedded ? "内嵌 Tailscale" : "系统网络（HTTPS）";
                         networkState.setText("Tailscale：" + ("Running".equals(tailnet) ? "已连接" : embedded ? "状态待确认" : "未使用（系统网络）"));
-                        health.succeeded(System.currentTimeMillis(), milliseconds);
+                        if (health.suspected) connectionRecovery++;
+                        health.succeeded(System.currentTimeMillis(), milliseconds, SystemClock.elapsedRealtime());
+                        publishConnectionHealth();
+                        scheduleConnectionWarning();
                         render();
                         main.removeCallbacks(reconnectPoll);
                         main.postDelayed(reconnectPoll, 15000);
                     }
                     if (WebStartup.shouldOpenWeb(restoring, webView != null, webReady)) { restoring = false; if (visible) openWeb(); }
                 });
-            } catch (Exception e) { fail(revision, e.getMessage()); }
+            } catch (Exception e) { main.post(() -> {
+                if (revision != generation) return;
+                if (liveCheck && epoch != healthEpoch) { busy = false; requestConnectionCheck(true); return; }
+                fail(revision, e.getMessage());
+            }); }
         });
     }
     private void openWeb() {
@@ -987,19 +1071,7 @@ public final class MainActivity extends Activity {
                             // 网页铺满整屏，不再显示任何原生栏或按钮；未加载完时用连接页盖在上面显示进度。
                             LinearLayout shell = new LinearLayout(this); shell.setOrientation(LinearLayout.VERTICAL); shell.setBackgroundColor(webBackgroundColor());
                             final boolean manualInsets = android.os.Build.VERSION.SDK_INT >= 30 && !webViewHandlesSafeArea();
-                            final boolean bannerInsets = android.os.Build.VERSION.SDK_INT >= 30 && !manualInsets;
-                            connectionWarning = text("连接已中断，正在重连…", 14);
-                            connectionWarning.setGravity(android.view.Gravity.CENTER);
-                            connectionWarning.setPadding(dp(12), dp(12), dp(12), dp(12));
-                            connectionWarning.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
-                            connectionWarning.setVisibility(View.GONE);
-                            shell.addView(connectionWarning, new LinearLayout.LayoutParams(-1, -2));
                             shell.addView(webView, new LinearLayout.LayoutParams(-1, 0, 1f));
-                            connectionWarning.setOnApplyWindowInsetsListener((view, insets) -> {
-                                android.graphics.Rect bars = WindowInsetsHelper.contentInsets(insets);
-                                view.setPadding(dp(12) + (bannerInsets ? bars.left : 0), dp(12) + (bannerInsets ? bars.top : 0), dp(12) + (bannerInsets ? bars.right : 0), dp(12));
-                                return insets;
-                            });
                             if (manualInsets) applyWebInsets(shell);
                             android.widget.FrameLayout root = new android.widget.FrameLayout(this);
                             android.view.ViewGroup parent = (android.view.ViewGroup) setupView.getParent();
@@ -1048,6 +1120,9 @@ public final class MainActivity extends Activity {
         if (webLoaded) return;
         main.removeCallbacks(webStartupTimeout);
         webLoaded = true;
+        health.resume(SystemClock.elapsedRealtime());
+        publishConnectionHealth();
+        scheduleConnectionWarning();
         main.removeCallbacks(reconnectPoll);
         if (visible) main.post(reconnectPoll);
         android.view.ViewGroup parent = (android.view.ViewGroup) setupView.getParent();
@@ -1088,7 +1163,7 @@ public final class MainActivity extends Activity {
         shell.requestApplyInsets();
     }
     private void closeWeb() {
-        connectionWarning = null;
+        main.removeCallbacks(healthDeadline);
         main.removeCallbacks(webStartupTimeout);
         webLoaded = false;
         webDownload = null;
@@ -1124,9 +1199,9 @@ public final class MainActivity extends Activity {
         boolean revoked = "设备未授权或授权已被撤销，请重新配对".equals(message);
         if (!revoked && webView != null) {
             busy = false;
-            if (visible && webLoaded) { health.failed(); render(); }
+            if (visible && webLoaded) { health.checkFailed(SystemClock.elapsedRealtime()); scheduleConnectionWarning(); render(); }
             main.removeCallbacks(reconnectPoll);
-            if (visible) main.postDelayed(reconnectPoll, 5000);
+            if (visible) main.postDelayed(reconnectPoll, webLoaded ? health.checkInterval() : 5000);
             return;
         }
         if (revoked && !updatingConnection) { ConnectionStore.delete(this); rememberedComputer = false; Androidnet.clearWebCache(); }

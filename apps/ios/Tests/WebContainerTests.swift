@@ -19,7 +19,7 @@ final class WebContainerTests: XCTestCase {
         defer { observer.cancel(); monitoring.cancel(); paths.continuation.finish(); model.disconnect() }
         await fulfillment(of: [started], timeout: 2)
         session.onConnectionFailure?()
-        try await Task.sleep(for: .milliseconds(3300))
+        try await Task.sleep(for: .milliseconds(10300))
         XCTAssertEqual(model.health.warning, .connection)
         XCTAssertTrue(model.webReady)
         XCTAssertTrue(model.webSession === session)
@@ -33,6 +33,7 @@ final class WebContainerTests: XCTestCase {
 
     @MainActor
     func testConnectionFailureBridgeIsInstalledBeforeBusinessRequests() {
+        XCTAssertFalse(RemoteWebSession.connectionHealthScript.isEmpty)
         let session = RemoteWebSession(configuration: WKWebViewConfiguration(),
                                        endpoint: URL(string: "https://192.168.1.8:7691")!)
         defer { session.close() }

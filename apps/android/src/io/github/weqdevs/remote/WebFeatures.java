@@ -38,6 +38,7 @@ final class WebFeatures extends WebChromeClient {
     private volatile boolean closed;
     private volatile boolean saving;
     private final String resourceObserver;
+    private final String connectionObserver;
     private android.view.View fullscreen;
     private CustomViewCallback fullscreenCallback;
     private int fullscreenSystemUi;
@@ -52,6 +53,13 @@ final class WebFeatures extends WebChromeClient {
             script = new String(output.toByteArray(), java.nio.charset.StandardCharsets.UTF_8);
         } catch (java.io.IOException ignored) { }
         resourceObserver = script;
+        String healthScript = "";
+        try (InputStream input = activity.getAssets().open("web-connection-health.js"); java.io.ByteArrayOutputStream output = new java.io.ByteArrayOutputStream()) {
+            byte[] buffer = new byte[4096]; int count;
+            while ((count = input.read(buffer)) != -1) output.write(buffer, 0, count);
+            healthScript = new String(output.toByteArray(), java.nio.charset.StandardCharsets.UTF_8);
+        } catch (java.io.IOException ignored) { }
+        connectionObserver = healthScript;
         view.setWebChromeClient(this);
         view.addJavascriptInterface(new ExternalLinks(), "weqRemoteLinks");
         view.setDownloadListener((url, agent, disposition, mime, size) -> {
@@ -111,6 +119,12 @@ final class WebFeatures extends WebChromeClient {
             activity.runOnUiThread(() -> {
                 if (!closed && WebAccess.sameOrigin(origin, view.getUrl()) && activity instanceof MainActivity)
                     ((MainActivity) activity).showConnectionMenu();
+            });
+        }
+        @android.webkit.JavascriptInterface public void connectionFailed() {
+            activity.runOnUiThread(() -> {
+                if (!closed && WebAccess.sameOrigin(origin, view.getUrl()) && activity instanceof MainActivity)
+                    ((MainActivity) activity).receiveConnectionFailure(view);
             });
         }
         @android.webkit.JavascriptInterface public void capture(String id) {
@@ -177,6 +191,7 @@ final class WebFeatures extends WebChromeClient {
         view.evaluateJavascript("window.dispatchEvent(new CustomEvent('weq-remote-capture-result',{detail:" + detail + "}))", null);
     }
     void observeStartup() {
+        if (!connectionObserver.isEmpty()) view.evaluateJavascript(connectionObserver, null);
         if (!resourceObserver.isEmpty()) view.evaluateJavascript(resourceObserver, null);
         if (closed) return;
         view.evaluateJavascript("(function(){function report(){var s=window.weqRemoteStartup;if(s)weqRemoteLinks.startup(s.state,s.message||'');}if(!window.__weqStartupListener){window.__weqStartupListener=true;window.addEventListener('weq-remote-startup',report);}report();})()", null);
@@ -189,8 +204,12 @@ final class WebFeatures extends WebChromeClient {
     void pageReady() {
         if (closed) return;
         observeStartup();
-        view.evaluateJavascript("window.weqRemoteShell={openMenu:function(){weqRemoteLinks.openMenu()}};window.dispatchEvent(new Event('weq-remote-shell-ready'));", null);
+        view.evaluateJavascript("window.weqRemoteConnection=window.weqRemoteConnection||{state:'connected'};window.weqRemoteShell={openMenu:function(){weqRemoteLinks.openMenu()},connectionFailed:function(){weqRemoteLinks.connectionFailed()}};window.dispatchEvent(new Event('weq-remote-shell-ready'));", null);
         view.evaluateJavascript("(function(){if(window.__weqRemoteLinks)return;window.__weqRemoteLinks=true;document.addEventListener('click',function(e){var a=e.target.closest&&e.target.closest('a[download]');if(a&&a.href.indexOf('blob:')===0){e.preventDefault();weqRemoteLinks.downloadBlob(a.href,a.download||'download');}},true);var original=window.open;window.open=function(url,target,features){if(url&&url!=='about:blank'){try{var parsed=new URL(url,location.href);if(parsed.origin!==location.origin){weqRemoteLinks.open(parsed.href);return null;}}catch(e){return null;}}return original.call(window,url,target,features);};})()", null);
+    }
+    void connectionState(String state, int recovery) {
+        if (closed) return;
+        view.evaluateJavascript("window.weqRemoteConnection={state:" + org.json.JSONObject.quote(state) + ",recovery:" + recovery + "};window.dispatchEvent(new Event('weq-remote-connection'));", null);
     }
     @Override public boolean onShowFileChooser(WebView web, ValueCallback<Uri[]> callback, FileChooserParams params) {
         cancelChooser();

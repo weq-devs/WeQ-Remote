@@ -19,14 +19,29 @@ struct ConnectionHealth {
     private var lastResponse: TimeInterval?
     private var failureSince: TimeInterval?
     private var noNetworkSince: TimeInterval?
+    private var retryWarningAt: TimeInterval?
+    private(set) var failedChecks = 0
+
+    var requestTimeout: TimeInterval { 5 * (Double(failedChecks) + 1) }
+    var checkInterval: TimeInterval { failedChecks == 0 ? 15 : 0.5 }
+
+    mutating func beginCheck(now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
+        if failedChecks > 0, retryWarningAt == nil { retryWarningAt = now + 5 }
+    }
+
+    mutating func checkFailed(now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
+        failedChecks += 1
+        failed(now: now)
+    }
 
     var status: String { warning == .network ? "网络已断开" : warning != nil ? "连接已中断" : checkedAt == nil ? "待检查" : "已连接" }
 
     var nextDeadline: TimeInterval? {
         var deadlines: [TimeInterval] = []
-        if warning != .network, let noNetworkSince { deadlines.append(noNetworkSince + 2) }
         if warning == nil {
-            if let failureSince { deadlines.append(failureSince + 3) }
+            if let noNetworkSince { deadlines.append(noNetworkSince + 10) }
+            if let failureSince { deadlines.append(failureSince + 10) }
+            if let retryWarningAt { deadlines.append(retryWarningAt) }
             if let lastResponse { deadlines.append(lastResponse + 30) }
         }
         return deadlines.min()
@@ -39,6 +54,8 @@ struct ConnectionHealth {
         lastResponse = now
         failureSince = nil
         noNetworkSince = nil
+        retryWarningAt = nil
+        failedChecks = 0
     }
 
     mutating func failed(now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
@@ -52,22 +69,25 @@ struct ConnectionHealth {
             if warning == .network { warning = .connection }
         } else if noNetworkSince == nil {
             noNetworkSince = now
+            if warning != nil { warning = .network }
         }
     }
 
-    // 使用单调时间，提示不等待请求超时、备用入口探测或第二轮重连。
+    // 第二轮等到 5 秒就提醒，不取消其剩余预算；备用入口也共用该轮预算。
     mutating func evaluate(now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
-        if let noNetworkSince, now - noNetworkSince >= 2 {
+        if let noNetworkSince, now - noNetworkSince >= 10 {
             warning = .network
         } else if warning != .network,
-                  failureSince.map({ now - $0 >= 3 }) == true || lastResponse.map({ now - $0 >= 30 }) == true {
-            warning = .connection
+                  failureSince.map({ now - $0 >= 10 }) == true || retryWarningAt.map({ now >= $0 }) == true || lastResponse.map({ now - $0 >= 30 }) == true {
+            warning = networkAvailable ? .connection : .network
         }
     }
 
     mutating func resume(now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
         lastResponse = now
         failureSince = nil
+        retryWarningAt = nil
+        failedChecks = 0
         noNetworkSince = networkAvailable ? nil : now
     }
 
@@ -76,5 +96,6 @@ struct ConnectionHealth {
         lastResponse = nil
         failureSince = nil
         noNetworkSince = nil
+        retryWarningAt = nil
     }
 }

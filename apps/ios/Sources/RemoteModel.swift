@@ -42,6 +42,8 @@ final class RemoteModel: ObservableObject {
     private var eventCheck: Task<Void, Never>?
     private var eventCheckID: UUID?
     private var lastEventCheck: TimeInterval?
+    private var healthEpoch = 0
+    private var connectionRecovery = 0
 
     func monitorConnectionHealth() async {
         let monitor = NWPathMonitor()
@@ -59,9 +61,11 @@ final class RemoteModel: ObservableObject {
 
     func monitorConnectionHealth(paths: AsyncStream<Bool>) async {
         let id = UUID()
+        healthEpoch += 1
         healthMonitorID = id
         health.resume()
         scheduleConnectionWarning()
+        if webReady { requestConnectionCheck(immediately: true) }
         defer {
             if healthMonitorID == id {
                 healthMonitorID = nil
@@ -77,8 +81,9 @@ final class RemoteModel: ObservableObject {
             guard !Task.isCancelled, healthMonitorID == id else { return }
             let changed = health.networkAvailable != available
             health.networkChanged(available: available)
+            publishConnectionHealth()
             scheduleConnectionWarning()
-            if changed && available { requestConnectionCheck(immediately: true) }
+            if changed { requestConnectionCheck(immediately: true) }
         }
     }
 
@@ -90,6 +95,7 @@ final class RemoteModel: ObservableObject {
             do { try await Task.sleep(for: .seconds(max(0, deadline - ProcessInfo.processInfo.systemUptime))) } catch { return }
             guard let self, self.healthMonitorID == id, self.webReady else { return }
             self.health.evaluate()
+            self.publishConnectionHealth()
             self.scheduleConnectionWarning()
         }
     }
@@ -112,9 +118,13 @@ final class RemoteModel: ObservableObject {
             while let self, self.busy {
                 do { try await Task.sleep(for: .milliseconds(250)) } catch { return }
             }
-            guard !Task.isCancelled, let self, self.healthMonitorID != nil, self.health.networkAvailable else { return }
+            guard !Task.isCancelled, let self, self.healthMonitorID != nil else { return }
             self.lastEventCheck = ProcessInfo.processInfo.systemUptime
             await self.reconnect()
+            while !Task.isCancelled, self.webReady, self.health.failedChecks > 0, self.healthMonitorID != nil, !self.reconnectPaused {
+                do { try await Task.sleep(for: .seconds(self.health.checkInterval)) } catch { return }
+                await self.reconnect()
+            }
         }
     }
 
@@ -123,6 +133,13 @@ final class RemoteModel: ObservableObject {
         health.failed()
         scheduleConnectionWarning()
     }
+
+    private func publishConnectionHealth() {
+        guard webReady else { return }
+        webSession?.updateConnectionHealth(warning: health.warning, recovery: connectionRecovery)
+    }
+
+    var connectionCheckInterval: TimeInterval { health.checkInterval }
 
     var isConnecting: Bool { busy || code != nil || (webSession != nil && !webReady) }
 
@@ -133,6 +150,16 @@ final class RemoteModel: ObservableObject {
     var versionInfo: String {
         let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "未知"
         return "WeQ Remote \(appVersion) (\(build)) · \(UIDevice.current.systemName) \(UIDevice.current.systemVersion)"
+    }
+    private var deviceInfo: RemoteDeviceInfo {
+        var system = utsname()
+        uname(&system)
+        let identifier = withUnsafeBytes(of: &system.machine) { bytes in
+            String(bytes: bytes.prefix { $0 != 0 }, encoding: .utf8)
+        }
+        return RemoteDeviceInfo(platform: "ios", model: identifier ?? UIDevice.current.model,
+            osVersion: UIDevice.current.systemVersion, appVersion: appVersion,
+            appBuild: Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "未知")
     }
     var connectionRoute: String {
         guard let api else { return "未选择" }
@@ -147,16 +174,6 @@ final class RemoteModel: ObservableObject {
     var connectionDetails: String {
         let checked = health.checkedAt?.formatted(date: .omitted, time: .standard) ?? "尚未验证"
         let latency = health.latency.map { "\($0) ms" } ?? "—"
-    private var deviceInfo: RemoteDeviceInfo {
-        var system = utsname()
-        uname(&system)
-        let identifier = withUnsafeBytes(of: &system.machine) { bytes in
-            String(bytes: bytes.prefix { $0 != 0 }, encoding: .utf8)
-        }
-        return RemoteDeviceInfo(platform: "ios", model: identifier ?? UIDevice.current.model,
-            osVersion: UIDevice.current.systemVersion, appVersion: appVersion,
-            appBuild: Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "未知")
-    }
         return "连接：\(api == nil ? "未连接" : health.status)\n电脑：\(api?.endpoint.absoluteString ?? "未选择")\n连接方式：\(connectionRoute)\nTailscale：\(tailscaleStatus)\n最近成功：\(checked)\n请求耗时：\(latency)\n\(versionInfo)"
     }
 
@@ -196,6 +213,7 @@ final class RemoteModel: ObservableObject {
     func resumeReconnect() { reconnectPaused = false }
 
     func suspend() {
+        healthEpoch += 1
         healthDeadline?.cancel()
         healthDeadline = nil
         health.suspend()
@@ -219,7 +237,7 @@ final class RemoteModel: ObservableObject {
     }
 
     func reconnect() async {
-        guard !reconnectPaused, !busy, polling == nil, health.networkAvailable else { return }
+        guard !reconnectPaused, !busy, polling == nil else { return }
         if api != nil { await refresh(); return }
         let generation = revision
         busy = true
@@ -246,9 +264,11 @@ final class RemoteModel: ObservableObject {
         }
     }
 
-    private func connectionSession(endpoint: URL, fingerprint: String?) async throws -> URLSession {
+    private func connectionSession(endpoint: URL, fingerprint: String?, timeout: TimeInterval? = nil) async throws -> URLSession {
         if let fingerprint {
-            return URLSession(configuration: EmbeddedNetwork.configuration(), delegate: NoRedirectDelegate(endpoint: endpoint, fingerprint: fingerprint), delegateQueue: nil)
+            let configuration = EmbeddedNetwork.configuration()
+            if let timeout { configuration.timeoutIntervalForResource = timeout }
+            return URLSession(configuration: configuration, delegate: NoRedirectDelegate(endpoint: endpoint, fingerprint: fingerprint), delegateQueue: nil)
         }
         await network.start()
         let generation = revision
@@ -260,10 +280,10 @@ final class RemoteModel: ObservableObject {
             if network.loginURL != nil { throw RemoteError.enrollment }
             try await Task.sleep(for: .milliseconds(500))
         }
-        return try await network.session()
+        return try await network.session(timeout: timeout)
     }
 
-    private func selectConnection(_ endpoints: [URL], pin: String?, probe: RemoteProbe, token: String? = nil, invitation: PairingInvitation? = nil) async throws -> RemoteSelection {
+    private func selectConnection(_ endpoints: [URL], pin: String?, probe: RemoteProbe, token: String? = nil, invitation: PairingInvitation? = nil, timeout: TimeInterval? = nil) async throws -> RemoteSelection {
         let generation = revision
         var enrolled = false
         let (_, selected) = try await selectRemoteRoute(endpoints, discard: { $0.api.session.invalidateAndCancel() }) { endpoint in
@@ -273,7 +293,7 @@ final class RemoteModel: ObservableObject {
                 try await self.network.enroll(authKey: authKey, expiresAt: expiresAt)
                 enrolled = true
             }
-            let session = try await self.connectionSession(endpoint: endpoint, fingerprint: endpoint.scheme == "https" ? pin : nil)
+            let session = try await self.connectionSession(endpoint: endpoint, fingerprint: endpoint.scheme == "https" ? pin : nil, timeout: timeout)
             let probeID = UUID()
             self.probingSessions[probeID] = session
             defer { self.probingSessions.removeValue(forKey: probeID) }
@@ -287,7 +307,7 @@ final class RemoteModel: ObservableObject {
                 case .status where token != nil:
                     // 已配对设备的一读既用于选路也用于本次连接，不再重复请求。
                     let start = ContinuousClock.now
-                    let value: ComputerStatus = try await api.request("v1/status", token: token)
+                    let value: ComputerStatus = try await api.request("v1/status", token: token, timeout: timeout ?? 12)
                     try value.validate()
                     latencyMillis = elapsedMillis(ContinuousClock.now - start)
                     status = value
@@ -324,6 +344,7 @@ final class RemoteModel: ObservableObject {
             self.webReady = true
             self.health.resume()
             self.scheduleConnectionWarning()
+            self.publishConnectionHealth()
             self.webDownload = nil
             self.error = nil
         }
@@ -530,6 +551,7 @@ final class RemoteModel: ObservableObject {
 
     // verified 为选路阶段已完成的鉴权状态读取；同一条入口直接沿用，避免连接时重复核验。
     private func refresh(verified: RemoteSelection?) async {
+        if webReady, verified == nil { await refreshLiveConnection(); return }
         guard let api, let credential else { return }
         let generation = revision
         busy = true
@@ -586,6 +608,67 @@ final class RemoteModel: ObservableObject {
         }
     }
 
+    private func refreshLiveConnection() async {
+        guard let api, let credential, !busy else { return }
+        let generation = revision
+        let timeout = health.requestTimeout
+        let epoch = healthEpoch
+        let recover = health.failedChecks > 0
+        health.beginCheck()
+        scheduleConnectionWarning()
+        busy = true
+        defer { if generation == revision { busy = false } }
+        do {
+            let selection: RemoteSelection = try await withRemoteTimeout(timeout, discard: { (selection: RemoteSelection) in
+                if selection.api.session !== api.session { selection.api.session.invalidateAndCancel() }
+            }) { [self] in
+                if recover {
+                    return try await selectConnection(endpoints ?? [api.endpoint], pin: routeFingerprint ?? fingerprint, probe: .status, token: credential.token, timeout: timeout)
+                }
+                let start = ContinuousClock.now
+                let value: ComputerStatus = try await api.request("v1/status", token: credential.token, timeout: timeout)
+                try value.validate()
+                return RemoteSelection(api: api, status: value, latencyMillis: elapsedMillis(ContinuousClock.now - start))
+            }
+            var adopted = selection.api.session === api.session
+            defer { if !adopted { selection.api.session.invalidateAndCancel() } }
+            guard generation == revision, epoch == healthEpoch, !Task.isCancelled else {
+                if selection.api.session !== api.session { selection.api.session.invalidateAndCancel() }
+                return
+            }
+            if selection.api.session !== api.session {
+                let pin = selection.api.endpoint.scheme == "https" ? routeFingerprint ?? fingerprint : nil
+                if webSession?.endpoint != selection.api.endpoint {
+                    let web = try await network.webSession(endpoint: selection.api.endpoint, token: credential.token, fingerprint: pin)
+                    guard generation == revision, !Task.isCancelled else { web.close(); selection.api.session.invalidateAndCancel(); return }
+                    webSession?.close()
+                    adoptWebSession(web)
+                }
+                api.session.invalidateAndCancel()
+                self.api = selection.api
+                adopted = true
+                fingerprint = pin
+                computerAddress = selection.api.endpoint.host
+            }
+            latency = selection.latencyMillis
+            checkedAt = Date()
+            if health.warning != nil { connectionRecovery += 1 }
+            health.succeeded(at: Date(), latency: latency)
+            publishConnectionHealth()
+            scheduleConnectionWarning()
+            connected = true
+            message = "电脑在线"
+            error = nil
+        } catch {
+            guard generation == revision, epoch == healthEpoch, !Task.isCancelled else { return }
+            if case RemoteError.unauthorized = error { fail(error); return }
+            health.checkFailed()
+            scheduleConnectionWarning()
+            connected = false
+            self.error = error.localizedDescription
+        }
+    }
+
     private func fail(_ failure: Error) {
         connectionFailed()
         connected = false
@@ -595,6 +678,8 @@ final class RemoteModel: ObservableObject {
     }
 
     func disconnect() {
+        healthEpoch += 1
+        connectionRecovery = 0
         eventCheck?.cancel()
         eventCheck = nil
         eventCheckID = nil

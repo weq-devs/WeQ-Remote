@@ -213,6 +213,30 @@ func elapsedMillis(_ duration: Duration) -> Int {
     return Int(parts.seconds) * 1000 + Int(parts.attoseconds / 1_000_000_000_000_000)
 }
 
+// 整轮共用墙钟预算，包含入网、错峰及所有备用入口；超时取消探测，不关闭现有网页。
+@MainActor
+func withRemoteTimeout<T>(_ timeout: TimeInterval, discard: @escaping @MainActor (T) -> Void = { _ in }, operation: @escaping @MainActor () async throws -> T) async throws -> T {
+    try await withThrowingTaskGroup(of: T.self) { group in
+        group.addTask { @MainActor in try await operation() }
+        group.addTask {
+            try await Task.sleep(for: .seconds(timeout))
+            throw URLError(.timedOut)
+        }
+        do {
+            let result = try await group.next()!
+            group.cancelAll()
+            // 超时任务被取消不影响已取得的结果。
+            while !group.isEmpty { if let extra = try? await group.next() { discard(extra) } }
+            if Task.isCancelled { discard(result); throw CancellationError() }
+            return result
+        } catch {
+            group.cancelAll()
+            while !group.isEmpty { if let result = try? await group.next() { discard(result) } }
+            throw error
+        }
+    }
+}
+
 // 只读探测错峰竞速；内嵌节点共用一个 worker，避免重复入网。
 @MainActor
 func selectRemoteRoute<T>(_ endpoints: [URL], discard: @escaping @MainActor (T) -> Void = { _ in }, connect: @escaping @MainActor (URL) async throws -> T) async throws -> (URL, T) {
@@ -368,9 +392,20 @@ func pinnedCredential(_ challenge: URLAuthenticationChallenge, endpoint: URL?, f
     return digest == fingerprint ? URLCredential(trust: trust) : nil
 }
 
+struct RemoteDeviceInfo: Encodable {
+    let platform: String
+    let model: String
+    let osVersion: String
+    let appVersion: String
+    let appBuild: String
+
+    var header: String? { (try? JSONEncoder().encode(self))?.base64EncodedString() }
+}
+
 struct RemoteAPI {
     let endpoint: URL
     let session: URLSession
+    var deviceInfo: RemoteDeviceInfo? = nil
 
     func request<T: Decodable>(_ path: String, method: String = "GET", token: String? = nil,
                                body: [String: String]? = nil, timeout: TimeInterval = 12) async throws -> T {
@@ -378,6 +413,7 @@ struct RemoteAPI {
         request.httpMethod = method
         request.timeoutInterval = timeout
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        if let header = deviceInfo?.header { request.setValue(header, forHTTPHeaderField: "X-WeQ-Device") }
         if let token { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         if let body {
             request.httpBody = try JSONEncoder().encode(body)
@@ -392,18 +428,6 @@ struct RemoteAPI {
             guard data.count < 65536 else { throw RemoteError.response }
             data.append(byte)
         }
-struct RemoteDeviceInfo: Encodable {
-    let platform: String
-    let model: String
-    let osVersion: String
-    let appVersion: String
-    let appBuild: String
-
-    var header: String? { (try? JSONEncoder().encode(self))?.base64EncodedString() }
-}
-
         return try JSONDecoder().decode(T.self, from: data)
     }
 }
-    var deviceInfo: RemoteDeviceInfo? = nil
-        if let header = deviceInfo?.header { request.setValue(header, forHTTPHeaderField: "X-WeQ-Device") }

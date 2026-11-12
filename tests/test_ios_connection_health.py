@@ -7,9 +7,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class IOSConnectionHealthTests(unittest.TestCase):
     def test_injected_bridge_preserves_requests_and_filters_unrelated_failures(self):
-        source = (ROOT / 'apps/ios/Sources/WebContainer.swift').read_text()
-        script = source.split('static let connectionHealthScript = """', 1)[1].split('"""', 1)[0]
-        subprocess.run(['node', '-e', r'''
+        script = (ROOT / 'resources/web-connection-health.js').read_text()
+        runner = r'''
 const vm = require('node:vm');
 const assert = require('node:assert/strict');
 const calls = [], requests = [];
@@ -26,6 +25,10 @@ const context = {
     fetch(...args){requests.push(args);return failure?Promise.reject(failure):Promise.resolve({status:200});},
     webkit:{messageHandlers:{weqConnection:{postMessage:value=>calls.push(value)}}}},
 };
+if (process.argv[2] === 'android') {
+  delete context.window.webkit;
+  context.window.weqRemoteLinks = {connectionFailed:()=>calls.push('failed')};
+}
 vm.createContext(context);
 vm.runInContext(process.argv[1], context);
 const wrapped = context.window.fetch;
@@ -65,7 +68,10 @@ assert.equal(context.window.fetch, wrapped);
   const external = new context.window.WebSocket('wss://external.invalid/ws');
   assert.equal(external.events.error,undefined);
 })().catch(error=>{console.error(error);process.exitCode=1;});
-''', script], check=True)
+'''
+        for platform in ['ios', 'android']:
+            with self.subTest(platform=platform):
+                subprocess.run(['node', '-e', runner, script, platform], check=True)
 
 
 if __name__ == '__main__':

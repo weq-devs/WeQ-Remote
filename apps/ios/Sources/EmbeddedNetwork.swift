@@ -154,9 +154,10 @@ final class EmbeddedNetwork: ObservableObject {
         }
     }
 
-    func session() async throws -> URLSession {
+    func session(timeout: TimeInterval? = nil) async throws -> URLSession {
         guard connected, let node else { throw RemoteError.network }
         let configuration = Self.configuration()
+        if let timeout { configuration.timeoutIntervalForResource = timeout }
         let generation = revision
         try await configuration.proxyVia(node)
         guard generation == revision, connected else { throw CancellationError() }
