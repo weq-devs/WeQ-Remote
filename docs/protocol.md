@@ -25,6 +25,7 @@
 - iOS 批准轮询的单次请求超时为 3 秒，临时连接失败保留本次请求与令牌，在有效期内重试。v4 可重新探测入口后继续读取同一个请求，不重新提交配对 POST；未批准时以 hello 而非 status 探测。授权拒绝、响应不兼容、用户取消和请求过期仍结束配对。
 - 初次配对必须由电脑明确批准。撤销后旧令牌不可读取状态、Web 或继续订阅。
 - `GET /v1/status` 的当前响应为 `product: WeQ Remote, protocol: 1, scope: status:read, online: true`。这里的 `status:read` 是状态响应类别，不能据此推断设备拥有完整 Web 权限。
+- 开发源码的 iOS／Android 在现有原生协议请求附带可选 `X-WeQ-Device`：UTF-8 JSON 的标准 Base64（含 padding），字段为 `platform: ios|android`、`model`、`osVersion`、`appVersion`、`appBuild`，后四项均为非空字符串，每项最多 128 字符，请求头最多 2048 字符。iOS 的 model 为 uname 硬件标识，Android 为厂商与系统型号。配对 JSON 正文不增加字段，旧电脑直接忽略此头；新电脑在批准配对时保存资料，并在后续授权请求自动更新，不需重新配对。旧手机不带此头仍可访问，损坏资料不阻断鉴权、不清空已知资料。前台沿用每 15 秒的状态验证，不增加心跳；电脑以最近 45 秒授权访问显示「近期活跃」，并从网络助手转发链的实际来源识别最近 IP 与 LAN／Tailscale，不信任手机自报网络类型。活跃与来源资料合并保存，不逐个资源请求写盘。
 - Web 使用 `weq_remote` HttpOnly Cookie 或 Bearer 凭据；HTTP 与 `/trpc-ws` 由电脑端鉴权。手机壳不复制业务 API 定义或依赖桌面私有模块。
 - 拆仓库本身不改变设备授权；后续隐私清理将应用标识与 iOS Keychain 服务名改为项目命名空间 `io.github.weqdevs.remote`。新身份不能读取旧应用凭据，需重新配对；既有安装与电脑授权未被改动。项目路径不属于设备授权标识。
 

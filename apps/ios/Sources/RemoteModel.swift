@@ -147,6 +147,16 @@ final class RemoteModel: ObservableObject {
     var connectionDetails: String {
         let checked = health.checkedAt?.formatted(date: .omitted, time: .standard) ?? "尚未验证"
         let latency = health.latency.map { "\($0) ms" } ?? "—"
+    private var deviceInfo: RemoteDeviceInfo {
+        var system = utsname()
+        uname(&system)
+        let identifier = withUnsafeBytes(of: &system.machine) { bytes in
+            String(bytes: bytes.prefix { $0 != 0 }, encoding: .utf8)
+        }
+        return RemoteDeviceInfo(platform: "ios", model: identifier ?? UIDevice.current.model,
+            osVersion: UIDevice.current.systemVersion, appVersion: appVersion,
+            appBuild: Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "未知")
+    }
         return "连接：\(api == nil ? "未连接" : health.status)\n电脑：\(api?.endpoint.absoluteString ?? "未选择")\n连接方式：\(connectionRoute)\nTailscale：\(tailscaleStatus)\n最近成功：\(checked)\n请求耗时：\(latency)\n\(versionInfo)"
     }
 
@@ -270,7 +280,7 @@ final class RemoteModel: ObservableObject {
             do {
                 try Task.checkCancellation()
                 guard generation == self.revision else { throw CancellationError() }
-                let api = RemoteAPI(endpoint: endpoint, session: session)
+                let api = RemoteAPI(endpoint: endpoint, session: session, deviceInfo: self.deviceInfo)
                 var status: ComputerStatus?
                 var latencyMillis: Int?
                 switch probe {
@@ -406,7 +416,7 @@ final class RemoteModel: ObservableObject {
                 guard generation == revision else { throw CancellationError() }
             }
             let selection: RemoteSelection
-            if let testEndpoint { selection = RemoteSelection(api: RemoteAPI(endpoint: testEndpoint, session: URLSession(configuration: EmbeddedNetwork.configuration(), delegate: NoRedirectDelegate(), delegateQueue: nil)), status: nil, latencyMillis: nil) }
+            if let testEndpoint { selection = RemoteSelection(api: RemoteAPI(endpoint: testEndpoint, session: URLSession(configuration: EmbeddedNetwork.configuration(), delegate: NoRedirectDelegate(), delegateQueue: nil), deviceInfo: deviceInfo), status: nil, latencyMillis: nil) }
             else { selection = try await selectConnection(invitation.endpoints, pin: invitation.fingerprint, probe: invitation.isMultiRoute ? .hello : .none, invitation: invitation) }
             let newAPI = selection.api
             let session = newAPI.session

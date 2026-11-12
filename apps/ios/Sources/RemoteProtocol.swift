@@ -392,6 +392,18 @@ struct RemoteAPI {
             guard data.count < 65536 else { throw RemoteError.response }
             data.append(byte)
         }
+struct RemoteDeviceInfo: Encodable {
+    let platform: String
+    let model: String
+    let osVersion: String
+    let appVersion: String
+    let appBuild: String
+
+    var header: String? { (try? JSONEncoder().encode(self))?.base64EncodedString() }
+}
+
         return try JSONDecoder().decode(T.self, from: data)
     }
 }
+    var deviceInfo: RemoteDeviceInfo? = nil
+        if let header = deviceInfo?.header { request.setValue(header, forHTTPHeaderField: "X-WeQ-Device") }

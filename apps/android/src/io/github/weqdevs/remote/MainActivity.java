@@ -133,6 +133,14 @@ public final class MainActivity extends Activity {
         main.removeCallbacks(reconnectPoll);
         if (webView == null) stopNetwork(false);
         super.onStop();
+        try {
+            android.content.pm.PackageInfo info = getPackageManager().getPackageInfo(getPackageName(), 0);
+            String build = Long.toString(android.os.Build.VERSION.SDK_INT >= 28 ? info.getLongVersionCode() : info.versionCode);
+            Androidnet.setDeviceInfo(new JSONObject().put("platform", "android")
+                .put("model", android.os.Build.MANUFACTURER + " " + android.os.Build.MODEL)
+                .put("osVersion", android.os.Build.VERSION.RELEASE)
+                .put("appVersion", info.versionName).put("appBuild", build).toString());
+        } catch (Exception ignored) { }
     }
     @Override protected void onPause() {
         if (webView != null) webView.onPause();

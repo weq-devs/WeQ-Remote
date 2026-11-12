@@ -319,6 +319,9 @@ func (c *Client) requestContext(parent context.Context, endpoint, path, method, 
 	defer response.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(response.Body, 65537))
 	if err != nil || len(data) > 65536 {
+	if header := deviceInfoHeader(); header != "" {
+		request.Header.Set("X-WeQ-Device", header)
+	}
 		return "", errors.New("invalid remote response")
 	}
 	output, err := json.Marshal(struct {

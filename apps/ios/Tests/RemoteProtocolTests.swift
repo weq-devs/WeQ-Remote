@@ -2,6 +2,23 @@ import XCTest
 @testable import WeQRemote
 
 final class RemoteProtocolTests: XCTestCase {
+    func testDeviceInfoTravelsOnExistingRequestsWithoutChangingBody() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [DeviceInfoURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+        let info = RemoteDeviceInfo(platform: "ios", model: "iPhone17,1", osVersion: "26.1", appVersion: "1.0.0b3", appBuild: "11")
+        let api = RemoteAPI(endpoint: URL(string: "https://192.168.1.8:7691")!, session: session, deviceInfo: info)
+        let status: ComputerStatus = try await api.request("v1/status", token: String(repeating: "a", count: 64))
+        try status.validate()
+        let request = try XCTUnwrap(DeviceInfoURLProtocol.captured)
+        XCTAssertNil(request.httpBody)
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer " + String(repeating: "a", count: 64))
+        let encoded = try XCTUnwrap(request.value(forHTTPHeaderField: "X-WeQ-Device"))
+        let bytes = try XCTUnwrap(Data(base64Encoded: encoded))
+        let decoded = try XCTUnwrap(JSONSerialization.jsonObject(with: bytes) as? [String: String])
+        XCTAssertEqual(decoded, ["platform": "ios", "model": "iPhone17,1", "osVersion": "26.1", "appVersion": "1.0.0b3", "appBuild": "11"])
+    }
     func testWebResourcesAreBoundToExactOriginIncludingBlobURLs() {
         let endpoint = URL(string: "https://192.168.1.8:7691")!
         for value in ["https://192.168.1.8:7691/_download/id", "blob:https://192.168.1.8:7691/id"] {
@@ -270,6 +287,19 @@ final class RemoteProtocolTests: XCTestCase {
             XCTAssertThrowsError(try JSONDecoder().decode(ComputerStatus.self, from: field).validate())
         }
     }
+}
+
+private final class DeviceInfoURLProtocol: URLProtocol {
+    static var captured: URLRequest?
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        Self.captured = request
+        client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data(#"{"product":"WeQ Remote","protocol":1,"scope":"status:read","online":true}"#.utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
 }
 
 private extension Data {
