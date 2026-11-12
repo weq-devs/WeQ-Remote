@@ -2,9 +2,9 @@
 
 WeQ 的独立手机连接客户端。iOS 与 Android 负责扫码、连接、凭据和原生 WebView，业务页面从电脑上的 WeQ Web 服务加载，不维护另一套聊天界面。
 
-当前源码版本：iOS / Android 1.0.0b3，iOS build 11、Android versionCode 9，正在准备 GitHub 测试发布，未上架应用商店。源码仓库：[weq-devs/WeQ-Remote](https://github.com/weq-devs/WeQ-Remote)（公开，默认分支 `dev`）。版本说明见 [1.0.0b3](docs/releases/1.0.0b3.md)，最近已发布的安装包见 [1.0.0b2](https://github.com/weq-devs/WeQ-Remote/releases/tag/v1.0.0b2)。
+当前发布版本：iOS / Android 1.0.0b3，iOS build 11、Android versionCode 9，为 GitHub 测试版，未上架应用商店。源码仓库：[weq-devs/WeQ-Remote](https://github.com/weq-devs/WeQ-Remote)（公开，默认分支 `dev`）。版本说明见 [1.0.0b3](docs/releases/1.0.0b3.md)，安装包见 [GitHub Release](https://github.com/weq-devs/WeQ-Remote/releases/tag/v1.0.0b3)。
 
-1.0.0b2 已于 2026-11-10（北京时间）发布，包含全屏网页、连接菜单、三段式连接首页、启动阶段显示、恢复连接修复，以及停止连接和扫码更新已授权电脑。两端应用内均显示 1.0.0b2；iOS 系统版本字段为 1.0.0，Beta 标识单独保存。发布提供 Android arm64 APK、iOS arm64 未签名 IPA、构建来源记录与 SHA256SUMS；iOS 安装前需正确签名 App 与内嵌 Framework，Android 使用本轮临时开发签名，签名不同时不能直接覆盖已有安装。
+1.0.0b3 已于 2026-11-12（北京时间）发布，新增统一连接详情、断连提醒与更新检查，补齐 Android 旋转／全屏、iOS 网页对话框和 HTTP 页面设备采集，并保留全屏网页、停止连接、扫码更新已授权电脑、资源进度与持久缓存。两端应用内均显示 1.0.0b3；iOS 系统版本字段为 1.0.0，Beta 标识单独保存。发布提供 Android arm64 APK、iOS arm64 未签名 IPA、构建来源记录与 SHA256SUMS；iOS 安装前需正确签名 App 与内嵌 Framework，Android 使用本轮临时开发签名，签名不同时不能直接覆盖已有安装。
 
 开发源码还接入网页设备选文件、麦克风/摄像头授权、外链、文件保存及当前界面截图。
 开发源码统一两端连接首页，系统、版本、网络与更新信息收进右上角「更多」；聊天内的连接菜单使用同一份详情，保留立即检查、重新加载和断开连接。
