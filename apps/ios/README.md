@@ -36,6 +36,9 @@ SideStore 可以安装并续签本项目未签名 IPA。使用与现有安装一
 `ios-app-distribution`；通过 `IOS_APP_DISTRIBUTION` 可指定其 CLI 路径。
 该工具是可选本机集成，不进入产品依赖，不影响 CI，也不自动改版本号。
 SideStore 源使用 IPA 的系统版本与 build，测试版显示名仅作说明。
+官方 SideStore 0.7.0-alpha 的刷新上下文默认追加 Team ID，已有身份查找又
+要求标识包含 Team ID；原标识安装的自动刷新兼容性不能仅凭安装选项推定。
+需先完成相应兼容修补和真实刷新验收，再将既有安装交给自动续签管理。
 
 ### 未签名 IPA
 
