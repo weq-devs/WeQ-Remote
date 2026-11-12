@@ -27,8 +27,11 @@ class ConnectionLayoutTests(unittest.TestCase):
         self.assertNotIn('dock.addView(networkState', android)
         self.assertIn('more.setOnClickListener(view -> showDetailsMenu())', android)
         self.assertIn('prerelease.setText("检查测试版")', android)
-        for source in [ios, android]:
-            self.assertIn('连接可能已中断，正在重试…', source)
+        self.assertIn('Text(warning.message)', ios)
+        self.assertIn('连接已中断，正在重连…', android)
+        health = (ROOT / 'apps/ios/Sources/ConnectionHealth.swift').read_text()
+        self.assertIn('连接已中断，正在重连…', health)
+        self.assertIn('网络已断开，恢复后自动重连', health)
         self.assertIn('main.postDelayed(reconnectPoll, 15000)', android)
         self.assertIn('health.failed()', android)
         self.assertIn('health.succeeded(', android)

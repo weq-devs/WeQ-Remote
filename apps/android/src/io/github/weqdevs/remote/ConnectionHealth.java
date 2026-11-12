@@ -6,7 +6,7 @@ final class ConnectionHealth {
     long checkedAt;
     Long latency;
 
-    String status() { return suspected ? "疑似断连" : checkedAt == 0 ? "待检查" : "已连接"; }
+    String status() { return suspected ? "连接已中断" : checkedAt == 0 ? "待检查" : "已连接"; }
     void succeeded(long now, Long milliseconds) {
         failures = 0; suspected = false; checkedAt = now; latency = milliseconds;
     }

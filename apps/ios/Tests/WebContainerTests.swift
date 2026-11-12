@@ -1,8 +1,48 @@
 import XCTest
 import WebKit
+import Combine
 @testable import WeQRemote
 
 final class WebContainerTests: XCTestCase {
+    @MainActor
+    func testConnectionWarningDoesNotWaitForAnotherCheckOrReplaceThePage() async throws {
+        let model = RemoteModel(network: EmbeddedNetwork())
+        model.disconnect() // 不读取保存的电脑或发起真实重连。
+        let session = RemoteWebSession(configuration: WKWebViewConfiguration(),
+                                       endpoint: URL(string: "https://192.168.1.8:7691")!)
+        model.adoptWebSession(session)
+        session.receiveStartup("ready", message: nil)
+        let paths = AsyncStream<Bool>.makeStream()
+        let started = expectation(description: "前台连接监听已启动")
+        let observer = model.$health.dropFirst().first().sink { _ in started.fulfill() }
+        let monitoring = Task { await model.monitorConnectionHealth(paths: paths.stream) }
+        defer { observer.cancel(); monitoring.cancel(); paths.continuation.finish(); model.disconnect() }
+        await fulfillment(of: [started], timeout: 2)
+        session.onConnectionFailure?()
+        try await Task.sleep(for: .milliseconds(3300))
+        XCTAssertEqual(model.health.warning, .connection)
+        XCTAssertTrue(model.webReady)
+        XCTAssertTrue(model.webSession === session)
+        monitoring.cancel()
+        await monitoring.value
+        XCTAssertEqual(model.health.warning, .connection)
+        model.disconnect()
+        XCTAssertNil(session.onConnectionFailure)
+        XCTAssertNil(model.health.warning)
+    }
+
+    @MainActor
+    func testConnectionFailureBridgeIsInstalledBeforeBusinessRequests() {
+        let session = RemoteWebSession(configuration: WKWebViewConfiguration(),
+                                       endpoint: URL(string: "https://192.168.1.8:7691")!)
+        defer { session.close() }
+        let script = session.view.configuration.userContentController.userScripts.first {
+            $0.source == RemoteWebSession.connectionHealthScript
+        }
+        XCTAssertEqual(script?.injectionTime, .atDocumentStart)
+        XCTAssertEqual(script?.isForMainFrameOnly, true)
+    }
+
     @MainActor
     func testDownloadProgressResetsOnReloadAndDoesNotReplaceStartupStage() throws {
         let model = RemoteModel(network: EmbeddedNetwork())

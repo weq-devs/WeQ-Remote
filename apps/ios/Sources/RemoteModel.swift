@@ -1,6 +1,7 @@
 import Combine
 import Foundation
 import UIKit
+import Network
 
 @MainActor
 final class RemoteModel: ObservableObject {
@@ -36,6 +37,92 @@ final class RemoteModel: ObservableObject {
     private var routeFingerprint: String?
     private var reconnectPaused = false
     private var probingSessions: [UUID: URLSession] = [:]
+    private var healthMonitorID: UUID?
+    private var healthDeadline: Task<Void, Never>?
+    private var eventCheck: Task<Void, Never>?
+    private var eventCheckID: UUID?
+    private var lastEventCheck: TimeInterval?
+
+    func monitorConnectionHealth() async {
+        let monitor = NWPathMonitor()
+        let updates = AsyncStream<Bool>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        monitor.pathUpdateHandler = { path in
+            updates.continuation.yield(path.status == .satisfied)
+        }
+        monitor.start(queue: DispatchQueue(label: "io.github.weqdevs.remote.connection"))
+        defer {
+            monitor.cancel()
+            updates.continuation.finish()
+        }
+        await monitorConnectionHealth(paths: updates.stream)
+    }
+
+    func monitorConnectionHealth(paths: AsyncStream<Bool>) async {
+        let id = UUID()
+        healthMonitorID = id
+        health.resume()
+        scheduleConnectionWarning()
+        defer {
+            if healthMonitorID == id {
+                healthMonitorID = nil
+                healthDeadline?.cancel()
+                healthDeadline = nil
+                eventCheck?.cancel()
+                eventCheck = nil
+                eventCheckID = nil
+                health.suspend()
+            }
+        }
+        for await available in paths {
+            guard !Task.isCancelled, healthMonitorID == id else { return }
+            let changed = health.networkAvailable != available
+            health.networkChanged(available: available)
+            scheduleConnectionWarning()
+            if changed && available { requestConnectionCheck(immediately: true) }
+        }
+    }
+
+    private func scheduleConnectionWarning() {
+        healthDeadline?.cancel()
+        healthDeadline = nil
+        guard let id = healthMonitorID, webReady, let deadline = health.nextDeadline else { return }
+        healthDeadline = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(max(0, deadline - ProcessInfo.processInfo.systemUptime))) } catch { return }
+            guard let self, self.healthMonitorID == id, self.webReady else { return }
+            self.health.evaluate()
+            self.scheduleConnectionWarning()
+        }
+    }
+
+    private func requestConnectionCheck(immediately: Bool = false) {
+        guard healthMonitorID != nil, eventCheck == nil, !reconnectPaused else { return }
+        let id = UUID()
+        eventCheckID = id
+        eventCheck = Task { [weak self] in
+            defer {
+                if self?.eventCheckID == id {
+                    self?.eventCheck = nil
+                    self?.eventCheckID = nil
+                }
+            }
+            if !immediately, let last = self?.lastEventCheck {
+                let delay = max(0, last + 5 - ProcessInfo.processInfo.systemUptime)
+                do { try await Task.sleep(for: .seconds(delay)) } catch { return }
+            }
+            while let self, self.busy {
+                do { try await Task.sleep(for: .milliseconds(250)) } catch { return }
+            }
+            guard !Task.isCancelled, let self, self.healthMonitorID != nil, self.health.networkAvailable else { return }
+            self.lastEventCheck = ProcessInfo.processInfo.systemUptime
+            await self.reconnect()
+        }
+    }
+
+    private func connectionFailed() {
+        guard webReady, healthMonitorID != nil else { return }
+        health.failed()
+        scheduleConnectionWarning()
+    }
 
     var isConnecting: Bool { busy || code != nil || (webSession != nil && !webReady) }
 
@@ -99,6 +186,8 @@ final class RemoteModel: ObservableObject {
     func resumeReconnect() { reconnectPaused = false }
 
     func suspend() {
+        healthDeadline?.cancel()
+        healthDeadline = nil
         health.suspend()
         // 已配对的网页与节点留在内存；前台恢复只验证，不重建页面。
         guard webSession == nil else { return }
@@ -120,7 +209,7 @@ final class RemoteModel: ObservableObject {
     }
 
     func reconnect() async {
-        guard !reconnectPaused, !busy, polling == nil else { return }
+        guard !reconnectPaused, !busy, polling == nil, health.networkAvailable else { return }
         if api != nil { await refresh(); return }
         let generation = revision
         busy = true
@@ -223,12 +312,23 @@ final class RemoteModel: ObservableObject {
         session.onReady = { [weak self, weak session] in
             guard let self, self.webSession === session else { return }
             self.webReady = true
+            self.health.resume()
+            self.scheduleConnectionWarning()
             self.webDownload = nil
             self.error = nil
         }
         session.onFailure = { [weak self, weak session] error in
-            guard let self, self.webSession === session, !self.webReady else { return }
-            self.failWebLoad(error)
+            guard let self, self.webSession === session else { return }
+            if self.webReady {
+                if (error as? URLError)?.code == .cancelled { return }
+                self.connectionFailed()
+                self.requestConnectionCheck()
+            } else { self.failWebLoad(error) }
+        }
+        session.onConnectionFailure = { [weak self, weak session] in
+            guard let self, self.webSession === session, self.webReady else { return }
+            self.connectionFailed()
+            self.requestConnectionCheck()
         }
         session.onLoading = { [weak self, weak session] in
             guard let self, self.webSession === session else { return }
@@ -414,6 +514,7 @@ final class RemoteModel: ObservableObject {
     }
 
     func refresh() async {
+        guard !busy else { return }
         await refresh(verified: nil)
     }
 
@@ -443,12 +544,14 @@ final class RemoteModel: ObservableObject {
             latency = requestMillis
             checkedAt = Date()
             health.succeeded(at: Date(), latency: requestMillis)
+            scheduleConnectionWarning()
             connected = true
             code = nil
             message = "电脑在线"
             error = nil
         } catch is CancellationError {} catch {
             if generation == revision, !Task.isCancelled {
+                connectionFailed()
                 if let endpoints, remoteRouteCanRetry(error) {
                     do {
                         let replacement = try await selectConnection(endpoints, pin: routeFingerprint, probe: .status, token: credential.token)
@@ -465,6 +568,7 @@ final class RemoteModel: ObservableObject {
                         fingerprint = pin; computerAddress = replacement.api.endpoint.host
                         latency = replacement.latencyMillis; connected = true; message = "电脑在线"; self.error = nil; checkedAt = Date()
                         health.succeeded(at: Date(), latency: replacement.latencyMillis)
+                        scheduleConnectionWarning()
                         return
                     } catch { if generation == revision, !Task.isCancelled { fail(error) } }
                 } else { fail(error) }
@@ -473,7 +577,7 @@ final class RemoteModel: ObservableObject {
     }
 
     private func fail(_ failure: Error) {
-        if webReady { health.failed() }
+        connectionFailed()
         connected = false
         message = "连接未通过"
         error = failure.localizedDescription
@@ -481,6 +585,12 @@ final class RemoteModel: ObservableObject {
     }
 
     func disconnect() {
+        eventCheck?.cancel()
+        eventCheck = nil
+        eventCheckID = nil
+        lastEventCheck = nil
+        healthDeadline?.cancel()
+        healthDeadline = nil
         health = ConnectionHealth()
         webDownload = nil
         reconnectPaused = true

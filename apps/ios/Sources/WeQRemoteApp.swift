@@ -24,6 +24,9 @@ struct WeQRemoteApp: App {
                 }
                 .onOpenURL { url in model.invitationText = url.absoluteString; Task { await model.pair() } }
                 .task(id: scenePhase) {
+                    if scenePhase == .active { await model.monitorConnectionHealth() }
+                }
+                .task(id: scenePhase) {
                     if scenePhase == .background {
                         model.suspend()
                         if model.webSession == nil { await network.stop(disable: false) }
@@ -78,8 +81,8 @@ struct RemoteView: View {
                     .allowsHitTesting(model.webReady)
                     .accessibilityHidden(!model.webReady)
                     .safeAreaInset(edge: .top, spacing: 0) {
-                        if model.webReady && model.health.suspected {
-                            Text("连接可能已中断，正在重试…")
+                        if model.webReady, let warning = model.health.warning {
+                            Text(warning.message)
                                 .font(.subheadline)
                                 .frame(maxWidth: .infinity)
                                 .padding(12)

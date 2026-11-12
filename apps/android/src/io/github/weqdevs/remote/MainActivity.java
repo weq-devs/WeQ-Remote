@@ -980,7 +980,7 @@ public final class MainActivity extends Activity {
                             LinearLayout shell = new LinearLayout(this); shell.setOrientation(LinearLayout.VERTICAL); shell.setBackgroundColor(webBackgroundColor());
                             final boolean manualInsets = android.os.Build.VERSION.SDK_INT >= 30 && !webViewHandlesSafeArea();
                             final boolean bannerInsets = android.os.Build.VERSION.SDK_INT >= 30 && !manualInsets;
-                            connectionWarning = text("连接可能已中断，正在重试…", 14);
+                            connectionWarning = text("连接已中断，正在重连…", 14);
                             connectionWarning.setGravity(android.view.Gravity.CENTER);
                             connectionWarning.setPadding(dp(12), dp(12), dp(12), dp(12));
                             connectionWarning.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);

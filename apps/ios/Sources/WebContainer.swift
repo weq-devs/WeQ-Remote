@@ -57,8 +57,56 @@ private final class RemoteResourceHandler: NSObject, WKScriptMessageHandler {
     }
 }
 
+private final class RemoteConnectionHandler: NSObject, WKScriptMessageHandler {
+    weak var owner: RemoteWebSession?
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard message.frameInfo.isMainFrame, let owner, message.webView === owner.view,
+              message.body as? String == "failed", let url = message.frameInfo.request.url,
+              RemoteWebPolicy.sameOrigin(url, endpoint: owner.endpoint) else { return }
+        owner.onConnectionFailure?()
+    }
+}
+
 @MainActor
 final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate {
+    static let connectionHealthScript = """
+    (function(){
+        if(window.__weqConnectionHealth)return;
+        window.__weqConnectionHealth=true;
+        var last=-Infinity;
+        function sameComputer(value){
+            try{
+                var url=new URL(value,location.href);
+                var protocol=url.protocol.replace('ws:','http:').replace('wss:','https:');
+                return protocol+'//'+url.host===location.origin;
+            }catch(error){return false;}
+        }
+        function failed(){
+            var now=performance.now();
+            if(now-last<1000)return;
+            last=now;
+            window.webkit.messageHandlers.weqConnection.postMessage('failed');
+        }
+        var fetch=window.fetch;
+        window.fetch=function(input,options){
+            var local=sameComputer(typeof input==='string'||input instanceof URL?input:input&&input.url);
+            return fetch.apply(this,arguments).catch(function(error){
+                if(local&&(!error||error.name!=='AbortError'))failed();
+                throw error;
+            });
+        };
+        var Socket=window.WebSocket;
+        window.WebSocket=class extends Socket{
+            constructor(url,protocols){
+                super(...arguments);
+                if(sameComputer(url)){
+                    this.addEventListener('error',failed);
+                    this.addEventListener('close',function(event){if(!event.wasClean)failed();});
+                }
+            }
+        };
+    })();
+    """
     static let externalLinksScript = """
     (function(){
         if(window.__weqRemoteExternalLinks)return;
@@ -97,6 +145,7 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
     var onProgress: ((String) -> Void)?
     var onDownload: ((WebDownloadProgress?) -> Void)?
     var onMenu: (() -> Void)?
+    var onConnectionFailure: (() -> Void)?
 
     init(configuration: WKWebViewConfiguration, endpoint: URL, fingerprint: String? = nil) {
         self.endpoint = endpoint
@@ -124,6 +173,11 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
         let resources = RemoteResourceHandler()
         resources.owner = self
         configuration.userContentController.add(resources, name: "weqResources")
+        let connection = RemoteConnectionHandler()
+        connection.owner = self
+        configuration.userContentController.add(connection, name: "weqConnection")
+        configuration.userContentController.addUserScript(WKUserScript(
+            source: Self.connectionHealthScript, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         if let url = Bundle.main.url(forResource: "web-startup-progress", withExtension: "js"),
            let source = try? String(contentsOf: url, encoding: .utf8) {
             configuration.userContentController.addUserScript(WKUserScript(
@@ -462,6 +516,7 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
         view.configuration.userContentController.removeScriptMessageHandler(forName: "weqLinks")
         view.configuration.userContentController.removeScriptMessageHandler(forName: "weqStartup")
         view.configuration.userContentController.removeScriptMessageHandler(forName: "weqResources")
+        view.configuration.userContentController.removeScriptMessageHandler(forName: "weqConnection")
         view.configuration.userContentController.removeScriptMessageHandler(forName: "weqMedia")
         onReady = nil
         onFailure = nil
@@ -469,6 +524,7 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
         onProgress = nil
         onDownload = nil
         onMenu = nil
+        onConnectionFailure = nil
         view.loadHTMLString("", baseURL: nil)
     }
 
