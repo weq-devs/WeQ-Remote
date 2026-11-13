@@ -2,7 +2,9 @@
 
 WeQ 的独立手机连接客户端。iOS 与 Android 负责扫码、连接、凭据和原生 WebView，业务页面从电脑上的 WeQ Web 服务加载，不维护另一套聊天界面。
 
-当前发布版本：iOS / Android 1.0.0b4，iOS build 12、Android versionCode 10，已于 2026-11-13（北京时间）发布为 GitHub 测试版，未上架应用商店。源码仓库：[weq-devs/WeQ-Remote](https://github.com/weq-devs/WeQ-Remote)（公开，默认分支 `dev`）。版本说明见 [1.0.0b4](docs/releases/1.0.0b4.md)，安装包见 [GitHub Release](https://github.com/weq-devs/WeQ-Remote/releases/tag/v1.0.0b4)。
+当前源码版本：iOS / Android 1.0.0，iOS build 12、Android versionCode 10，准备发布为 GitHub 正式版，未上架应用商店。源码仓库：[weq-devs/WeQ-Remote](https://github.com/weq-devs/WeQ-Remote)（公开，默认分支 `dev`）。版本说明见 [1.0.0](docs/releases/1.0.0.md)，实际发布状态与安装包见 [GitHub Releases](https://github.com/weq-devs/WeQ-Remote/releases)。
+
+1.0.0 在 b4 基础上移除 Beta 标识，加入双端系统低数据／计费网络状态桥和省流量更新检查；保留统一连接详情、断网横幅、设备信息、持久缓存及网页能力。需配套更新电脑上的 WeQ 与手机安装包。
 
 1.0.0b4 在 b3 基础上统一双端断网检测与连接横幅，上报设备型号及系统／客户端版本，增加 iPadOS 窗口角部布局桥接与可选的 iOS 本机 SideStore 源发布入口。连接横幅、设备详情和 iPadOS 布局需要配套更新电脑上的 WeQ。SideStore 原身份自动刷新仍待验收。
 
@@ -35,7 +37,7 @@ Android 开发源码为每份已保存的电脑授权保留固定的本地代理
 
 ## 仓库边界
 
-开发源码支持系统省流量状态桥：iOS 读取 Network path 的 constrained／expensive，Android 读取计费网络及 Data Saver，并在文档初始化、切网与返回前台同步给共用网页。网页的应用级模式设置只作为当前连接的运行参数传回原生更新检查，不另设设备覆盖。省流量时不下载更新安装包取样测速。需电脑 WeQ 与手机安装包配套更新；旧手机壳或普通浏览器无法读取的状态显示为未知，不用 Wi-Fi 类型或网速猜测。该能力尚未发布。
+1.0.0 源码支持系统省流量状态桥：iOS 读取 Network path 的 constrained／expensive，Android 读取计费网络及 Data Saver，并在文档初始化、切网与返回前台同步给共用网页。网页的应用级模式设置只作为当前连接的运行参数传回原生更新检查，不另设设备覆盖。省流量时不下载更新安装包取样测速。需电脑 WeQ 与手机安装包配套更新；旧手机壳或普通浏览器无法读取的状态显示为未知，不用 Wi-Fi 类型或网速猜测。
 
 | 本仓库 | WeQ 桌面仓库 |
 | --- | --- |
