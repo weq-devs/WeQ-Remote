@@ -2,7 +2,7 @@
 
 ## 1.0.0 - 2026-11-14
 
-- 两端应用内版本统一为 1.0.0，移除 Beta 标识；iOS 系统版本仍为 1.0.0（build 12），Android versionCode 仍为 10。发布目标为 GitHub 正式版，实际状态以 GitHub Releases 为准。
+- 两端应用内版本统一为 1.0.0，移除 Beta 标识；iOS 系统版本仍为 1.0.0（build 12），Android versionCode 仍为 10。已发布为 GitHub 正式版并设为 Latest。
 - iOS／Android 将系统低数据与计费网络状态传给当前电脑提供的网页，配合 WeQ 的全端省流量模式；切网、Data Saver 变化与返回前台更新状态，旧电脑继续兼容。
 - 省流量时更新检查只核版本与可用源，不下载取样安装包测速；需配套更新电脑上的 WeQ 与手机安装包。
 

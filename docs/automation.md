@@ -86,6 +86,19 @@ iOS 的系统版本字段只允许数字和点，Beta 完整标识放在 `Suppor
 
 工作流定义、本地验证、GitHub 已识别工作流、真实运行成功、可分发产物是不同状态，维护回执应分别记录。修改文件不会自动让未推送的工作流在 GitHub 上生效。
 
+## 1.0.0 发布回执（2026-11-14，北京时间）
+
+- 发布源码提交：`63e6a5ff18de63adffb09214a745d888b04ed19a`，注释标签 `v1.0.0`。本地 56 项仓库及发布辅助测试、标签预检与差异检查通过。
+- [Release #43512770509](https://github.com/weq-devs/WeQ-Remote/actions/runs/43512770509) 全部成功：仓库／Java 协议、Swift 宿主机、Go 静态／竞态检查、两端构建、同轮产物来源／版本／摘要校验和发布均通过。Android Job 用时 2 分 35 秒，iOS Job 用时 4 分 33 秒。
+- [WeQ Remote 1.0.0](https://github.com/weq-devs/WeQ-Remote/releases/tag/v1.0.0) 于 05:45:27 发布，API 确认 `draft: false`、`prerelease: false`，Latest 为 `v1.0.0`，五个附件均为 `uploaded`。
+- Android 为 1.0.0（versionCode 10），iOS 系统与应用内版本均为 1.0.0（build 12），构建号保持不变。两份来源记录均指向发布提交，`sourceDirty: false`。
+- 下载后汇总 SHA-256 四项、五个附件的 GitHub 服务端摘要与大小比对、两安装包 ZIP 完整性检查全部通过；IPA 实际身份、版本及 App／内嵌 Framework 无签名真机 arm64 结构复核通过。云端同时完成 APK 签名与实际身份校验。
+- 未安装或操作手机／模拟器，未新增真实断网恢复、iPad 窗口、音视频或 SideStore 自动刷新验收。Android 为本轮临时开发签名，iOS IPA 安装前仍须签名。
+
+发布 APK SHA-256：`374c2378ead5e5140e3d984a9c81964cc45078d497b4ff6e6cfe05a0ee34fe00`。
+
+发布 IPA SHA-256：`0cb6825cea33c1780c202a4943f4b1c9b651cd824dfa759293eb3c1fca132b0e`。
+
 ## 1.0.0b4 发布回执（2026-11-13，北京时间）
 
 - 发布源码提交：`cde9746e2a73adb9c6a0a6a7e8fe2f5961e9f650`，注释标签 `v1.0.0b4`。本地 56 项仓库及发布辅助测试、标签预检与差异检查通过。
