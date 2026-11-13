@@ -19,10 +19,11 @@ private final class RemoteCaptureHandler: NSObject, WKScriptMessageHandler {
 private final class RemoteShellHandler: NSObject, WKScriptMessageHandler {
     weak var owner: RemoteWebSession?
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-        guard message.frameInfo.isMainFrame, let owner, message.body as? String == "menu",
+        guard message.frameInfo.isMainFrame, let owner,
               let url = message.frameInfo.request.url,
               RemoteWebPolicy.sameOrigin(url, endpoint: owner.endpoint) else { return }
-        owner.openMenu()
+        if message.body as? String == "menu" { owner.openMenu() }
+        else if let value = message.body as? [String: String], let mode = value["dataSaverMode"], ["auto", "always", "never"].contains(mode) { owner.onNetworkPreference?(mode) }
     }
 }
 
@@ -108,6 +109,7 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
     """
     let view: WKWebView
     let endpoint: URL
+    var onNetworkPreference: ((String) -> Void)?
     private let fingerprint: String?
     private var downloads: [ObjectIdentifier: (WKDownload, URL)] = [:]
     private var closed = false
@@ -145,7 +147,17 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
         view.evaluateJavaScript("window.weqRemoteWindowLayout=\(windowLayout.json);window.dispatchEvent(new Event('weq-remote-window-layout'));", completionHandler: { _, _ in completion?() })
     }
 
-    init(configuration: WKWebViewConfiguration, endpoint: URL, fingerprint: String? = nil) {
+    func updateNetworkCost(_ cost: RemoteNetworkCost) {
+        guard !closed else { return }
+        let content = view.configuration.userContentController
+        let scripts = content.userScripts.filter { !$0.source.hasPrefix("window.weqRemoteNetworkCost=") }
+        content.removeAllUserScripts()
+        content.addUserScript(WKUserScript(source: cost.script, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        for script in scripts { content.addUserScript(script) }
+        view.evaluateJavaScript(cost.script, completionHandler: nil)
+    }
+
+    init(configuration: WKWebViewConfiguration, endpoint: URL, fingerprint: String? = nil, networkCost: RemoteNetworkCost = .unknown) {
         self.endpoint = endpoint
         self.fingerprint = fingerprint
         // 网页背景已有 playsinline；iPhone 还需在创建 WebView 前允许页内播放。
@@ -154,6 +166,8 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
         view = RemoteWebView(frame: .zero, configuration: configuration)
         super.init()
+        configuration.userContentController.addUserScript(WKUserScript(
+            source: networkCost.script, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         let capture = RemoteCaptureHandler()
         capture.owner = self
         configuration.userContentController.add(capture, name: "weqCapture")

@@ -2,6 +2,12 @@
 
 本文件描述当前两边已经实现的契约，不是新增一套协议。权威实现分别位于 WeQ 的 `apps/desktop/src/main/remote` 与本仓库两平台的协议客户端；任一侧变更均需运行另一侧能推翻兼容假设的反例测试。
 
+## 系统网络费用桥
+
+手机壳在主文档初始化时提供 `window.weqRemoteNetworkCost = {state:'restricted'|'unrestricted'|'unknown', constrained:boolean, metered:boolean, source:string}`，后续变化发送 `weq-remote-network-cost` 事件。Android 另提供同步的 `weqRemoteLinks.networkCost()` JSON 读取入口，避免文档提交后注入晚于业务初始化；iOS 使用 document-start 用户脚本。切网、Data Saver 变化及返回前台重新读取，不改变连接健康判定或新增探测心跳。
+
+网页通过 Android 的 `networkPreference(mode)` 或 iOS `weqShell.postMessage({dataSaverMode:mode})` 传回宿主共享的 `auto|always|never` 作为当前连接的运行参数，手机不提供本地覆盖。该参数用于原生更新检查是否取样测速；没有网页提供参数时默认为 auto。旧壳缺少桥时网页保留 unknown 和手动模式，不假装识别系统状态；邀请与授权协议版本不变。
+
 ## 邀请版本
 
 共同格式为 `weq-remote://pair`，不接受未知字段，不携带 URL 用户名、密码、路径或 fragment。只有 v4 的 `endpoint` 可以重复；其他字段以及旧版本全部字段必须唯一。

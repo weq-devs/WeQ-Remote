@@ -98,6 +98,15 @@ final class WebFeatures extends WebChromeClient {
         blobToken = null; blobOffset = 0;
     }
     public final class ExternalLinks {
+        @android.webkit.JavascriptInterface public void networkPreference(String mode) {
+            activity.runOnUiThread(() -> {
+                if (mode != null && !closed && WebAccess.sameOrigin(origin, view.getUrl()) && activity instanceof MainActivity)
+                    ((MainActivity) activity).setNetworkPreference(mode);
+            });
+        }
+        @android.webkit.JavascriptInterface public String networkCost() {
+            return activity instanceof MainActivity ? ((MainActivity) activity).networkCostJSON() : "null";
+        }
         @android.webkit.JavascriptInterface public void resources(String payload) {
             if (payload == null || payload.length() > 512) return;
             try {
@@ -190,7 +199,11 @@ final class WebFeatures extends WebChromeClient {
         String detail = "{id:" + org.json.JSONObject.quote(id) + ",ok:" + ok + ",delivery:'native'" + (ok ? "" : ",error:'无法生成截图，请先完成当前下载'") + "}";
         view.evaluateJavascript("window.dispatchEvent(new CustomEvent('weq-remote-capture-result',{detail:" + detail + "}))", null);
     }
+    void networkCost(String json) {
+        if (!closed) view.evaluateJavascript("window.weqRemoteNetworkCost=" + json + ";window.dispatchEvent(new Event('weq-remote-network-cost'));", null);
+    }
     void observeStartup() {
+        if (activity instanceof MainActivity) networkCost(((MainActivity) activity).networkCostJSON());
         if (!connectionObserver.isEmpty()) view.evaluateJavascript(connectionObserver, null);
         if (!resourceObserver.isEmpty()) view.evaluateJavascript(resourceObserver, null);
         if (closed) return;

@@ -44,15 +44,25 @@ final class RemoteModel: ObservableObject {
     private var lastEventCheck: TimeInterval?
     private var healthEpoch = 0
     private var connectionRecovery = 0
+    private var networkCostMonitorID: UUID?
 
     func monitorConnectionHealth() async {
+        let costID = UUID()
+        networkCostMonitorID = costID
         let monitor = NWPathMonitor()
         let updates = AsyncStream<Bool>.makeStream(bufferingPolicy: .bufferingNewest(1))
-        monitor.pathUpdateHandler = { path in
+        monitor.pathUpdateHandler = { [weak self] path in
+            let cost = RemoteNetworkCost(available: path.status == .satisfied, constrained: path.isConstrained, metered: path.isExpensive)
+            Task { @MainActor [weak self] in
+                guard let self, self.networkCostMonitorID == costID else { return }
+                self.network.networkCost = cost
+                self.webSession?.updateNetworkCost(cost)
+            }
             updates.continuation.yield(path.status == .satisfied)
         }
         monitor.start(queue: DispatchQueue(label: "io.github.weqdevs.remote.connection"))
         defer {
+            if networkCostMonitorID == costID { networkCostMonitorID = nil }
             monitor.cancel()
             updates.continuation.finish()
         }
@@ -190,7 +200,7 @@ final class RemoteModel: ObservableObject {
             updateMessage = "正在读取发布版本…"
             let release = try await UpdateMirrors.release(includePrerelease: includePrerelease)
             updateMessage = "测速中（\(prefixes.count) 个源）"
-            let ranked = try await UpdateMirrors.resolve(prefixes: prefixes, release: release)
+            let ranked = try await UpdateMirrors.resolve(prefixes: prefixes, release: release, sample: !network.dataSaverEnabled)
             guard let best = ranked.first else { throw RemoteError.response }
             let version = best.manifest.version
             releaseURL = URL(string: "https://github.com/weq-devs/WeQ-Remote/releases/tag/v\(version.text)")
@@ -328,6 +338,7 @@ final class RemoteModel: ObservableObject {
 
     // 页面加载完成后才切到全屏网页；失败时留在连接页，保留手动重连入口。
     func adoptWebSession(_ session: RemoteWebSession) {
+        session.onNetworkPreference = { [weak self] mode in self?.network.dataSaverMode = mode }
         webReady = false
         webLoadingStage = "正在下载网页资源"
         webDownload = nil

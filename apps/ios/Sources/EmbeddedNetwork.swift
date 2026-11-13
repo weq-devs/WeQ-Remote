@@ -25,6 +25,9 @@ private struct TailnetStatus: Decodable {
 
 @MainActor
 final class EmbeddedNetwork: ObservableObject {
+    var networkCost = RemoteNetworkCost.unknown
+    var dataSaverMode = "auto"
+    var dataSaverEnabled: Bool { dataSaverMode == "always" || (dataSaverMode != "never" && networkCost.restricted) }
     @Published private(set) var enabled = false
     @Published private(set) var connected = false
     @Published private(set) var message = "未启动"
@@ -186,7 +189,7 @@ final class EmbeddedNetwork: ObservableObject {
         guard let cookie = HTTPCookie.cookies(withResponseHeaderFields: ["Set-Cookie": cookieValue], for: endpoint).first else { throw RemoteError.credential }
         await configuration.websiteDataStore.httpCookieStore.setCookie(cookie)
         guard generation == revision, fingerprint != nil || connected else { throw CancellationError() }
-        let session = RemoteWebSession(configuration: configuration, endpoint: endpoint, fingerprint: fingerprint)
+        let session = RemoteWebSession(configuration: configuration, endpoint: endpoint, fingerprint: fingerprint, networkCost: networkCost)
         session.view.load(URLRequest(url: endpoint))
         return session
     }

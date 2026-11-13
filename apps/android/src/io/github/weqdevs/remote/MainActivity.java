@@ -103,20 +103,51 @@ public final class MainActivity extends Activity {
         connectivity = (android.net.ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
         if (connectivity == null || pathMonitor != null) return;
         pathMonitor = new android.net.ConnectivityManager.NetworkCallback() {
+            @Override public void onCapabilitiesChanged(android.net.Network network, android.net.NetworkCapabilities capabilities) { main.post(() -> publishNetworkCost()); }
             @Override public void onAvailable(android.net.Network network) { main.post(() -> { if (pathMonitor == this) pathChanged(true); }); }
             @Override public void onLost(android.net.Network network) { main.post(() -> { if (pathMonitor == this) pathChanged(connectivity.getActiveNetwork() != null); }); }
         };
         connectivity.registerDefaultNetworkCallback(pathMonitor);
+        android.content.IntentFilter filter = new android.content.IntentFilter(android.net.ConnectivityManager.ACTION_RESTRICT_BACKGROUND_CHANGED);
+        if (android.os.Build.VERSION.SDK_INT >= 33) registerReceiver(dataSaverReceiver, filter, android.content.Context.RECEIVER_NOT_EXPORTED);
+        else registerReceiver(dataSaverReceiver, filter);
         pathChanged(connectivity.getActiveNetwork() != null);
     }
 
     private void pathChanged(boolean available) {
+        publishNetworkCost();
         if (!visible || pathMonitor == null) return;
         boolean changed = health.networkAvailable != available;
         health.networkChanged(available, SystemClock.elapsedRealtime());
         publishConnectionHealth();
         scheduleConnectionWarning();
         if (changed) requestConnectionCheck(true);
+    }
+
+    private final android.content.BroadcastReceiver dataSaverReceiver = new android.content.BroadcastReceiver() {
+        @Override public void onReceive(android.content.Context context, android.content.Intent intent) { publishNetworkCost(); }
+    };
+    private NetworkCost networkCost() {
+        android.net.ConnectivityManager manager = (android.net.ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+        if (manager == null || manager.getActiveNetwork() == null) return new NetworkCost(false, false, false);
+        boolean metered = manager.isActiveNetworkMetered();
+        boolean constrained = metered && manager.getRestrictBackgroundStatus() != android.net.ConnectivityManager.RESTRICT_BACKGROUND_STATUS_DISABLED;
+        return new NetworkCost(true, constrained, metered);
+    }
+    String networkCostJSON() {
+        NetworkCost cost = networkCost();
+        try { return new org.json.JSONObject().put("state", cost.state()).put("constrained", cost.constrained).put("metered", cost.metered).put("source", "android").toString(); }
+        catch (org.json.JSONException impossible) { throw new IllegalStateException(impossible); }
+    }
+    private void publishNetworkCost() {
+        if (webFeatures != null) webFeatures.networkCost(networkCostJSON());
+    }
+    private volatile String dataSaverMode = "auto";
+    void setNetworkPreference(String mode) {
+        if (mode.equals("auto") || mode.equals("always") || mode.equals("never")) dataSaverMode = mode;
+    }
+    private boolean dataSaverEnabled() {
+        return networkCost().reduce(dataSaverMode);
     }
 
     private void requestConnectionCheck(boolean immediately) {
@@ -206,7 +237,7 @@ public final class MainActivity extends Activity {
         main.removeCallbacks(eventCheck); eventCheckPending = false;
         health.suspend();
         main.removeCallbacks(healthDeadline);
-        if (connectivity != null && pathMonitor != null) connectivity.unregisterNetworkCallback(pathMonitor);
+        if (connectivity != null && pathMonitor != null) { connectivity.unregisterNetworkCallback(pathMonitor); unregisterReceiver(dataSaverReceiver); }
         pathMonitor = null;
         main.removeCallbacks(reconnectPoll);
         if (webView == null) stopNetwork(false);
@@ -659,7 +690,7 @@ public final class MainActivity extends Activity {
                 }
                 ReleaseCatalog release = ReleaseCatalog.select(entries, includePrerelease);
                 main.post(() -> { if (progressDialog.isShowing()) progressDialog.setMessage("测速中（" + prefixes.size() + " 个源）"); });
-                java.util.List<UpdateMirrors.Candidate> ranked = UpdateMirrors.resolve(prefixes, release);
+                java.util.List<UpdateMirrors.Candidate> ranked = UpdateMirrors.resolve(prefixes, release, !dataSaverEnabled());
                 UpdateMirrors.Candidate best = ranked.get(0);
                 ReleaseVersion latest = best.manifest.version;
                 int order = latest.compareTo(current);

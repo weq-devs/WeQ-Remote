@@ -24,10 +24,13 @@ final class UpdateMirrors {
         return resolve(prefixes, (ReleaseCatalog) null);
     }
     static List<Candidate> resolve(List<String> prefixes, ReleaseCatalog release) throws Exception {
+        return resolve(prefixes, release, true);
+    }
+    static List<Candidate> resolve(List<String> prefixes, ReleaseCatalog release, boolean sample) throws Exception {
         ConcurrentMap<HttpURLConnection, Boolean> active = new ConcurrentHashMap<>();
         try { return resolve(prefixes, release, (url, range) -> read(url, range, active), () -> {
             for (HttpURLConnection connection : active.keySet()) connection.disconnect();
-        }); }
+        }, sample); }
         finally { for (HttpURLConnection connection : active.keySet()) connection.disconnect(); }
     }
     static List<Candidate> resolve(List<String> prefixes, Fetch fetch) throws Exception {
@@ -36,7 +39,13 @@ final class UpdateMirrors {
     static List<Candidate> resolve(List<String> prefixes, ReleaseCatalog release, Fetch fetch) throws Exception {
         return resolve(prefixes, release, fetch, () -> {});
     }
+    static List<Candidate> resolve(List<String> prefixes, ReleaseCatalog release, Fetch fetch, boolean sample) throws Exception {
+        return resolve(prefixes, release, fetch, () -> {}, sample);
+    }
     private static List<Candidate> resolve(List<String> prefixes, ReleaseCatalog release, Fetch fetch, Runnable cancelRequests) throws Exception {
+        return resolve(prefixes, release, fetch, cancelRequests, true);
+    }
+    private static List<Candidate> resolve(List<String> prefixes, ReleaseCatalog release, Fetch fetch, Runnable cancelRequests, boolean sample) throws Exception {
         if (prefixes.isEmpty() || prefixes.size() > 64) throw new Exception("invalid mirrors");
         ExecutorService pool = Executors.newFixedThreadPool(Math.min(16, prefixes.size()));
         List<Future<Candidate>> futures = new ArrayList<>();
@@ -66,6 +75,7 @@ final class UpdateMirrors {
             ReleaseVersion latest = healthy.stream().map(candidate -> candidate.manifest.version).max(ReleaseVersion::compareTo).get();
             healthy.removeIf(candidate -> candidate.manifest.version.compareTo(latest) != 0);
             healthy.sort(Comparator.comparingLong(candidate -> candidate.nanos));
+            if (!sample) return healthy;
             List<Future<Double>> speeds = new ArrayList<>();
             for (Candidate candidate : healthy.subList(0, Math.min(3, healthy.size()))) speeds.add(pool.submit(() -> {
                 try {

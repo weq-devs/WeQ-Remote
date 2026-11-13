@@ -9,7 +9,7 @@ struct UpdateMirror {
 }
 
 enum UpdateMirrors {
-    static func resolve(prefixes: [String], release: RemoteRelease? = nil, load: (@Sendable (URL, Bool) async throws -> Data)? = nil) async throws -> [UpdateMirror] {
+    static func resolve(prefixes: [String], release: RemoteRelease? = nil, sample: Bool = true, load: (@Sendable (URL, Bool) async throws -> Data)? = nil) async throws -> [UpdateMirror] {
         guard !prefixes.isEmpty, prefixes.count <= 64 else { throw RemoteError.response }
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 4
@@ -41,6 +41,7 @@ enum UpdateMirrors {
         guard let latest = healthy.map({ $0.manifest.version }).max() else { throw RemoteError.network }
         // 镜像可能缓存旧清单，只在最新的同一发布里比较速度。
         let candidates = healthy.filter { $0.manifest.version == latest }.sorted { $0.milliseconds < $1.milliseconds }
+        if !sample { return candidates }
         let measured = await withTaskGroup(of: (Int, Double)?.self, returning: [(Int, Double)].self) { group in
             for (index, mirror) in candidates.prefix(3).enumerated() {
                 group.addTask {

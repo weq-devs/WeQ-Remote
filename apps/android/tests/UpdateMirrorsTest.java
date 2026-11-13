@@ -26,6 +26,11 @@ public final class UpdateMirrorsTest {
             return (new String(new char[64]).replace('\0', 'a') + "  weq-remote-1.0.0-android-arm64.apk\n").getBytes(StandardCharsets.UTF_8);
         });
         if (ranked.size() != 1) throw new AssertionError("latency fallback lost");
+        ranked = UpdateMirrors.resolve(Arrays.asList(""), null, (url, range) -> {
+            if (range) throw new AssertionError("data saver must not sample installers");
+            return (new String(new char[64]).replace('\0', 'a') + "  weq-remote-1.0.0-android-arm64.apk\n").getBytes(StandardCharsets.UTF_8);
+        }, false);
+        if (ranked.size() != 1) throw new AssertionError("data saver lost available mirror");
         try {
             UpdateMirrors.resolve(Arrays.asList(""), (url, range) -> { throw new Exception(); });
             throw new AssertionError("all failed must not become up-to-date");

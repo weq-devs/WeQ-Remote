@@ -8,8 +8,8 @@ let package = Package(
     targets: [
         .target(name: "WeQRemote", path: "Sources",
                 exclude: ["EmbeddedNetwork.swift", "RemoteModel.swift", "ScannerView.swift", "WeQRemoteApp.swift", "WebContainer.swift", "RemoteNativeMedia.swift"],
-                sources: ["RemoteProtocol.swift", "WebDataStore.swift", "WebDownloadProgress.swift", "ConnectionHealth.swift", "ReleaseVersion.swift", "UpdateMirrors.swift", "WebMedia.swift", "RemoteWindowLayout.swift"]),
+                sources: ["RemoteProtocol.swift", "WebDataStore.swift", "WebDownloadProgress.swift", "ConnectionHealth.swift", "ReleaseVersion.swift", "UpdateMirrors.swift", "WebMedia.swift", "RemoteWindowLayout.swift", "RemoteNetworkCost.swift"]),
         .testTarget(name: "WeQRemoteProtocolTests", dependencies: ["WeQRemote"], path: "Tests",
-                    exclude: ["EmbeddedConnectionTests.swift", "WebContainerTests.swift"], sources: ["RemoteProtocolTests.swift", "WebDataStoreTests.swift", "WebDownloadProgressTests.swift", "ConnectionHealthTests.swift", "ReleaseVersionTests.swift", "WebMediaTests.swift", "RemoteWindowLayoutTests.swift"]),
+                    exclude: ["EmbeddedConnectionTests.swift", "WebContainerTests.swift"], sources: ["RemoteProtocolTests.swift", "WebDataStoreTests.swift", "WebDownloadProgressTests.swift", "ConnectionHealthTests.swift", "ReleaseVersionTests.swift", "WebMediaTests.swift", "RemoteWindowLayoutTests.swift", "RemoteNetworkCostTests.swift"]),
     ]
 )
