@@ -66,12 +66,12 @@ python3 apps/ios/scripts/build_unsigned_ipa.py
 
 ## GitHub Release
 
-当前源码为 iOS / Android 1.0.0b3（iOS 系统版本 1.0.0、build 11，Android versionCode 9），实际发布状态以 GitHub Releases 为准；以下历史构建回执保留原值。
+当前源码为 iOS / Android 1.0.0b4（iOS 系统版本 1.0.0、build 12，Android versionCode 10），实际发布状态以 GitHub Releases 为准；以下历史构建回执保留原值。
 
 `.github/workflows/release.yml` 只支持手动触发，且必须运行在已存在的 `vMAJOR.MINOR.PATCH` 或 `vMAJOR.MINOR.PATCHbN` 标签上（N 为不带前导零的正整数）；Beta 自动标记为 Pre-release，不替换 Latest 正式版。在分支上误触发会失败，不创建标签或发布。发布前先经用户授权提交并推送版本、文档及标签，再执行：
 
 ```sh
-gh workflow run release.yml --ref v1.0.0b3
+gh workflow run release.yml --ref v1.0.0b4
 ```
 
 Release 复用同一标签提交的 CI、Android 普通 APK 和 iOS 未签名 IPA 工作流，各自使用独立并发组，避免可复用工作流相互取消。三个流程全部成功后，发布 Job 只下载当前运行 ID / attempt 的两端产物。`scripts/release_assets.py` 复核版本、SHA-256、干净源码提交、IPA 实际身份 / 真机二进制与两端来源记录；仅将普通 APK、未签名 IPA、两份来源记录和汇总 `SHA256SUMS` 作为附件。

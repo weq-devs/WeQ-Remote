@@ -22,7 +22,7 @@ class LocalPublishTests(unittest.TestCase):
     def test_system_and_beta_version_are_not_changed(self):
         source = (ROOT / 'apps/ios/project.yml').read_text()
         self.assertIn('MARKETING_VERSION: "1.0.0"', source)
-        self.assertIn('CURRENT_PROJECT_VERSION: 11', source)
+        self.assertIn('CURRENT_PROJECT_VERSION: 12', source)
 
 
 if __name__ == '__main__':
