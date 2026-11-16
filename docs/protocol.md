@@ -6,7 +6,7 @@
 
 手机壳在主文档初始化时提供 `window.weqRemoteNetworkCost = {state:'restricted'|'unrestricted'|'unknown', constrained:boolean, metered:boolean, source:string}`，后续变化发送 `weq-remote-network-cost` 事件。Android 另提供同步的 `weqRemoteLinks.networkCost()` JSON 读取入口，避免文档提交后注入晚于业务初始化；iOS 使用 document-start 用户脚本。切网、Data Saver 变化及返回前台重新读取，不改变连接健康判定或新增探测心跳。
 
-网页通过 Android 的 `networkPreference(mode)` 或 iOS `weqShell.postMessage({dataSaverMode:mode})` 传回宿主共享的 `auto|always|never` 作为当前连接的运行参数，手机不提供本地覆盖。该参数用于原生更新检查是否取样测速；没有网页提供参数时默认为 auto。旧壳缺少桥时网页保留 unknown 和手动模式，不假装识别系统状态；邀请与授权协议版本不变。
+网页通过 Android 的 `networkPreference(mode)` 或 iOS `weqShell.postMessage({dataSaverMode:mode})` 传回当前连接的省流量运行参数，手机不提供本地覆盖。桥继续接受 `auto|always|never`；新版网页将宿主与本端合并后的实际生效结果映射为 `always|never`，使既有手机壳的更新检查也遵循默认关闭的「使用流量时自动启用」共享选项及临时覆盖，不必新增桥字段。该参数用于原生更新检查是否取样测速；没有网页提供参数时仍默认为 auto，原生默认行为不变。旧壳缺少桥时网页保留 unknown 和手动模式，不假装识别系统状态；邀请与授权协议版本不变。
 
 ## 邀请版本
 
