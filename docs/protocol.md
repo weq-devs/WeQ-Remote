@@ -60,8 +60,9 @@
 
 ## 首屏资源进度
 
-- 电脑识别 `WeQRemote` User-Agent，在 HTML 的 `meta[name="weq-startup-resources"]` 中附带 JSON：`{version:1,resources:[{path:"/assets/name-hash.js",size:1234}]}`。仅包含该 HTML 引用或 modulepreload 的同源 JS/CSS，去重后逐项给出本次压缩协商下的响应体大小，不含 HTTP 头、HTML、媒体及后续业务模块。
-- 同一份构建的尺寸清单在电脑内存复用；HTML 更新后重新计算。清单不另发请求，也不预下载或重复下载资源。普通浏览器不附加清单。
+- 电脑识别 `WeQRemote` User-Agent，在 HTML 的 `meta[name="weq-startup-resources"]` 中附带 JSON：`{version:1,resources:[{path:"/assets/name-hash.js",size:1234}]}`。新构建覆盖入口、主工作区及默认首页的同源静态 JS/CSS 依赖，去重后逐项给出本次压缩协商下的响应体大小，不含 HTTP 头、HTML、媒体及后续按需业务模块；旧构建继续只统计 HTML 引用或 modulepreload 的资源。
+- 新版电脑在构建时生成 `weq-startup.json`，保存首屏依赖及原始／gzip 大小；匹配当前 HTML 后复用，不在连接时重复压缩计算。缺少、过期或无效清单时兼容原有现场计算路径。同一份构建在电脑内存复用，HTML 更新后重新读取；手机不为清单增加请求，普通浏览器不附加清单。
+- 新版电脑为主工作区 JS 注入 `modulepreload`，为其 CSS 注入 `preload as=style`；在恢复检查前准备必需资源，预载本身不提前执行工作区或应用其样式。手机沿用已有资源完成回执和缓存，不重复下载。实际账号和恢复检查仍由现有接口完成，不把资源加载当作账号已就绪。
 - 电脑在资源标签之前记录真实 `load/error`，通过 `window.weqRemoteResourceLoads` 保存每个资源的完成／失败结果，并发送 `weq-remote-resource-load`；手机结合该回执与 Resource Timing 补读早到资源，避免 WebKit 内存缓存 timing 尺寸为零或 Android 桥接稍晚造成漏记。
 - 手机圆环采用已完成资源的清单字节数／清单总字节数，100 毫秒内合并更新；每个资源完成后才累加，不虚构响应体在途字节数。缓存命中计入已加载量，失败资源不计完成，重复回执不重复累计。下载完成后继续等待原有启动状态，不能用下载 100% 替代界面就绪。
 - 新导航清零，网页终止状态断开观察，销毁 WebView 清除回调。旧电脑缺少清单时使用原有不定进度，不猜总大小。该能力需更新电脑服务和手机 App，不修改邀请、授权及网络协议。
