@@ -17,7 +17,7 @@ final class RemoteModel: ObservableObject {
     @Published private(set) var error: String?
     @Published private(set) var webSession: RemoteWebSession?
     @Published private(set) var webReady = false
-    @Published private(set) var webLoadingStage = "正在下载网页资源"
+    @Published private(set) var webLoadingStage = WebDownloadProgress.loadingMessage
     @Published private(set) var webDownload: WebDownloadProgress?
     @Published private(set) var rememberedComputer = false
     @Published private(set) var health = ConnectionHealth()
@@ -340,7 +340,7 @@ final class RemoteModel: ObservableObject {
     func adoptWebSession(_ session: RemoteWebSession) {
         session.onNetworkPreference = { [weak self] mode in self?.network.dataSaverMode = mode }
         webReady = false
-        webLoadingStage = "正在下载网页资源"
+        webLoadingStage = WebDownloadProgress.loadingMessage
         webDownload = nil
         session.onDownload = { [weak self, weak session] progress in
             guard let self, self.webSession === session else { return }

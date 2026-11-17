@@ -40,7 +40,7 @@ func TestReconnectCachesOnlyImmutableCodeAssets(t *testing.T) {
 		t.Cleanup(client.Close)
 		return client, origin, local
 	}
-	get := func(origin, local, path string) int {
+	get := func(origin, local, path, source string) int {
 		t.Helper()
 		req, _ := http.NewRequest("GET", origin+path, nil)
 		req.Header.Set("Cookie", "weq_remote_local="+local)
@@ -50,35 +50,40 @@ func TestReconnectCachesOnlyImmutableCodeAssets(t *testing.T) {
 		}
 		defer response.Body.Close()
 		body, _ := io.ReadAll(response.Body)
+		if source != "" {
+			if response.Header.Get("Server-Timing") != `weq-remote-source;desc="`+source+`"` {
+				t.Fatalf("proxy lost resource source: %q", response.Header.Get("Server-Timing"))
+			}
+		}
 		if response.StatusCode == 200 && string(body) != "synthetic static code" {
 			t.Fatal("body changed")
 		}
 		return response.StatusCode
 	}
 	first, origin, local := connect(token)
-	if get(origin, local, "/assets/index-Abcd1234.js") != 200 {
+	if get(origin, local, "/assets/index-Abcd1234.js", "network") != 200 {
 		t.Fatal("asset unavailable")
 	}
 	first.Close()
 	_, nextOrigin, nextLocal := connect(token)
-	if get(nextOrigin, nextLocal, "/assets/index-Abcd1234.js") != 200 {
+	if get(nextOrigin, nextLocal, "/assets/index-Abcd1234.js", "cache") != 200 {
 		t.Fatal("cached asset unavailable")
 	}
 	if calls.Load() != 1 {
 		t.Fatalf("reconnect fetched immutable code again: %d", calls.Load())
 	}
-	if get(nextOrigin, "wrong", "/assets/index-Abcd1234.js") != 403 {
+	if get(nextOrigin, "wrong", "/assets/index-Abcd1234.js", "") != 403 {
 		t.Fatal("cache bypassed local authentication")
 	}
 	for _, path := range []string{"/trpc/probe", "/_media/pic", "/assets/nohash.js"} {
-		get(nextOrigin, nextLocal, path)
-		get(nextOrigin, nextLocal, path)
+		get(nextOrigin, nextLocal, path, "")
+		get(nextOrigin, nextLocal, path, "")
 	}
 	if calls.Load() != 7 {
 		t.Fatal("business response entered static cache")
 	}
 	_, otherOrigin, otherLocal := connect(strings.Repeat("f", 64))
-	get(otherOrigin, otherLocal, "/assets/index-Abcd1234.js")
+	get(otherOrigin, otherLocal, "/assets/index-Abcd1234.js", "network")
 	if calls.Load() != 8 {
 		t.Fatal("cache crossed device authorization")
 	}

@@ -65,8 +65,15 @@
 - 新版电脑在构建时生成 `weq-startup.json`，保存首屏依赖及原始／gzip 大小；匹配当前 HTML 后复用，不在连接时重复压缩计算。缺少、过期或无效清单时兼容原有现场计算路径。同一份构建在电脑内存复用，HTML 更新后重新读取；手机不为清单增加请求，普通浏览器不附加清单。
 - 新版电脑为主工作区 JS 注入 `modulepreload`，为其 CSS 注入 `preload as=style`；在恢复检查前准备必需资源，预载本身不提前执行工作区或应用其样式。手机沿用已有资源完成回执和缓存，不重复下载。实际账号和恢复检查仍由现有接口完成，不把资源加载当作账号已就绪。
 - 电脑在资源标签之前记录真实 `load/error`，通过 `window.weqRemoteResourceLoads` 保存每个资源的完成／失败结果，并发送 `weq-remote-resource-load`；手机结合该回执与 Resource Timing 补读早到资源，避免 WebKit 内存缓存 timing 尺寸为零或 Android 桥接稍晚造成漏记。
-- 手机圆环采用已完成资源的清单字节数／清单总字节数，100 毫秒内合并更新；每个资源完成后才累加，不虚构响应体在途字节数。缓存命中计入已加载量，失败资源不计完成，重复回执不重复累计。下载完成后继续等待原有启动状态，不能用下载 100% 替代界面就绪。
+- 手机圆环继续采用已完成资源的清单字节数／清单总字节数，明确标为「资源加载」，保留字节数、百分比和资源项数。缓存命中计入加载权重，不称为下载量；每个资源完成后累计，100 毫秒内合并更新，不虚构在途字节数。失败不计完成，重复回执不重复累计。
+- 只有 `completed=total`、`downloadedBytes=0`、`cachedBytes=totalBytes`、`unknownBytes=0` 同时满足才认定全缓存，界面折叠为「已复用网页缓存」，不展示下载字节／百分比／项数明细；不根据 Web 版本未变化或历史缓存记录提前假定全缓存。
+- 本地资源桥在原 `{completed,total,loadedBytes,totalBytes}` 外增加可选的 `{downloadedBytes,cachedBytes,unknownBytes}`。`downloadedBytes` 累计已确认网络来源的已完成资源响应的 `encodedBodySize`，同一 timing 对象的补读不重复累计；`cachedBytes`、`unknownBytes` 是已加载资源中缓存复用／来源待确认部分的清单字节权重，不要求它们与实际下载字节数相加等于加载量。旧回执没有来源字段时保留原进度，并把已加载部分列为来源待确认，不猜下载量。
+- 浏览器来源以同源 Resource Timing 的 `deliveryType`、传输／响应体字段及 304 校验结果核对。Android 的回环代理读取不等于上游下载：原生缓存传输在本次响应增加 `Server-Timing: weq-remote-source;desc="cache"` 或 `desc="network"`，标识不进入缓存副本；浏览器自身缓存命中优先于保留在缓存响应中的旧标识。缺少原生标识的旧代理正字节响应列为来源待确认。
+- WebKit 内存命中可能把尺寸和 deliveryType 都留空：仅在资源真实 load 回执成功、无 Service Worker、同源 timing 满足 `fetchStart=requestStart>0`、`responseStart=0`、`responseEnd>=fetchStart` 且三项尺寸全零时识别为空网络指标的内存复用；没有 timing、跨源／重定向导致指标不可见、只有全零尺寸或只有 load 回执都不据此猜来源。依据为 [Resource Timing](https://www.w3.org/TR/resource-timing/)、[WebKit 内存缓存 timing 生成](https://github.com/WebKit/WebKit/blob/main/Source/WebCore/loader/cache/CachedResourceLoader.cpp)、[WebKit timing 字段实现](https://github.com/WebKit/WebKit/blob/main/Source/WebCore/page/PerformanceResourceTiming.cpp)，另以真实浏览器和独立服务器请求计数回归核对。
+- 这里的下载值是已确认资源响应的浏览器接收计量，不是整条连接总流量，不包含 HTML、API、媒体、HTTP 头或 TLS；部分 WebKit 的 HTTP/1.1 分块响应计量包含分块帧，不能强行用清单值覆盖。资源准备可与恢复检查并行，文档提交及后到资源回执不覆盖网页已报告的实际阶段，资源 100% 也不替代界面就绪。
 - 新导航清零，网页终止状态断开观察，销毁 WebView 清除回调。旧电脑缺少清单时使用原有不定进度，不猜总大小。该能力需更新电脑服务和手机 App，不修改邀请、授权及网络协议。
+
+资源来源回归可通过 `node scripts/check-web-resource-timing.mjs` 运行：复用已安装的 Playwright（可用 `WEQ_PLAYWRIGHT_IMPORT` 指定模块），`WEQ_CHROMIUM_EXECUTABLE`／`WEQ_WEBKIT_EXECUTABLE` 可指定兼容浏览器。夹具仅监听回环，用独立的 HTTP 请求计数核对冷加载、无变化、仅小文件变化和分块响应；不访问 QQ，不为测试自动下载浏览器。此显示修正兼容现有电脑清单，只需更新手机 App；首次接入资源进度桥仍需配套电脑服务。
 
 ## 版本与测试
 

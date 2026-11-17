@@ -64,6 +64,9 @@ func TestCodeCacheSurvivesProcessMemoryAndRejectsPartialClose(t *testing.T) {
 	_, _ = io.Copy(io.Discard, second.Body)
 	_ = second.Body.Close()
 	third, _ := open().RoundTrip(request)
+	if got := third.Header.Get("Server-Timing"); !strings.Contains(got, `weq-remote-source;desc="cache"`) {
+		t.Fatalf("native cache hit not exposed to WebView: %q", got)
+	}
 	body, err := io.ReadAll(third.Body)
 	_ = third.Body.Close()
 	if err != nil || string(body) != "synthetic-code" || calls != 2 {
@@ -87,6 +90,17 @@ func TestCodeCacheSurvivesProcessMemoryAndRejectsPartialClose(t *testing.T) {
 type assetRoundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f assetRoundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestWebAssetSourceHandlesLegacyEmptyHeaders(t *testing.T) {
+	request, _ := http.NewRequest("GET", "http://100.64.0.1:7691/assets/index-Abcd1234.js", nil)
+	key := request.URL.RequestURI() + "\n"
+	transport := &webAssetTransport{cache: &webAssetCache{entries: map[string]webAsset{key: {body: []byte("cached")}}}}
+	response, err := transport.RoundTrip(request)
+	if err != nil || response.Header.Get("Server-Timing") != `weq-remote-source;desc="cache"` {
+		t.Fatalf("legacy cache headers: %v %v", response, err)
+	}
+	_ = response.Body.Close()
+}
 
 func TestWebAssetCacheRejectsUnsafeResponses(t *testing.T) {
 	for _, kind := range []string{"private", "no-store", "no-cache", "private=\"Set-Cookie\"", "no-cache=\"Authorization\"", "cookie", "vary", "error", "html"} {

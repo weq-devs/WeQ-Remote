@@ -111,7 +111,13 @@ final class WebFeatures extends WebChromeClient {
             if (payload == null || payload.length() > 512) return;
             try {
                 org.json.JSONObject value = new org.json.JSONObject(payload);
-                WebDownloadProgress progress = new WebDownloadProgress(value.getInt("completed"), value.getInt("total"), value.getLong("loadedBytes"), value.getLong("totalBytes"));
+                long completed = WebDownloadProgress.number(value.get("completed")), total = WebDownloadProgress.number(value.get("total"));
+                if (completed > 4096 || total > 4096) return;
+                long loaded = WebDownloadProgress.number(value.get("loadedBytes")), size = WebDownloadProgress.number(value.get("totalBytes"));
+                boolean sources = value.has("downloadedBytes") || value.has("cachedBytes") || value.has("unknownBytes");
+                WebDownloadProgress progress = sources
+                    ? new WebDownloadProgress((int) completed, (int) total, loaded, size, WebDownloadProgress.number(value.get("downloadedBytes")), WebDownloadProgress.number(value.get("cachedBytes")), WebDownloadProgress.number(value.get("unknownBytes")))
+                    : new WebDownloadProgress((int) completed, (int) total, loaded, size);
                 activity.runOnUiThread(() -> {
                     if (!closed && WebAccess.sameOrigin(origin, view.getUrl()) && activity instanceof MainActivity)
                         ((MainActivity) activity).receiveWebDownload(view, progress);

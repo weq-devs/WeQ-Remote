@@ -7,7 +7,7 @@ import android.graphics.Paint;
 import android.graphics.RectF;
 import android.view.View;
 
-/** 沿用连接页外环，下载比例按已完成资源的字节数计算。 */
+/** 清单字节权重表示资源加载比例，不表示本次网络下载比例。 */
 final class DownloadRing extends View {
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final int accent;
@@ -27,10 +27,17 @@ final class DownloadRing extends View {
         paint.setColor(accent); paint.setStrokeCap(Paint.Cap.ROUND);
         canvas.drawArc(bounds, -90, 360 * progress.fraction(), false, paint);
         paint.setStyle(Paint.Style.FILL); paint.setTextAlign(Paint.Align.CENTER);
+        paint.setTextSize(12 * getResources().getDisplayMetrics().scaledDensity);
+        float labelSize = paint.getTextSize();
+        float available = getWidth() - 32 * density;
+        float labelWidth = paint.measureText("资源加载");
+        if (labelWidth > available) paint.setTextSize(labelSize * available / labelWidth);
+        float labelBottom = getHeight() / 2f - 6 * density;
+        canvas.drawText("资源加载", getWidth() / 2f, labelBottom, paint);
         paint.setTextSize(22 * getResources().getDisplayMetrics().scaledDensity);
         String percentage = Math.round(progress.fraction() * 100) + "%";
-        float width = paint.measureText(percentage), available = getWidth() - 32 * density;
+        float width = paint.measureText(percentage);
         if (width > available) paint.setTextSize(paint.getTextSize() * available / width);
-        canvas.drawText(percentage, getWidth() / 2f, (getHeight() - paint.ascent() - paint.descent()) / 2f, paint);
+        canvas.drawText(percentage, getWidth() / 2f, labelBottom - paint.ascent() + 4 * density, paint);
     }
 }

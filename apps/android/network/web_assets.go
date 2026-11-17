@@ -91,11 +91,25 @@ func (t *webAssetTransport) RoundTrip(req *http.Request) (*http.Response, error)
 	}
 	t.cache.mu.Unlock()
 	if found {
-		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: asset.header.Clone(),
+		header := asset.header.Clone()
+		if header == nil {
+			header = make(http.Header)
+		}
+		header.Add("Server-Timing", `weq-remote-source;desc="cache"`)
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: header,
 			Body: io.NopCloser(bytes.NewReader(asset.body)), ContentLength: int64(len(asset.body)), Request: req}, nil
 	}
 	response, err := t.base.RoundTrip(req)
-	if err != nil || response.StatusCode != http.StatusOK || response.ContentLength > webAssetLimit || len(response.Header.Values("Set-Cookie")) > 0 {
+	if err != nil {
+		return response, err
+	}
+	if response.Header == nil {
+		response.Header = make(http.Header)
+	}
+	// 缓存只保存上游头，来源标识按本次实际读取重新生成，不持久化旧命中状态。
+	cacheHeader := response.Header.Clone()
+	response.Header.Add("Server-Timing", `weq-remote-source;desc="network"`)
+	if response.StatusCode != http.StatusOK || response.ContentLength > webAssetLimit || len(response.Header.Values("Set-Cookie")) > 0 {
 		return response, err
 	}
 	mediaType, _, _ := mime.ParseMediaType(response.Header.Get("Content-Type"))
@@ -118,7 +132,7 @@ func (t *webAssetTransport) RoundTrip(req *http.Request) (*http.Response, error)
 			return response, nil
 		}
 	}
-	response.Body = &cachingWebBody{source: response.Body, cache: t.cache, key: key, header: response.Header.Clone(), expected: response.ContentLength}
+	response.Body = &cachingWebBody{source: response.Body, cache: t.cache, key: key, header: cacheHeader, expected: response.ContentLength}
 	return response, nil
 }
 

@@ -564,7 +564,6 @@ public final class MainActivity extends Activity {
 
     private String heroTitle() {
         if (claimID != null) return "等待电脑确认";
-        if (!webLoaded && webDownload != null && webDownload.downloading()) return "正在下载网页资源";
         if (!webLoaded && (paired || webView != null)) return webLoadingStage;
         if (busy) return paired ? "正在验证电脑授权" : "正在连接电脑";
         if (error.length() > 0) return "连接未通过";
@@ -727,7 +726,7 @@ public final class MainActivity extends Activity {
         if (webView == null) return;
         webLoaded = false;
         webStartupProblem = null;
-        webLoadingStage = "正在下载网页资源";
+        webLoadingStage = WebDownloadProgress.LOADING_MESSAGE;
         error.setText("");
         android.view.ViewGroup root = (android.view.ViewGroup) webView.getParent().getParent();
         if (setupView.getParent() == null) root.addView(setupView, new android.view.ViewGroup.LayoutParams(-1, -1));
@@ -1072,12 +1071,12 @@ public final class MainActivity extends Activity {
                                     if (webView != page) return;
                                     webStartupRevision++;
                                     webDownload = null; webStartupReported = false;
-                                    if (!webLoaded) { webLoadingStage = "正在下载网页资源"; render(); }
+                                    if (!webLoaded) { webLoadingStage = WebDownloadProgress.LOADING_MESSAGE; render(); }
                                     main.removeCallbacks(webStartupTimeout);
                                     main.postDelayed(webStartupTimeout, 45000);
                                 }
                                 @Override public void onPageCommitVisible(android.webkit.WebView view, String url) {
-                                    if (webView == page && !webLoaded) { webLoadingStage = "正在下载网页资源"; render(); }
+                                    if (webView == page && !webLoaded && !webStartupReported && webDownload == null) { webLoadingStage = WebDownloadProgress.LOADING_MESSAGE; render(); }
                                     // 不等待图片等尾部资源完成，尽早订阅并补读网页已经发出的启动状态。
                                     if (webView == page && allowed(Uri.parse(url)) && webFeatures != null) webFeatures.observeStartup();
                                 }
@@ -1136,7 +1135,7 @@ public final class MainActivity extends Activity {
     void receiveWebDownload(android.webkit.WebView page, WebDownloadProgress value) {
         if (webView != page || webLoaded) return;
         webDownload = value;
-        if (!webStartupReported) webLoadingStage = value.downloading() ? "正在下载网页资源" : "正在执行网页脚本";
+        if (!webStartupReported) webLoadingStage = value.stage();
         render();
     }
     void recordWebConsoleFailure(android.webkit.WebView page, String message) {

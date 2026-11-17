@@ -215,7 +215,6 @@ struct RemoteView: View {
     }
 
     private var heroTitle: String {
-        if model.webSession != nil, !model.webReady, model.webDownload?.downloading == true { return "正在下载网页资源" }
         if let stage = loadingStage { return stage }
         if model.error != nil { return "连接未通过" }
         if model.rememberedComputer { return "我的电脑" }
@@ -296,8 +295,11 @@ struct RemoteView: View {
                     .stroke(accent, style: StrokeStyle(lineWidth: 4, lineCap: .round))
                     .rotationEffect(.degrees(-90))
                     .frame(width: 138, height: 138)
-                Text("\(Int((progress.fraction * 100).rounded()))%")
-                    .font(.title2.monospacedDigit().weight(.medium))
+                VStack(spacing: 4) {
+                    Text("资源加载").font(.caption)
+                    Text("\(Int((progress.fraction * 100).rounded()))%")
+                        .font(.title2.monospacedDigit().weight(.medium))
+                }
                     .foregroundStyle(accent)
                     .frame(width: 104, height: 60)
                     .minimumScaleFactor(0.6)

@@ -17,12 +17,18 @@ public final class RemoteInstrumentation extends Instrumentation {
     private boolean lan;
     private boolean uiOnly;
     private boolean surfacesOnly;
-    @Override public void onCreate(Bundle arguments) { super.onCreate(arguments); lan = "1".equals(arguments.getString("lan")); uiOnly = "1".equals(arguments.getString("ui")); surfacesOnly = "1".equals(arguments.getString("surfaces")); start(); }
+    private boolean resourcesOnly;
+    @Override public void onCreate(Bundle arguments) { super.onCreate(arguments); lan = "1".equals(arguments.getString("lan")); uiOnly = "1".equals(arguments.getString("ui")); surfacesOnly = "1".equals(arguments.getString("surfaces")); resourcesOnly = "1".equals(arguments.getString("resources")); start(); }
     @Override public void onStart() {
         Bundle result = new Bundle();
         MainActivity activity = null;
         try {
             String pkg = getTargetContext().getPackageName();
+            if (resourcesOnly) {
+                testResourceTransfers(pkg);
+                result.putString("stream", "PASS: byte progress retained; download/cache/unknown separated; actual startup stage retained\n");
+                finish(android.app.Activity.RESULT_OK, result); return;
+            }
             if (surfacesOnly) {
                 testWebSurfaces(pkg);
                 result.putString("stream", "PASS: full screen callback once; close releases surface; orientation retains Activity\n");
@@ -84,6 +90,42 @@ public final class RemoteInstrumentation extends Instrumentation {
             result.putString("stream", "FAIL: " + failure.getClass().getSimpleName() + ": " + failure.getMessage() + "\n");
             finish(android.app.Activity.RESULT_CANCELED, result);
         }
+    }
+    private void testResourceTransfers(String pkg) throws Exception {
+        MainActivity activity = (MainActivity) startActivitySync(new Intent().setComponent(new ComponentName(pkg, MainActivity.class.getName())).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        java.lang.reflect.Field paired = MainActivity.class.getDeclaredField("paired"), paused = MainActivity.class.getDeclaredField("reconnectPaused"), loaded = MainActivity.class.getDeclaredField("webLoaded");
+        paired.setAccessible(true); paused.setAccessible(true); loaded.setAccessible(true);
+        try {
+            runOnMainSync(() -> {
+                try { paired.setBoolean(activity, true); paused.setBoolean(activity, true); }
+                catch (Exception failure) { throw new AssertionError(failure); }
+                activity.webView = new android.webkit.WebView(activity);
+                activity.receiveWebDownload(activity.webView, new WebDownloadProgress(18, 24, 7500000, 10000000, 1250000L, 6250000, 0));
+                require(activity.computerState.getText().toString().equals(WebDownloadProgress.LOADING_MESSAGE), "resource title claims a full download");
+            });
+            require(read(activity.detail).contains("已确认下载 1.25 MB") && read(activity.detail).contains("缓存复用 6.25 MB"), "real transfer details missing");
+            long deadline = android.os.SystemClock.elapsedRealtime() + 5000;
+            android.view.accessibility.AccessibilityNodeInfo window = null;
+            while (android.os.SystemClock.elapsedRealtime() < deadline) {
+                window = getUiAutomation().getRootInActiveWindow();
+                if (window != null && pkg.contentEquals(window.getPackageName())) break;
+                Thread.sleep(100);
+            }
+            require(window != null && pkg.contentEquals(window.getPackageName()), "resource screenshot obscured by another window");
+            getUiAutomation().waitForIdle(500, 5000);
+            saveScreenshot("resources-mixed.png");
+            runOnMainSync(() -> {
+                activity.receiveWebStartup(activity.webView, "loading", "正在检查恢复状态");
+                activity.receiveWebDownload(activity.webView, new WebDownloadProgress(24, 24, 10000000, 10000000, 0L, 10000000, 0));
+                require(activity.computerState.getText().toString().equals("正在检查恢复状态"), "resource progress replaced actual stage");
+            });
+            require(!loaded.getBoolean(activity), "resources alone entered page");
+            require(read(activity.detail).equals("已复用网页缓存"), "fully cached resources still show download progress");
+            getUiAutomation().waitForIdle(500, 5000);
+            saveScreenshot("resources-cached.png");
+            runOnMainSync(() -> activity.receiveWebDownload(activity.webView, new WebDownloadProgress(18, 24, 7500000, 10000000)));
+            require(read(activity.detail).contains("来源待确认") && !read(activity.detail).contains("已确认下载"), "unknown source was guessed");
+        } finally { finishActivity(activity); }
     }
     private void testWebSurfaces(String pkg) throws Exception {
         MainActivity activity = (MainActivity) startActivitySync(new Intent().setComponent(new ComponentName(pkg, MainActivity.class.getName())).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));

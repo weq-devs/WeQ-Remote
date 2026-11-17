@@ -116,6 +116,7 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
     private var startupTimeout: Task<Void, Never>?
     private var startupFinished = false
     private var startupReported = false
+    private var resourceReported = false
     private var navigationGeneration = 0
     private var windowLayout = RemoteWindowLayout()
     private var nativeMedia: RemoteNativeMedia?
@@ -227,8 +228,8 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
     }
 
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
-        guard !closed, !startupFinished else { return }
-        onProgress?("正在下载网页资源")
+        guard !closed, !startupFinished, !startupReported, !resourceReported else { return }
+        onProgress?(WebDownloadProgress.loadingMessage)
     }
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
@@ -237,9 +238,10 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
         nativeMedia?.stopAll()
         startupFinished = false
         startupReported = false
+        resourceReported = false
         onDownload?(nil)
         onLoading?()
-        onProgress?("正在下载网页资源")
+        onProgress?(WebDownloadProgress.loadingMessage)
         startupTimeout?.cancel()
         startupTimeout = Task { [weak self] in
             do { try await Task.sleep(for: .seconds(45)) } catch { return }
@@ -278,9 +280,10 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
 
     func receiveDownload(_ progress: WebDownloadProgress) {
         guard !closed, !startupFinished else { return }
+        resourceReported = true
         onDownload?(progress)
         if !startupReported {
-            onProgress?(progress.downloading ? "正在下载网页资源" : "正在执行网页脚本")
+            onProgress?(progress.stage)
         }
     }
 

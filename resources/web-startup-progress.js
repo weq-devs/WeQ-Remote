@@ -2,18 +2,51 @@
   if (window.__weqResourceProgress) return;
   window.__weqResourceProgress = true;
   var sizes = new Map(), finished = new Set(), observer, mutations, timer, stopped = false, last = '';
+  var seen = new Set(), sources = new Map(), downloads = new Map();
+  var direct = !!(window.webkit && window.webkit.messageHandlers.weqResources);
   function codeURL(value) {
     try {
       var url = new URL(value, location.href);
       return url.origin === location.origin && /^\/assets\/[^/]+\.(js|css)$/.test(url.pathname) ? url.pathname + url.search : null;
     } catch (_) { return null; }
   }
+  function memoryCache(entry, path) {
+    var loads = window.weqRemoteResourceLoads;
+    // WebKit 内存命中使用空网络指标；同时核对成功回执及未发生网络响应的时序，不能只看零字节。
+    return loads && loads[path] === true && entry.workerStart === 0 && entry.transferSize === 0 &&
+      entry.encodedBodySize === 0 && entry.decodedBodySize === 0 && entry.fetchStart > 0 &&
+      entry.requestStart === entry.fetchStart && entry.responseStart === 0 && entry.responseEnd >= entry.fetchStart;
+  }
+  function source(entry, path) {
+    if (entry.workerStart > 0) return 'unknown';
+    if (entry.deliveryType === 'cache' || entry.responseStatus === 304 ||
+        (entry.transferSize === 0 && (entry.encodedBodySize > 0 || entry.decodedBodySize > 0)) ||
+        (entry.transferSize === 300 && entry.encodedBodySize > 0) || memoryCache(entry, path)) return 'cache';
+    var transport = '';
+    if (Array.isArray(entry.serverTiming)) entry.serverTiming.forEach(function (metric) {
+      if (metric.name === 'weq-remote-source') transport = metric.description;
+    });
+    if (transport === 'cache') return 'cache';
+    if ((direct || transport === 'network') && entry.transferSize > 0 &&
+        Number.isSafeInteger(entry.encodedBodySize) && entry.encodedBodySize > 0) return 'network';
+    return 'unknown';
+  }
   function entries(values) {
     values.forEach(function (entry) {
       var path = codeURL(entry.name);
       // 失败请求也可能产生 timing 条目，不能将零字节失败算成下载完成。
-      if (path && !(entry.responseStatus >= 400) &&
-          (entry.encodedBodySize > 0 || entry.decodedBodySize > 0 || entry.responseStatus >= 200)) finished.add(path);
+      if (!path || entry.responseStatus >= 400 ||
+          !(entry.encodedBodySize > 0 || entry.decodedBodySize > 0 || entry.responseStatus >= 200 || entry.deliveryType === 'cache' || memoryCache(entry, path))) return;
+      finished.add(path);
+      var origin = source(entry, path);
+      // 本机代理的一次 HTTP 读取不等于从电脑下载，必须有原生来源回执。
+      if (origin === 'network') {
+        if (!seen.has(entry)) {
+          seen.add(entry);
+          downloads.set(path, (downloads.get(path) || 0) + entry.encodedBodySize);
+        }
+        sources.set(path, origin);
+      } else if (origin === 'cache' && sources.get(path) !== 'network') sources.set(path, origin);
     });
   }
   function report() {
@@ -37,12 +70,18 @@
       else if (loads[path] === false) finished.delete(path);
     });
     if (!sizes.size) return;
-    var completed = 0, loadedBytes = 0, totalBytes = 0;
+    var completed = 0, loadedBytes = 0, totalBytes = 0, downloadedBytes = 0, cachedBytes = 0, unknownBytes = 0;
     sizes.forEach(function (size, path) {
       totalBytes += size;
-      if (finished.has(path)) { completed++; loadedBytes += size; }
+      downloadedBytes += downloads.get(path) || 0;
+      if (finished.has(path)) {
+        completed++; loadedBytes += size;
+        if (sources.get(path) === 'cache') cachedBytes += size;
+        else if (sources.get(path) !== 'network') unknownBytes += size;
+      }
     });
-    var value = { completed: completed, total: sizes.size, loadedBytes: loadedBytes, totalBytes: totalBytes };
+    var value = { completed: completed, total: sizes.size, loadedBytes: loadedBytes, totalBytes: totalBytes,
+      downloadedBytes: downloadedBytes, cachedBytes: cachedBytes, unknownBytes: unknownBytes };
     var text = JSON.stringify(value);
     if (text === last) return;
     last = text;
