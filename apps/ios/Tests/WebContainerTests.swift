@@ -62,30 +62,28 @@ final class WebContainerTests: XCTestCase {
     }
 
     @MainActor
-    func testResourceProgressResetsOnReloadAndDoesNotReplaceStartupStage() throws {
+    func testDownloadProgressResetsOnReloadAndDoesNotReplaceStartupStage() throws {
         let model = RemoteModel(network: EmbeddedNetwork())
         let session = RemoteWebSession(configuration: WKWebViewConfiguration(), endpoint: URL(string: "https://192.168.1.8:7691")!)
         model.adoptWebSession(session)
-        let partial = try XCTUnwrap(WebResourceProgress(completed: 1, total: 2))
-        session.receiveResources(partial)
-        XCTAssertEqual(model.webResources, partial)
+        let partial = try XCTUnwrap(WebDownloadProgress(completed: 1, total: 2, loadedBytes: 1000, totalBytes: 10000))
+        session.receiveDownload(partial)
+        XCTAssertEqual(model.webDownload, partial)
         XCTAssertFalse(model.webReady)
-        XCTAssertEqual(model.webLoadingStage, WebResourceProgress.preparingMessage)
-        session.receiveResources(try XCTUnwrap(WebResourceProgress(completed: 2, total: 2)))
-        XCTAssertEqual(model.webLoadingStage, "正在初始化网页")
-        XCTAssertFalse(model.webReady)
+        session.webView(session.view, didCommit: nil)
+        XCTAssertEqual(model.webLoadingStage, "正在下载网页资源")
         session.receiveStartup("loading", message: "正在检查恢复状态")
-        session.receiveResources(partial)
+        session.receiveDownload(try XCTUnwrap(WebDownloadProgress(completed: 2, total: 2, loadedBytes: 10000, totalBytes: 10000)))
         XCTAssertEqual(model.webLoadingStage, "正在检查恢复状态")
         session.webView(session.view, didStartProvisionalNavigation: nil)
-        XCTAssertNil(model.webResources)
-        session.receiveResources(partial)
+        XCTAssertNil(model.webDownload)
+        session.receiveDownload(partial)
         session.receiveStartup("ready", message: nil)
-        XCTAssertNil(model.webResources)
-        session.receiveResources(partial)
-        XCTAssertNil(model.webResources)
+        XCTAssertNil(model.webDownload)
+        session.receiveDownload(partial)
+        XCTAssertNil(model.webDownload)
         model.disconnect()
-        XCTAssertNil(session.onResources)
+        XCTAssertNil(session.onDownload)
     }
     @MainActor
     func testWebKeyboardDoesNotAddAFormNavigationToolbar() {

@@ -111,10 +111,10 @@ final class WebFeatures extends WebChromeClient {
             if (payload == null || payload.length() > 512) return;
             try {
                 org.json.JSONObject value = new org.json.JSONObject(payload);
-                WebResourceProgress progress = new WebResourceProgress(WebResourceProgress.count(value.get("completed")), WebResourceProgress.count(value.get("total")));
+                WebDownloadProgress progress = new WebDownloadProgress(value.getInt("completed"), value.getInt("total"), value.getLong("loadedBytes"), value.getLong("totalBytes"));
                 activity.runOnUiThread(() -> {
                     if (!closed && WebAccess.sameOrigin(origin, view.getUrl()) && activity instanceof MainActivity)
-                        ((MainActivity) activity).receiveWebResources(view, progress);
+                        ((MainActivity) activity).receiveWebDownload(view, progress);
                 });
             } catch (org.json.JSONException | IllegalArgumentException ignored) { }
         }
