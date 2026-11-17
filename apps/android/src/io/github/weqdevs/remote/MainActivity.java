@@ -78,8 +78,7 @@ public final class MainActivity extends Activity {
     android.view.View scanButton;
     private LinearLayout pairSection;
     private android.widget.ProgressBar progress;
-    private DownloadRing downloadRing;
-    private WebDownloadProgress webDownload;
+    private WebResourceProgress webResources;
     private boolean webStartupReported;
     private android.widget.ImageView markIcon;
     private android.view.View statusDot;
@@ -348,8 +347,13 @@ public final class MainActivity extends Activity {
         android.view.View disc = new android.view.View(this);
         disc.setBackground(oval(Color.argb(26, Color.red(accent), Color.green(accent), Color.blue(accent))));
         markFrame.addView(disc, new android.widget.FrameLayout.LayoutParams(dp(108), dp(108), android.view.Gravity.CENTER));
-        downloadRing = new DownloadRing(this, accent);
-        markFrame.addView(downloadRing, new android.widget.FrameLayout.LayoutParams(dp(142), dp(142), android.view.Gravity.CENTER));
+        View ring = new View(this);
+        GradientDrawable ringBorder = new GradientDrawable();
+        ringBorder.setShape(GradientDrawable.OVAL);
+        ringBorder.setStroke(dp(1), Color.argb(41, Color.red(accent), Color.green(accent), Color.blue(accent)));
+        ring.setBackground(ringBorder);
+        ring.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        markFrame.addView(ring, new android.widget.FrameLayout.LayoutParams(dp(142), dp(142), android.view.Gravity.CENTER));
         markIcon = new android.widget.ImageView(this);
         markIcon.setImageResource(getResources().getIdentifier("ic_computer", "drawable", getPackageName()));
         markIcon.setColorFilter(accent);
@@ -535,9 +539,7 @@ public final class MainActivity extends Activity {
         pairButton.setVisibility(invitation.length() > 0 ? View.VISIBLE : View.GONE);
         verifyButton.setVisibility(paired && BuildConfig.TESTING ? View.VISIBLE : View.GONE);
         verifyButton.setEnabled(!busy);
-        boolean measured = loading && webView != null && !webLoaded && webDownload != null && webDownload.downloading();
-        downloadRing.update(measured ? webDownload : null);
-        progress.setVisibility(loading && !measured ? View.VISIBLE : View.GONE);
+        progress.setVisibility(loading ? View.VISIBLE : View.GONE);
         markIcon.setVisibility(loading ? View.INVISIBLE : View.VISIBLE);
         connectionActions.setVisibility(paired || rememberedComputer || loading ? View.VISIBLE : View.GONE);
         updateButton.setVisibility(rememberedComputer ? View.VISIBLE : View.GONE);
@@ -563,7 +565,6 @@ public final class MainActivity extends Activity {
 
     private String heroTitle() {
         if (claimID != null) return "等待电脑确认";
-        if (!webLoaded && webDownload != null && webDownload.downloading()) return "正在下载网页资源";
         if (!webLoaded && (paired || webView != null)) return webLoadingStage;
         if (busy) return paired ? "正在验证电脑授权" : "正在连接电脑";
         if (error.length() > 0) return "连接未通过";
@@ -573,7 +574,7 @@ public final class MainActivity extends Activity {
 
     private String heroDetail() {
         if (claimID != null) return "在电脑上核对校验码，并允许这台手机访问";
-        if (!webLoaded && (paired || webView != null)) return webDownload != null ? webDownload.detail() : computerHost("页面准备好后自动进入");
+        if (!webLoaded && (paired || webView != null)) return webResources != null ? webResources.detail() : computerHost("页面准备好后自动进入");
         if (busy) return computerHost("正在准备与电脑的连接");
         if (error.length() > 0) return rememberedComputer ? computerHost("电脑暂时不可用") : "请确认电脑在线后重试";
         if (rememberedComputer) return computerHost("打开后会自动连接上次的电脑");
@@ -726,7 +727,7 @@ public final class MainActivity extends Activity {
         if (webView == null) return;
         webLoaded = false;
         webStartupProblem = null;
-        webLoadingStage = "正在下载网页资源";
+        webLoadingStage = WebResourceProgress.PREPARING_MESSAGE;
         error.setText("");
         android.view.ViewGroup root = (android.view.ViewGroup) webView.getParent().getParent();
         if (setupView.getParent() == null) root.addView(setupView, new android.view.ViewGroup.LayoutParams(-1, -1));
@@ -1069,13 +1070,12 @@ public final class MainActivity extends Activity {
                                 private boolean allowed(Uri url) { return "http".equals(url.getScheme()) && "127.0.0.1".equals(url.getHost()) && url.getPort() == Uri.parse(origin).getPort(); }
                                 @Override public void onPageStarted(android.webkit.WebView view, String url, android.graphics.Bitmap icon) {
                                     if (webView != page) return;
-                                    webDownload = null; webStartupReported = false;
-                                    if (!webLoaded) { webLoadingStage = "正在下载网页资源"; render(); }
+                                    webResources = null; webStartupReported = false;
+                                    if (!webLoaded) { webLoadingStage = WebResourceProgress.PREPARING_MESSAGE; render(); }
                                     main.removeCallbacks(webStartupTimeout);
                                     main.postDelayed(webStartupTimeout, 45000);
                                 }
                                 @Override public void onPageCommitVisible(android.webkit.WebView view, String url) {
-                                    if (webView == page && !webLoaded) { webLoadingStage = "正在下载网页资源"; render(); }
                                     // 不等待图片等尾部资源完成，尽早订阅并补读网页已经发出的启动状态。
                                     if (webView == page && allowed(Uri.parse(url)) && webFeatures != null) webFeatures.observeStartup();
                                 }
@@ -1131,10 +1131,10 @@ public final class MainActivity extends Activity {
         } else if ("ready".equals(state) || "action-required".equals(state)) showWebPage();
         else if ("error".equals(state)) failWebLoad(message == null || message.isEmpty() ? "WeQ 页面启动失败，请重试。" : message.substring(0, Math.min(message.length(), 500)));
     }
-    void receiveWebDownload(android.webkit.WebView page, WebDownloadProgress value) {
+    void receiveWebResources(android.webkit.WebView page, WebResourceProgress value) {
         if (webView != page || webLoaded) return;
-        webDownload = value;
-        if (!webStartupReported) webLoadingStage = value.downloading() ? "正在下载网页资源" : "正在执行网页脚本";
+        webResources = value;
+        if (!webStartupReported) webLoadingStage = value.stage();
         render();
     }
     void recordWebConsoleFailure(android.webkit.WebView page, String message) {
@@ -1197,7 +1197,7 @@ public final class MainActivity extends Activity {
         main.removeCallbacks(healthDeadline);
         main.removeCallbacks(webStartupTimeout);
         webLoaded = false;
-        webDownload = null;
+        webResources = null;
         if (webFeatures != null) { webFeatures.close(); webFeatures = null; }
         Client active = node;
         if (active != null) worker.execute(active::closeWeb);

@@ -1,7 +1,7 @@
 (function () {
   if (window.__weqResourceProgress) return;
   window.__weqResourceProgress = true;
-  var sizes = new Map(), finished = new Set(), observer, mutations, timer, stopped = false, last = '';
+  var resources = new Set(), finished = new Set(), observer, mutations, timer, stopped = false, last = '';
   function codeURL(value) {
     try {
       var url = new URL(value, location.href);
@@ -11,7 +11,7 @@
   function entries(values) {
     values.forEach(function (entry) {
       var path = codeURL(entry.name);
-      // 失败请求也可能产生 timing 条目，不能将零字节失败算成下载完成。
+      // 这里只确认资源可用，不从 timing 尺寸推断下载量或缓存来源。
       if (path && !(entry.responseStatus >= 400) &&
           (entry.encodedBodySize > 0 || entry.decodedBodySize > 0 || entry.responseStatus >= 200)) finished.add(path);
     });
@@ -19,14 +19,14 @@
   function report() {
     timer = null;
     if (stopped) return;
-    if (!sizes.size) {
+    if (!resources.size) {
       var meta = document.querySelector('meta[name="weq-startup-resources"]');
       if (meta) try {
         var data = JSON.parse(meta.content);
         if (data.version === 1 && Array.isArray(data.resources) && data.resources.length <= 4096)
           data.resources.forEach(function (asset) {
             var path = codeURL(asset.path);
-            if (path && Number.isSafeInteger(asset.size) && asset.size > 0 && asset.size <= 536870912) sizes.set(path, asset.size);
+            if (path) resources.add(path);
           });
       } catch (_) {}
     }
@@ -36,13 +36,10 @@
       if (loads[path] === true) finished.add(path);
       else if (loads[path] === false) finished.delete(path);
     });
-    if (!sizes.size) return;
-    var completed = 0, loadedBytes = 0, totalBytes = 0;
-    sizes.forEach(function (size, path) {
-      totalBytes += size;
-      if (finished.has(path)) { completed++; loadedBytes += size; }
-    });
-    var value = { completed: completed, total: sizes.size, loadedBytes: loadedBytes, totalBytes: totalBytes };
+    if (!resources.size) return;
+    var completed = 0;
+    resources.forEach(function (path) { if (finished.has(path)) completed++; });
+    var value = { completed: completed, total: resources.size };
     var text = JSON.stringify(value);
     if (text === last) return;
     last = text;

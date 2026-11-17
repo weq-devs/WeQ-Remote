@@ -11,6 +11,22 @@ ANDROID = ROOT / 'apps/android/src/io/github/weqdevs/remote'
 
 
 class NativeWebSurfaceTests(unittest.TestCase):
+    def test_resource_counts_do_not_override_startup_stages_or_show_download_metrics(self):
+        ios = (ROOT / 'apps/ios/Sources/WeQRemoteApp.swift').read_text()
+        android = (ANDROID / 'MainActivity.java').read_text()
+        ios_title = ios.split('private var heroTitle:', 1)[1].split('private var heroDetail:', 1)[0]
+        android_title = android.split('private String heroTitle()', 1)[1].split('private String heroDetail()', 1)[0]
+        self.assertNotIn('webResources', ios_title)
+        self.assertNotIn('webResources', android_title)
+        self.assertIn('if let stage = loadingStage { return stage }', ios_title)
+        self.assertIn('return webLoadingStage;', android_title)
+        self.assertNotIn('.fraction', ios)
+        self.assertNotIn('DownloadRing', android)
+        for path in [ROOT / 'apps/ios/Sources', ANDROID]:
+            for source in path.glob('*'):
+                if source.suffix in ('.swift', '.java'):
+                    self.assertNotIn('正在下载网页资源', source.read_text(), str(source))
+
     def test_android_retains_activity_for_rotation_and_size_changes(self):
         android = '{http://schemas.android.com/apk/res/android}'
         manifest = ET.parse(ROOT / 'apps/android/AndroidManifest.xml')

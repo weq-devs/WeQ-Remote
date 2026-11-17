@@ -17,12 +17,18 @@ public final class RemoteInstrumentation extends Instrumentation {
     private boolean lan;
     private boolean uiOnly;
     private boolean surfacesOnly;
-    @Override public void onCreate(Bundle arguments) { super.onCreate(arguments); lan = "1".equals(arguments.getString("lan")); uiOnly = "1".equals(arguments.getString("ui")); surfacesOnly = "1".equals(arguments.getString("surfaces")); start(); }
+    private boolean resourcesOnly;
+    @Override public void onCreate(Bundle arguments) { super.onCreate(arguments); lan = "1".equals(arguments.getString("lan")); uiOnly = "1".equals(arguments.getString("ui")); surfacesOnly = "1".equals(arguments.getString("surfaces")); resourcesOnly = "1".equals(arguments.getString("resources")); start(); }
     @Override public void onStart() {
         Bundle result = new Bundle();
         MainActivity activity = null;
         try {
             String pkg = getTargetContext().getPackageName();
+            if (resourcesOnly) {
+                testResourceReadiness(pkg);
+                result.putString("stream", "PASS: resource readiness counts; no byte or percentage claims; actual startup stage retained; resources alone do not enter page\n");
+                finish(android.app.Activity.RESULT_OK, result); return;
+            }
             if (surfacesOnly) {
                 testWebSurfaces(pkg);
                 result.putString("stream", "PASS: full screen callback once; close releases surface; orientation retains Activity\n");
@@ -84,6 +90,51 @@ public final class RemoteInstrumentation extends Instrumentation {
             result.putString("stream", "FAIL: " + failure.getClass().getSimpleName() + ": " + failure.getMessage() + "\n");
             finish(android.app.Activity.RESULT_CANCELED, result);
         }
+    }
+    private java.lang.reflect.Field field(String name) throws Exception {
+        java.lang.reflect.Field field = MainActivity.class.getDeclaredField(name);
+        field.setAccessible(true);
+        return field;
+    }
+    private void testResourceReadiness(String pkg) throws Exception {
+        MainActivity activity = (MainActivity) startActivitySync(new Intent().setComponent(new ComponentName(pkg, MainActivity.class.getName())).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        try {
+            java.lang.reflect.Field paired = field("paired"), paused = field("reconnectPaused"), loaded = field("webLoaded");
+            java.lang.reflect.Field indicator = field("progress");
+            runOnMainSync(() -> {
+                try { paired.setBoolean(activity, true); paused.setBoolean(activity, true); }
+                catch (Exception failure) { throw new AssertionError(failure); }
+                activity.webView = new android.webkit.WebView(activity);
+                activity.receiveWebResources(activity.webView, new WebResourceProgress(18, 24));
+                require(activity.computerState.getText().toString().equals(WebResourceProgress.PREPARING_MESSAGE), "resource preparation title incorrect");
+            });
+            require(read(activity.detail).equals("网页资源已就绪 18 / 24 项"), "resource count incorrect");
+            require(((android.widget.ProgressBar) indicator.get(activity)).isIndeterminate(), "resource count became overall percentage");
+            waitForIdleSync();
+            android.view.accessibility.AccessibilityNodeInfo window = null;
+            long deadline = android.os.SystemClock.elapsedRealtime() + 5000;
+            while (android.os.SystemClock.elapsedRealtime() < deadline) {
+                window = getUiAutomation().getRootInActiveWindow();
+                if (window != null && pkg.contentEquals(window.getPackageName())) break;
+                Thread.sleep(100);
+            }
+            require(window != null && pkg.contentEquals(window.getPackageName()), "startup screenshot window mismatch");
+            getUiAutomation().waitForIdle(500, 5000);
+            saveScreenshot("resources-preparing.png");
+            runOnMainSync(() -> {
+                activity.receiveWebResources(activity.webView, new WebResourceProgress(24, 24));
+                require(activity.computerState.getText().toString().equals("正在初始化网页"), "complete resources claimed startup was complete");
+                activity.receiveWebStartup(activity.webView, "loading", "正在检查恢复状态");
+                activity.receiveWebResources(activity.webView, new WebResourceProgress(18, 24));
+                require(activity.computerState.getText().toString().equals("正在检查恢复状态"), "resources replaced actual startup stage");
+                activity.receiveWebResources(activity.webView, new WebResourceProgress(24, 24));
+            });
+            require(!loaded.getBoolean(activity), "resources alone entered page");
+            require(read(activity.detail).equals("网页资源已就绪 24 / 24 项"), "complete readiness count incorrect");
+            waitForIdleSync();
+            getUiAutomation().waitForIdle(500, 5000);
+            saveScreenshot("resources-restoring.png");
+        } finally { finishActivity(activity); }
     }
     private void testWebSurfaces(String pkg) throws Exception {
         MainActivity activity = (MainActivity) startActivitySync(new Intent().setComponent(new ComponentName(pkg, MainActivity.class.getName())).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));

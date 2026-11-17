@@ -53,8 +53,8 @@ private final class RemoteResourceHandler: NSObject, WKScriptMessageHandler {
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
         guard message.frameInfo.isMainFrame, let owner, let url = message.frameInfo.request.url,
               RemoteWebPolicy.sameOrigin(url, endpoint: owner.endpoint),
-              let progress = WebDownloadProgress(message: message.body) else { return }
-        owner.receiveDownload(progress)
+              let progress = WebResourceProgress(message: message.body) else { return }
+        owner.receiveResources(progress)
     }
 }
 
@@ -126,7 +126,7 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
     var onFailure: ((Error) -> Void)?
     var onLoading: (() -> Void)?
     var onProgress: ((String) -> Void)?
-    var onDownload: ((WebDownloadProgress?) -> Void)?
+    var onResources: ((WebResourceProgress?) -> Void)?
     var onMenu: (() -> Void)?
     var onConnectionFailure: (() -> Void)?
 
@@ -226,20 +226,15 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
         webView.evaluateJavaScript("if(window.weqRemoteStartup)window.webkit.messageHandlers.weqStartup.postMessage(window.weqRemoteStartup)", completionHandler: nil)
     }
 
-    func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
-        guard !closed, !startupFinished else { return }
-        onProgress?("正在下载网页资源")
-    }
-
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         navigationGeneration += 1
         cancelWebDialogs()
         nativeMedia?.stopAll()
         startupFinished = false
         startupReported = false
-        onDownload?(nil)
+        onResources?(nil)
         onLoading?()
-        onProgress?("正在下载网页资源")
+        onProgress?(WebResourceProgress.preparingMessage)
         startupTimeout?.cancel()
         startupTimeout = Task { [weak self] in
             do { try await Task.sleep(for: .seconds(45)) } catch { return }
@@ -276,11 +271,11 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
         }
     }
 
-    func receiveDownload(_ progress: WebDownloadProgress) {
+    func receiveResources(_ progress: WebResourceProgress) {
         guard !closed, !startupFinished else { return }
-        onDownload?(progress)
+        onResources?(progress)
         if !startupReported {
-            onProgress?(progress.downloading ? "正在下载网页资源" : "正在执行网页脚本")
+            onProgress?(progress.stage)
         }
     }
 
@@ -553,7 +548,7 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
         onFailure = nil
         onLoading = nil
         onProgress = nil
-        onDownload = nil
+        onResources = nil
         onMenu = nil
         onConnectionFailure = nil
         view.loadHTMLString("", baseURL: nil)
