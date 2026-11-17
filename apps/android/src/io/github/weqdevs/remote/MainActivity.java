@@ -81,6 +81,7 @@ public final class MainActivity extends Activity {
     private DownloadRing downloadRing;
     private WebDownloadProgress webDownload;
     private boolean webStartupReported;
+    private int webStartupRevision;
     private android.widget.ImageView markIcon;
     private android.view.View statusDot;
     private int accentColor, idleDotColor;
@@ -1069,6 +1070,7 @@ public final class MainActivity extends Activity {
                                 private boolean allowed(Uri url) { return "http".equals(url.getScheme()) && "127.0.0.1".equals(url.getHost()) && url.getPort() == Uri.parse(origin).getPort(); }
                                 @Override public void onPageStarted(android.webkit.WebView view, String url, android.graphics.Bitmap icon) {
                                     if (webView != page) return;
+                                    webStartupRevision++;
                                     webDownload = null; webStartupReported = false;
                                     if (!webLoaded) { webLoadingStage = "正在下载网页资源"; render(); }
                                     main.removeCallbacks(webStartupTimeout);
@@ -1145,7 +1147,13 @@ public final class MainActivity extends Activity {
     private void recordWebResourceFailure(android.webkit.WebView page, String path, int status) {
         if (webView != page || webLoaded) return;
         String problem = WebStartup.resourceProblem(path, status);
-        if (problem != null) failWebLoad(problem);
+        if (problem == null) return;
+        final int revision = webStartupRevision;
+        // 新电脑网页负责一次资源重试及最终错误；旧网页仍沿用原生失败提示。
+        page.evaluateJavascript("window.weqRemoteStartupRecovery === true", managed -> {
+            if (webView != page || webLoaded || webStartupRevision != revision) return;
+            if (!"true".equals(managed)) failWebLoad(problem);
+        });
     }
     private void showWebPage() {
         if (webLoaded) return;

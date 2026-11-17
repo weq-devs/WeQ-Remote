@@ -10,6 +10,15 @@ SOURCE = ROOT / 'apps/android/src/io/github/weqdevs/remote'
 
 
 class AndroidStartupTests(unittest.TestCase):
+    def test_resource_failure_allows_web_retry_and_ignores_stale_callbacks(self):
+        source = (SOURCE / 'MainActivity.java').read_text()
+        failure = source.split('private void recordWebResourceFailure(', 1)[1].split('private void showWebPage()', 1)[0]
+        self.assertIn('window.weqRemoteStartupRecovery === true', failure)
+        self.assertIn('webStartupRevision != revision', failure)
+        self.assertIn('if (!"true".equals(managed)) failWebLoad(problem);', failure)
+        started = source.split('@Override public void onPageStarted', 1)[1].split('@Override', 1)[0]
+        self.assertIn('webStartupRevision++;', started)
+
     def test_subscribe_before_page_finished(self):
         source = (SOURCE / 'MainActivity.java').read_text()
         committed = source.split('@Override public void onPageCommitVisible', 1)[1].split('@Override', 1)[0]
