@@ -66,7 +66,7 @@ python3 apps/ios/scripts/build_unsigned_ipa.py
 
 ## GitHub Release
 
-当前源码为 iOS / Android 1.0.1（iOS 系统版本 1.0.1、build 13，Android versionCode 11），按用户 2026-11-18 的要求执行下方正式发布流程；以下历史构建回执保留原值。
+当前源码为 iOS / Android 1.0.1（iOS 系统版本 1.0.1、build 13，Android versionCode 11），已按用户要求于 2026-11-18 正式发布；以下历史构建回执保留原值。
 
 `.github/workflows/release.yml` 只支持手动触发，且必须运行在已存在的 `vMAJOR.MINOR.PATCH` 或 `vMAJOR.MINOR.PATCHbN` 标签上（N 为不带前导零的正整数）；Beta 自动标记为 Pre-release，不替换 Latest 正式版。在分支上误触发会失败，不创建标签或发布。发布前先经用户授权提交并推送版本、文档及标签，再执行：
 
@@ -85,6 +85,18 @@ iOS 的系统版本字段只允许数字和点，Beta 完整标识放在 `Suppor
 已提供 iOS 完整未签名 App 构建入口，但不提供正式签名或安装验收。真实电脑夹具集成、摄像头扫码、公共网络 / 蜂窝切换、Keychain / Keystore 持久化与长期耗电仍按平台说明单独验收。
 
 工作流定义、本地验证、GitHub 已识别工作流、真实运行成功、可分发产物是不同状态，维护回执应分别记录。修改文件不会自动让未推送的工作流在 GitHub 上生效。
+
+## 1.0.1 发布回执（2026-11-18，北京时间）
+
+- 发布源码提交：`6d7ddca7f4f6783a24f35a9e267d99b04aaae6ce`，注释标签 `v1.0.1`。沿用 iOS build 13、Android versionCode 11，未另改版本。标签预检、11 项发布工具测试及差异检查通过。
+- [Release #44231862803](https://github.com/weq-devs/WeQ-Remote/actions/runs/44231862803) 全部成功：仓库／Java 协议、Swift 宿主机、Go 静态／竞态检查、两端构建、同轮来源／版本／摘要校验及发布通过。Android Job 用时 3 分 31 秒，iOS Job 用时 5 分 4 秒。
+- [WeQ Remote 1.0.1](https://github.com/weq-devs/WeQ-Remote/releases/tag/v1.0.1) 于 11:44:19 发布，API 确认 `draft: false`、`prerelease: false`，Latest 为 `v1.0.1`，五个附件均为 `uploaded`。
+- 下载发布附件后，汇总 SHA-256 四项、五个附件的服务端摘要及安装包 ZIP 完整性复核通过。两份来源记录均指向上述提交，`sourceDirty: false`；Android 1.0.1（versionCode 11），iOS 1.0.1（build 13）。云端完成 APK 签名／实际身份及 IPA 无签名真机 arm64 结构校验。
+- 未安装或操作手机／模拟器，未新增真实手机网络及性能验收。Android 使用本轮临时开发签名，iOS IPA 安装前仍须签名，未上架应用商店。
+
+发布 APK SHA-256：`cac454131b17c0b7171b752c715240fe3111513833b3541a985e5bf6467183b1`。
+
+发布 IPA SHA-256：`88f1b02624bd0734eb3bb7cc0300c9f6244e5d592a120d85ef4d9988e880b3cc`。
 
 ## 1.0.0 发布回执（2026-11-14，北京时间）
 

@@ -1,6 +1,6 @@
 # WeQ Remote for Android
 
-当前源码为 1.0.1（versionCode 11），正在准备 GitHub APK 正式发布。Android 8.0 / API 26 起，当前仅构建 arm64-v8a。见 [1.0.1 版本说明](../../docs/releases/1.0.1.md)，实际发布状态以 GitHub Releases 为准。
+当前源码为 1.0.1（versionCode 11），已于 2026-11-18（北京时间）发布 GitHub APK。Android 8.0 / API 26 起，当前仅构建 arm64-v8a。见 [1.0.1 版本说明](../../docs/releases/1.0.1.md)，实际发布状态以 GitHub Releases 为准。
 
 手机端仅封装电脑提供的 WeQ Web 和内嵌 TS，首页只保留扫码和链接输入。支持局域网 HTTPS 指纹配对或一次性 Auth Key 扫码入网，不占用系统 VPN。手机壳已独立仓库，协议见[协议约定](../../docs/protocol.md)，本机电脑侧用法见 [Web 与手机连接](../../../WeQ-upstream/docs/guide/remote-web.md)。
 
