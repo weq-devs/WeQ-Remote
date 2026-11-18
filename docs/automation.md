@@ -66,7 +66,7 @@ python3 apps/ios/scripts/build_unsigned_ipa.py
 
 ## GitHub Release
 
-当前源码为 iOS / Android 1.0.1（iOS 系统版本 1.0.1、build 13，Android versionCode 11），仅准备本地测试，尚未创建版本标签或推送，当前不执行下方发布流程；以下历史构建回执保留原值。
+当前源码为 iOS / Android 1.0.1（iOS 系统版本 1.0.1、build 13，Android versionCode 11），按用户 2026-11-18 的要求执行下方正式发布流程；以下历史构建回执保留原值。
 
 `.github/workflows/release.yml` 只支持手动触发，且必须运行在已存在的 `vMAJOR.MINOR.PATCH` 或 `vMAJOR.MINOR.PATCHbN` 标签上（N 为不带前导零的正整数）；Beta 自动标记为 Pre-release，不替换 Latest 正式版。在分支上误触发会失败，不创建标签或发布。发布前先经用户授权提交并推送版本、文档及标签，再执行：
 

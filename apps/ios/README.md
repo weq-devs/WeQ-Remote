@@ -1,6 +1,6 @@
 # WeQ Remote for iOS
 
-当前源码：1.0.1（build 13），仅准备本地测试，尚未创建版本标签或推送，不是 App Store / TestFlight 发布版。iOS 17 起。应用内版本、`WeQReleaseVersion` 与系统 `CFBundleShortVersionString` 均为 1.0.1。见 [1.0.1 版本说明](../../docs/releases/1.0.1.md)，实际发布状态以 GitHub Releases 为准。
+当前源码：1.0.1（build 13），正在准备 GitHub 未签名 IPA 正式发布，不是 App Store / TestFlight 发布版。iOS 17 起。应用内版本、`WeQReleaseVersion` 与系统 `CFBundleShortVersionString` 均为 1.0.1。见 [1.0.1 版本说明](../../docs/releases/1.0.1.md)，实际发布状态以 GitHub Releases 为准。
 
 薄壳结构：内嵌 TS、扫码配对和 WKWebView，业务界面复用电脑提供的 WeQ Web。手机壳已独立于 WeQ 仓库；构建不依赖桌面源码，协议边界见[协议约定](../../docs/protocol.md)，本机电脑侧用法见 [Web 与手机连接](../../../WeQ-upstream/docs/guide/remote-web.md)。
 
