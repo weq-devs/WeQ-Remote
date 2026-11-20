@@ -10,16 +10,23 @@ import android.view.View;
 /** 清单字节权重表示资源加载比例，不表示本次网络下载比例。 */
 final class DownloadRing extends View {
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final RectF bounds = new RectF();
     private final int accent;
     private WebDownloadProgress progress;
     DownloadRing(Context context, int accent) { super(context); this.accent = accent; setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_NO); }
-    void update(WebDownloadProgress value) { progress = value; invalidate(); }
+    void update(WebDownloadProgress value) {
+        boolean redraw = progress == null || value == null
+            ? progress != value
+            : progress.fraction() != value.fraction();
+        progress = value;
+        if (redraw) invalidate();
+    }
     @Override protected void onDraw(Canvas canvas) {
         super.onDraw(canvas);
         float density = getResources().getDisplayMetrics().density;
         float stroke = progress == null ? density : 4 * density;
         float inset = stroke / 2;
-        RectF bounds = new RectF(inset, inset, getWidth() - inset, getHeight() - inset);
+        bounds.set(inset, inset, getWidth() - inset, getHeight() - inset);
         paint.setStyle(Paint.Style.STROKE); paint.setStrokeWidth(stroke);
         paint.setColor(Color.argb(41, Color.red(accent), Color.green(accent), Color.blue(accent)));
         canvas.drawOval(bounds, paint);

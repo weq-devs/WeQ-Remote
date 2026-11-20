@@ -4,6 +4,8 @@ WeQ 的独立手机连接客户端。iOS 与 Android 负责扫码、连接、凭
 
 当前源码：iOS / Android 1.0.1，iOS build 13、Android versionCode 11。版本说明见 [1.0.1](docs/releases/1.0.1.md)。源码仓库：[weq-devs/WeQ-Remote](https://github.com/weq-devs/WeQ-Remote)（公开，默认分支 `dev`）。
 
+Android 开发源码将连接页的资源进度更新合并到绘制帧，并减少重复的文本布局和进度环重绘。此项需要重新构建、安装 Android App。
+
 最近发布版本为 1.0.1（iOS build 13、Android versionCode 11），已于 2026-11-18（北京时间）发布为 GitHub 正式版并设为 Latest，未上架应用商店。已发布安装包见 [GitHub Release](https://github.com/weq-devs/WeQ-Remote/releases/tag/v1.0.1)。
 
 1.0.1 汇总启动资源进度与缓存来源显示修正，并让 Android 配合新版电脑网页完成首屏资源的一次自动重试。本轮已发布 Android arm64 APK 与 iOS 真机 arm64 未签名 IPA。

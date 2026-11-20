@@ -46,6 +46,7 @@ public final class MainActivity extends Activity {
     private Invitation enrolling;
     private long enrollmentDeadline;
     private View setupView;
+    private boolean setupProgressFramePending;
     android.webkit.WebView webView;
     private WebFeatures webFeatures;
     TextView networkState, computerState, detail, error, codeView, statusPill;
@@ -322,7 +323,7 @@ public final class MainActivity extends Activity {
         statusChip.setPadding(dp(12), dp(6), dp(12), dp(6));
         statusChip.setBackground(background(card, border, dp(100)));
         statusDot = new android.view.View(this);
-        statusDot.setBackground(oval(muted));
+        statusDot.setBackground(oval(idleDotColor));
         statusChip.addView(statusDot, new LinearLayout.LayoutParams(dp(6), dp(6)));
         statusPill = text("未连接", 12);
         statusPill.setTextColor(muted);
@@ -527,6 +528,20 @@ public final class MainActivity extends Activity {
     }
     private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
 
+    private static void setTextIfChanged(TextView view, String text) {
+        if (!android.text.TextUtils.equals(view.getText(), text)) view.setText(text);
+    }
+
+    private void renderSetupProgress() {
+        if (setupProgressFramePending) return;
+        setupProgressFramePending = true;
+        // 网页资源可以连续上报，同一帧只绘制最后一次进度。
+        android.view.Choreographer.getInstance().postFrameCallback(frameTime -> {
+            setupProgressFramePending = false;
+            if (!webLoaded && !isDestroyed() && !isFinishing()) render();
+        });
+    }
+
     private void render() {
         boolean loading = busy || claimID != null || (paired && !webLoaded);
         boolean canPair = claimID == null && !rememberedComputer && !paired;
@@ -543,14 +558,17 @@ public final class MainActivity extends Activity {
         connectionActions.setVisibility(paired || rememberedComputer || loading ? View.VISIBLE : View.GONE);
         updateButton.setVisibility(rememberedComputer ? View.VISIBLE : View.GONE);
         retryButton.setVisibility(rememberedComputer || loading ? View.VISIBLE : View.GONE);
-        retryButton.setText(isConnecting() ? "停止" : "连接");
+        setTextIfChanged(retryButton, isConnecting() ? "停止" : "连接");
         retryButton.setEnabled(true);
         disconnectButton.setVisibility(paired || claimID != null || rememberedComputer ? View.VISIBLE : View.GONE);
         codeView.setVisibility(claimID != null ? View.VISIBLE : View.GONE);
-        statusPill.setText(statusText());
-        statusDot.setBackground(oval(statusText().equals("未连接") ? idleDotColor : accentColor));
-        computerState.setText(heroTitle());
-        detail.setText(heroDetail());
+        String status = statusText();
+        if (!android.text.TextUtils.equals(statusPill.getText(), status)) {
+            statusPill.setText(status);
+            ((GradientDrawable) statusDot.getBackground()).setColor(status.equals("未连接") ? idleDotColor : accentColor);
+        }
+        setTextIfChanged(computerState, heroTitle());
+        setTextIfChanged(detail, heroDetail());
         detail.setVisibility(detail.length() > 0 ? View.VISIBLE : View.GONE);
     }
 
@@ -1128,7 +1146,7 @@ public final class MainActivity extends Activity {
         webStartupReported = true;
         if ("loading".equals(state)) {
             webLoadingStage = message == null || message.isEmpty() ? "正在初始化 WeQ 页面" : message.substring(0, Math.min(message.length(), 100));
-            render();
+            renderSetupProgress();
         } else if ("ready".equals(state) || "action-required".equals(state)) showWebPage();
         else if ("error".equals(state)) failWebLoad(message == null || message.isEmpty() ? "WeQ 页面启动失败，请重试。" : message.substring(0, Math.min(message.length(), 500)));
     }
@@ -1136,7 +1154,7 @@ public final class MainActivity extends Activity {
         if (webView != page || webLoaded) return;
         webDownload = value;
         if (!webStartupReported) webLoadingStage = value.stage();
-        render();
+        renderSetupProgress();
     }
     void recordWebConsoleFailure(android.webkit.WebView page, String message) {
         if (webView != page || webLoaded) return;
