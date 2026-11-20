@@ -3,7 +3,8 @@ import io
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import call, patch
+from urllib.error import HTTPError
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -52,6 +53,22 @@ class AndroidDependenciesTests(unittest.TestCase):
                 with self.assertRaises(TimeoutError):
                     dependencies.ensure_zxing(root)
             self.assertEqual(list(root.iterdir()), [])
+
+    def test_rate_limit_uses_alternate_central_endpoint(self):
+        digest = 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad'
+        rate_limit_body = io.BytesIO(b'Too Many Requests')
+        limited = HTTPError(dependencies.ZXING_URL, 429, 'Too Many Requests', {}, rate_limit_body)
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(dependencies, 'ZXING_HASH', digest), patch.object(
+                dependencies.urllib.request, 'urlopen', side_effect=[limited, io.BytesIO(b'abc')]
+            ) as download:
+                target = dependencies.ensure_zxing(Path(directory))
+            self.assertEqual(download.call_args_list, [
+                call(dependencies.ZXING_URL, timeout=60),
+                call(dependencies.ZXING_FALLBACK_URL, timeout=60),
+            ])
+            self.assertTrue(rate_limit_body.closed)
+            self.assertEqual(target.read_bytes(), b'abc')
 
     def test_concurrent_cache_is_verified_and_never_overwritten(self):
         digest = 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad'

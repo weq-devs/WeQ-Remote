@@ -73,7 +73,7 @@ class ConnectionLayoutTests(unittest.TestCase):
         self.assertIn('updatingConnection = true; verify()', update)
         self.assertNotIn('claim(link)', update)
         self.assertNotIn('ConnectionStore.delete', update)
-        self.assertIn('retryButton.setText(isConnecting() ? "停止" : "连接")', android)
+        self.assertIn('setTextIfChanged(retryButton, isConnecting() ? "停止" : "连接")', android)
         self.assertIn('if (isConnecting()) { reconnectPaused = true; stopNetwork(true); }', android)
 
     @unittest.skipUnless(shutil.which('javac') and shutil.which('java'), '需要 JDK')

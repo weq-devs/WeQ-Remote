@@ -35,7 +35,7 @@ gh workflow run android-build.yml --ref dev -f build_test_apk=true
 
 - 所有 Action 固定到完整提交 SHA，版本注释放在同一行；Dependabot 仅对 GitHub Actions 每周检查并向 `dev` 提出更新 PR，不自动合并、不自动升级协议依赖。
 - CI 和构建 Job 的 `GITHUB_TOKEN` 仅有 `contents: read`；Release 的发布 Job 单独授予 `contents: write` 与 `actions: read`。checkout 不持久保存凭据。工作流不引用仓库 Secrets，不使用 `pull_request_target`、自托管 runner 或个人机器路径。
-- ZXing 仅从固定 Maven Central 地址下载，版本为 3.5.3，最大 1 MiB；SHA-256 校验成功后原子保存。已有缓存损坏即失败，不覆盖或信任损坏文件。
+- ZXing 3.5.3 从固定 Maven Central 地址下载。首选地址返回 HTTP 429 时改用同一制品的备用 Central 地址。两处下载均限制为 1 MiB，SHA-256 校验成功后原子保存。已有缓存损坏即失败，不覆盖原文件。
 - 手动 APK 工作流的真实执行结果见下方验收回执；本地语法 / 单测通过不等于云端构建已运行成功。
 
 ## 手动 iOS 未签名 IPA
