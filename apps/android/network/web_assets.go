@@ -14,6 +14,7 @@ import (
 const webAssetBudget = 12 << 20
 const webAssetLimit = 8 << 20
 const webAssetEntryLimit = 256
+const webAssetWriteBatch = 16
 
 var hashedWebCode = regexp.MustCompile(`^/assets/[^/]+-[A-Za-z0-9_-]{8,}\.(js|css)$`)
 
@@ -23,12 +24,23 @@ type webAsset struct {
 }
 
 type webAssetCache struct {
-	mu        sync.Mutex
-	entries   map[string]webAsset
-	size      int
-	directory string
-	disabled  bool
+	mu           sync.Mutex
+	entries      map[string]webAsset
+	size         int
+	directory    string
+	disabled     bool
+	pending      []webAssetWrite
+	pendingBytes int
+	writing      bool
 }
+
+type webAssetWrite struct {
+	key   string
+	asset webAsset
+}
+
+// 磁盘写入、淘汰与清空顺序执行；内存读取和文件读取都不等待写盘。
+var webAssetDiskWrites sync.Mutex
 
 var sharedWebAssets struct {
 	sync.Mutex
@@ -37,18 +49,16 @@ var sharedWebAssets struct {
 	directory string
 }
 
-// ClearWebCache 删除应用内存中的代码资源；不持久保存授权或业务数据。
+// ClearWebCache 清空内存和磁盘中的代码资源，包括尚未开始的写入。
 func ClearWebCache() {
 	sharedWebAssets.Lock()
 	defer sharedWebAssets.Unlock()
 	if cache := sharedWebAssets.cache; cache != nil {
-		cache.mu.Lock()
-		cache.disabled = true
-		cache.entries = make(map[string]webAsset)
-		cache.size = 0
-		cache.mu.Unlock()
+		cache.disable()
 	}
+	webAssetDiskWrites.Lock()
 	clearWebAssetFiles(sharedWebAssets.directory)
+	webAssetDiskWrites.Unlock()
 	sharedWebAssets.cache = nil
 	sharedWebAssets.identity = [32]byte{}
 }
@@ -67,11 +77,7 @@ func cachedWebTransport(base http.RoundTripper, endpoint, token string) http.Rou
 	defer sharedWebAssets.Unlock()
 	if sharedWebAssets.cache == nil || sharedWebAssets.identity != identity {
 		if old := sharedWebAssets.cache; old != nil {
-			old.mu.Lock()
-			old.disabled = true
-			old.entries = make(map[string]webAsset)
-			old.size = 0
-			old.mu.Unlock()
+			old.disable()
 		}
 		sharedWebAssets.cache = &webAssetCache{entries: make(map[string]webAsset), directory: webAssetDirectory(sharedWebAssets.directory, identity)}
 		sharedWebAssets.identity = identity
@@ -84,12 +90,7 @@ func (t *webAssetTransport) RoundTrip(req *http.Request) (*http.Response, error)
 		return t.base.RoundTrip(req)
 	}
 	key := req.URL.RequestURI() + "\n" + req.Header.Get("Accept-Encoding")
-	t.cache.mu.Lock()
-	asset, found := t.cache.entries[key]
-	if !found && !t.cache.disabled {
-		asset, found = readWebAsset(t.cache.directory, key)
-	}
-	t.cache.mu.Unlock()
+	asset, found := t.cache.load(key)
 	if found {
 		header := asset.header.Clone()
 		if header == nil {
@@ -169,6 +170,42 @@ func (b *cachingWebBody) Read(p []byte) (int, error) {
 
 func (b *cachingWebBody) Close() error { b.failed = true; return b.source.Close() }
 
+func (c *webAssetCache) disable() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.disabled = true
+	c.entries = nil
+	c.size = 0
+	c.pending = nil
+	c.pendingBytes = 0
+}
+
+func (c *webAssetCache) load(key string) (webAsset, bool) {
+	c.mu.Lock()
+	asset, found := c.entries[key]
+	directory := c.directory
+	disabled := c.disabled
+	c.mu.Unlock()
+	if found || disabled || directory == "" {
+		return asset, found
+	}
+
+	asset, found = readWebAsset(directory, key)
+	if !found {
+		return webAsset{}, false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.disabled {
+		return webAsset{}, false
+	}
+	if existing, exists := c.entries[key]; exists {
+		return existing, true
+	}
+	c.remember(key, asset)
+	return asset, true
+}
+
 func (c *webAssetCache) put(key string, asset webAsset) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -178,11 +215,64 @@ func (c *webAssetCache) put(key string, asset webAsset) {
 	if _, exists := c.entries[key]; exists {
 		return
 	}
+	c.remember(key, asset)
+	if c.directory == "" || c.pendingBytes+len(asset.body) > webAssetBudget ||
+		len(c.pending) >= webAssetEntryLimit {
+		return
+	}
+	c.pending = append(c.pending, webAssetWrite{key: key, asset: asset})
+	c.pendingBytes += len(asset.body)
+	if !c.writing {
+		c.writing = true
+		go c.persist()
+	}
+}
+
+// 调用方持有 c.mu。
+func (c *webAssetCache) remember(key string, asset webAsset) {
 	if c.size+len(asset.body) > webAssetBudget || len(c.entries) >= webAssetEntryLimit {
 		c.entries = make(map[string]webAsset)
 		c.size = 0
 	}
 	c.entries[key] = asset
 	c.size += len(asset.body)
-	writeWebAsset(c.directory, key, asset)
+}
+
+func (c *webAssetCache) persist() {
+	for {
+		// 先等上一批磁盘操作，再一次取走已收到的资源，避免每个文件都扫描缓存目录。
+		webAssetDiskWrites.Lock()
+		c.mu.Lock()
+		count := min(len(c.pending), webAssetWriteBatch)
+		if count == 0 {
+			c.pending = nil
+			c.writing = false
+			c.mu.Unlock()
+			webAssetDiskWrites.Unlock()
+			return
+		}
+		batch := c.pending[:count:count]
+		// 批次与待写队列使用互不重叠的槽位。
+		c.pending = c.pending[count:]
+		c.mu.Unlock()
+
+		size := 0
+		changed := false
+		for _, entry := range batch {
+			size += len(entry.asset.body)
+			if writeWebAsset(c.directory, entry.key, entry.asset) {
+				changed = true
+			}
+		}
+		if changed {
+			pruneWebAssetFiles(c.directory)
+		}
+		clear(batch)
+		c.mu.Lock()
+		if !c.disabled {
+			c.pendingBytes -= size
+		}
+		c.mu.Unlock()
+		webAssetDiskWrites.Unlock()
+	}
 }

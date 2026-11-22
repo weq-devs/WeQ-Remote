@@ -63,6 +63,8 @@ func TestCodeCacheSurvivesProcessMemoryAndRejectsPartialClose(t *testing.T) {
 	second, _ := open().RoundTrip(request)
 	_, _ = io.Copy(io.Discard, second.Body)
 	_ = second.Body.Close()
+	key := request.URL.RequestURI() + "\n"
+	waitForWebAsset(t, directory, key)
 	third, _ := open().RoundTrip(request)
 	if got := third.Header.Get("Server-Timing"); !strings.Contains(got, `weq-remote-source;desc="cache"`) {
 		t.Fatalf("native cache hit not exposed to WebView: %q", got)
@@ -82,8 +84,95 @@ func TestCodeCacheSurvivesProcessMemoryAndRejectsPartialClose(t *testing.T) {
 	res, _ := open().RoundTrip(request)
 	_, _ = io.Copy(io.Discard, res.Body)
 	_ = res.Body.Close()
+	waitForWebAsset(t, directory, key)
 	if calls != 3 {
 		t.Fatal("corrupt entry prevented refetch")
+	}
+}
+
+func waitForWebAsset(t *testing.T, directory, key string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, ok := readWebAsset(directory, key); ok {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("complete asset was not persisted")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestWebAssetResponseEOFAndMemoryHitDoNotWaitForDisk(t *testing.T) {
+	directory := t.TempDir()
+	cache := &webAssetCache{entries: make(map[string]webAsset), directory: directory}
+	request, _ := http.NewRequest("GET", "http://100.64.0.1:7691/assets/index-Abcd1234.js", nil)
+	key := request.URL.RequestURI() + "\n"
+	result := make(chan error, 1)
+
+	webAssetDiskWrites.Lock()
+	go func() {
+		body := &cachingWebBody{
+			source: io.NopCloser(strings.NewReader("synthetic")), cache: cache, key: key, expected: 9,
+		}
+		_, err := io.Copy(io.Discard, body)
+		_ = body.Close()
+		if asset, ok := cache.load(key); !ok || string(asset.body) != "synthetic" {
+			err = errors.New("complete response was unavailable in memory")
+		}
+		result <- err
+	}()
+	select {
+	case err := <-result:
+		webAssetDiskWrites.Unlock()
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		webAssetDiskWrites.Unlock()
+		t.Fatal("response completion or cache lookup waited for disk")
+	}
+	waitForWebAsset(t, directory, key)
+}
+
+func TestClearWebCacheCancelsQueuedPersistence(t *testing.T) {
+	directory := t.TempDir()
+	if err := SetWebCacheDirectory(directory); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ClearWebCache()
+		sharedWebAssets.Lock()
+		sharedWebAssets.directory = ""
+		sharedWebAssets.Unlock()
+	})
+	transport := cachedWebTransport(nil, "http://100.64.0.1:7691", strings.Repeat("a", 64))
+	cache := transport.(*webAssetTransport).cache
+	webAssetDiskWrites.Lock()
+	cache.put("pending", webAsset{body: []byte("synthetic")})
+	cleared := make(chan struct{})
+	go func() {
+		ClearWebCache()
+		close(cleared)
+	}()
+	deadline := time.Now().Add(time.Second)
+	for {
+		cache.mu.Lock()
+		cancelled := cache.disabled && len(cache.pending) == 0
+		cache.mu.Unlock()
+		if cancelled || time.Now().After(deadline) {
+			webAssetDiskWrites.Unlock()
+			if !cancelled {
+				t.Fatal("clear waited for disk before dropping queued writes")
+			}
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	<-cleared
+	if _, err := os.Stat(directory); !os.IsNotExist(err) {
+		t.Fatalf("cleared cache directory still exists: %v", err)
 	}
 }
 

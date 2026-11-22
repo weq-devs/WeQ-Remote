@@ -71,31 +71,29 @@ func readWebAsset(directory, key string) (webAsset, bool) {
 	return webAsset{header: entry.Header, body: entry.Body}, true
 }
 
-func writeWebAsset(directory, key string, asset webAsset) {
-	if directory == "" {
-		return
-	}
+func writeWebAsset(directory, key string, asset webAsset) bool {
 	if os.MkdirAll(directory, 0700) != nil {
-		return
+		return false
 	}
 	digest := sha256.Sum256(asset.body)
 	data, err := json.Marshal(diskWebAsset{Header: asset.header, Body: asset.body, Digest: hex.EncodeToString(digest[:])})
 	if err != nil {
-		return
+		return false
 	}
 	file, err := os.CreateTemp(directory, ".writing-")
 	if err != nil {
-		return
+		return false
 	}
 	name := file.Name()
 	defer os.Remove(name)
 	if _, err = file.Write(data); err != nil {
 		_ = file.Close()
-		return
+		return false
 	}
-	if file.Close() != nil || os.Rename(name, assetFile(directory, key)) != nil {
-		return
-	}
+	return file.Close() == nil && os.Rename(name, assetFile(directory, key)) == nil
+}
+
+func pruneWebAssetFiles(directory string) {
 	// 按所有电脑／授权分区一起控制磁盘用量，淘汰较旧的代码版本。
 	root := filepath.Dir(directory)
 	var files []struct {
@@ -113,6 +111,9 @@ func writeWebAsset(directory, key string, asset webAsset) {
 		}
 		return nil
 	})
+	if size <= webAssetDiskBudget {
+		return
+	}
 	sort.Slice(files, func(i, j int) bool { return files[i].info.ModTime().Before(files[j].info.ModTime()) })
 	for _, entry := range files {
 		if size <= webAssetDiskBudget {

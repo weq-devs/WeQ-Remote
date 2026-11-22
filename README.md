@@ -6,6 +6,8 @@ WeQ 的独立手机连接客户端。iOS 与 Android 负责扫码、连接、凭
 
 Android 开发源码将连接页的资源进度更新合并到绘制帧，并减少重复的文本布局和进度环重绘。此项需要重新构建、安装 Android App。
 
+Android 开发源码将网页 JS/CSS 的磁盘缓存写入移到有界后台队列，磁盘命中后复用内存副本。WebView 可直接读完资源响应，下次打开时缺失的资源照常下载。此项需要更新 Android App。
+
 最近发布版本为 1.0.1（iOS build 13、Android versionCode 11），已于 2026-11-18（北京时间）发布为 GitHub 正式版并设为 Latest，未上架应用商店。已发布安装包见 [GitHub Release](https://github.com/weq-devs/WeQ-Remote/releases/tag/v1.0.1)。
 
 1.0.1 汇总启动资源进度与缓存来源显示修正，并让 Android 配合新版电脑网页完成首屏资源的一次自动重试。本轮已发布 Android arm64 APK 与 iOS 真机 arm64 未签名 IPA。
