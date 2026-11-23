@@ -65,15 +65,15 @@
 ## 手机本机 Web 启动
 
 - 两端为已配对授权提供带本机 Cookie 的固定环回来源。已缓存完整首屏时先启动同一个 WebView，授权验证及选路同时进行。核验成功后原来源转发业务 HTTP／WebSocket，换路保留原来源及其 IndexedDB。明确撤销时按原连接流程退出并清理代码缓存。
-- WeQRemote 用户代理收到的 HTML 含 weq-remote-offline 标记时，手机按正式 weq-startup-resources 或打包开发 weq-offline-bundle 下载首屏代码和主题脚本。已持有的同名哈希分包直接复用。更新下载完整后原子切换本机网页，下载失败继续提供上一套。网页从本机 /_weq-remote-local/release 读取更新状态；网页就绪后可自动切换，并沿用页面、草稿和阅读状态的现有恢复入口。
+- WeQRemote 用户代理收到的 HTML 含 weq-remote-offline 标记时，手机优先按 `weq-offline-bundle` 下载完整离线工作区和主题脚本，旧电脑沿用 `weq-startup-resources`。首次无完整离线包且清单给出 `waitForWorkspace: true` 时，网关等网页进入账号后通过 `GET /_weq-remote-local/release?workspace=1` 启动后台准备。已有离线包继续在连接后自动检查更新。已持有的同名哈希分包直接复用。更新下载完整后原子切换本机网页，下载失败继续提供上一套。网页从本机 /_weq-remote-local/release 读取更新状态；网页就绪后可自动切换，并沿用页面、草稿和阅读状态的现有恢复入口。
 - 在同一授权和选路下，前台浏览和后台离线包共用可缓存的同编码哈希分包。WebView 边接收边读取，离线包取得完整且有效的正文后才发布。打包开发版的 private immutable 分包只在当前选路的内存中共享传输，完整离线包仍按原规则发布。
 - Web 启动只额外记住账号和数据源标识与启动页设置，目录、消息及头像沿用原业务缓存。后台使用 startup.snapshot 核对账号与数据源，失败时保留缩略图和完整正文的已有缓存。核对完成前业务 RPC 继续等待连接；撤销、主动退出账号、启用隐私模式或应用锁会结束相应的缓存启动资格。无完整网页或无已缓存工作区时沿用在线启动。
 
 ## 首屏资源进度
 
-- 电脑识别 `WeQRemote` User-Agent，在 HTML 的 `meta[name="weq-startup-resources"]` 中附带 JSON `{version:1,resources:[{path:"/assets/name-hash.js",size:1234}]}`。正式构建覆盖入口、主工作区及默认首页的同源静态 JS/CSS 依赖，去重后逐项给出本次压缩协商下的响应体大小。旧正式构建继续只统计 HTML 引用或 modulepreload 的资源。
+- 电脑识别 `WeQRemote` User-Agent，在 HTML 的 `meta[name="weq-startup-resources"]` 中附带 JSON `{version:1,resources:[{path:"/assets/name-hash.js",size:1234}]}`。正式构建按 HTML 入口的同源静态 JS/CSS 依赖去重，逐项给出本次压缩协商下的响应体大小。工作区专用代码单列于离线清单。
 - 新版电脑在构建时生成 `weq-startup.json`，保存首屏依赖及原始／gzip 大小；匹配当前 HTML 后复用，不在连接时重复压缩计算。缺少、过期或无效清单时兼容原有现场计算路径。同一份构建在电脑内存复用，HTML 更新后重新读取；手机不为清单增加请求，普通浏览器不附加清单。
-- 新版电脑为主工作区 JS 注入 `modulepreload`，为其 CSS 注入 `preload as=style`；在恢复检查前准备必需资源，预载本身不提前执行工作区或应用其样式。手机沿用已有资源完成回执和缓存，不重复下载。实际账号和恢复检查仍由现有接口完成，不把资源加载当作账号已就绪。
+- 恢复检查和账号选择无需加载聊天工作区专用分包。进入已打开账号后，工作区加载与账号初始化并行。实际账号和恢复检查仍由现有接口完成。
 - 电脑在资源标签之前记录真实 `load/error`，通过 `window.weqRemoteResourceLoads` 保存每个资源的完成／失败结果，并发送 `weq-remote-resource-load`；手机结合该回执与 Resource Timing 补读早到资源，避免 WebKit 内存缓存 timing 尺寸为零或 Android 桥接稍晚造成漏记。
 - 手机圆环继续采用已完成资源的清单字节数／清单总字节数，明确标为「资源加载」，保留字节数、百分比和资源项数。缓存命中计入加载权重，不称为下载量；每个资源完成后累计，100 毫秒内合并更新，不虚构在途字节数。失败不计完成，重复回执不重复累计。
 - 打包热更新页通过同一个清单提供首批资源百分比。每次开发构建把入口及静态 JS/CSS 依赖的原始字节数写入同一份 HTML，后续动态分包继续按需加载。圆环复用现有资源桥，确认下载量仍取实际编码字节。首批资源加载完成后继续显示安装包现有的初始化阶段。

@@ -147,3 +147,75 @@ func TestReleaseStartsOfflineAndSwitchesOnlyAfterCompleteUpdate(t *testing.T) {
 		t.Fatalf("unchanged chunk downloaded %d times", n)
 	}
 }
+
+func TestFirstOfflineReleaseWaitsForWorkspace(t *testing.T) {
+	if err := SetWebCacheDirectory(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ClearWebCache()
+		sharedWebAssets.Lock()
+		sharedWebAssets.directory = ""
+		sharedWebAssets.Unlock()
+	})
+	const asset = "/assets/main-H1234567.js"
+	var codeRequests atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/":
+			w.Header().Set("Content-Type", "text/html")
+			fmt.Fprintf(w, `<html><head>%s<meta name="weq-offline-bundle" content='{"version":1,"waitForWorkspace":true,"resources":[{"path":"%s"}]}'></head></html>`, offlineMarker, asset)
+		case asset, "/startup-theme.js":
+			w.Header().Set("Content-Type", "text/javascript")
+			codeRequests.Add(1)
+			fmt.Fprintln(w, "/* cached code */")
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer upstream.Close()
+
+	token, secret := strings.Repeat("a", 64), strings.Repeat("b", 64)
+	gateway, err := Open(token, secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer gateway.Close()
+	target, _ := url.Parse(upstream.URL)
+	gateway.Attach(target, &http.Transport{})
+	wait := func(match func() bool) {
+		t.Helper()
+		deadline := time.Now().Add(4 * time.Second)
+		for time.Now().Before(deadline) {
+			if match() {
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		t.Fatal("release did not reach expected state")
+	}
+	wait(func() bool {
+		gateway.releaseMu.Lock()
+		defer gateway.releaseMu.Unlock()
+		return gateway.waitingWorkspace
+	})
+	gateway.checkRelease(false)
+	if n := codeRequests.Load(); n != 0 || gateway.HasRelease() {
+		t.Fatalf("account selection downloaded %d offline resources", n)
+	}
+
+	req, _ := http.NewRequest(http.MethodGet, gateway.Origin()+updatePath+"?workspace=1", nil)
+	req.AddCookie(&http.Cookie{Name: "weq_remote_local", Value: secret})
+	response, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("workspace notification: HTTP %d", response.StatusCode)
+	}
+	wait(gateway.HasRelease)
+	if n := codeRequests.Load(); n != 2 {
+		t.Fatalf("opening workspace downloaded %d resources, want asset and theme", n)
+	}
+}

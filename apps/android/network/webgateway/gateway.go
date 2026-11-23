@@ -34,6 +34,8 @@ type Gateway struct {
 	releaseMu        sync.Mutex
 	lastReleaseRoute chan struct{}
 	lastReleaseCheck time.Time
+	workspaceSeen    atomic.Bool
+	waitingWorkspace bool // protected by releaseMu
 }
 
 func Open(token, secret string) (*Gateway, error) {

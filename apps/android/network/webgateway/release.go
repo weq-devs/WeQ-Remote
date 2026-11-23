@@ -76,7 +76,10 @@ func (g *Gateway) serveRelease(w http.ResponseWriter, r *http.Request) bool {
 		w.Header().Set("Content-Type", "text/plain")
 		w.Header().Set("X-WeQ-Local-Release", "1")
 		_, _ = io.WriteString(w, version)
-		go g.checkRelease()
+		if r.Method == http.MethodGet {
+			entered := r.URL.Query().Get("workspace") == "1" && g.workspaceSeen.CompareAndSwap(false, true)
+			go g.checkRelease(entered)
+		}
 		return true
 	case version == "":
 		return false
@@ -145,20 +148,20 @@ func (g *Gateway) serveRelease(w http.ResponseWriter, r *http.Request) bool {
 	return true
 }
 
-func (g *Gateway) checkRelease() {
+func (g *Gateway) checkRelease(entered bool) {
 	g.mu.Lock()
 	target, transport, code, done := g.target, g.assets, g.code, g.routeDone
 	g.mu.Unlock()
 	if target != nil {
-		g.refreshRelease(target, transport, code, done, false)
+		g.refreshRelease(target, transport, code, done, entered)
 	}
 }
 
-func (g *Gateway) refreshRelease(target *url.URL, transport *http.Transport, code *webAssetTransport, routeDone chan struct{}, attach bool) {
+func (g *Gateway) refreshRelease(target *url.URL, transport *http.Transport, code *webAssetTransport, routeDone chan struct{}, wait bool) {
 	if g.releases == "" || transport == nil {
 		return
 	}
-	if attach {
+	if wait {
 		g.releaseMu.Lock()
 	} else if !g.releaseMu.TryLock() {
 		return
@@ -169,10 +172,17 @@ func (g *Gateway) refreshRelease(target *url.URL, transport *http.Transport, cod
 		return
 	default:
 	}
-	if g.lastReleaseRoute == routeDone && time.Since(g.lastReleaseCheck) < 15*time.Second {
-		return
+	if g.lastReleaseRoute == routeDone {
+		if g.waitingWorkspace {
+			if !g.workspaceSeen.Load() {
+				return
+			}
+		} else if time.Since(g.lastReleaseCheck) < 15*time.Second {
+			return
+		}
 	}
 	g.lastReleaseRoute, g.lastReleaseCheck = routeDone, time.Now()
+	g.waitingWorkspace = false
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	go func() {
@@ -230,8 +240,9 @@ func (g *Gateway) refreshRelease(target *url.URL, transport *http.Transport, cod
 		return
 	}
 	var manifest struct {
-		Version   int
-		Resources []struct{ Path string }
+		Version          int
+		WaitForWorkspace bool
+		Resources        []struct{ Path string }
 	}
 	match := offlineManifest.FindSubmatch(shell)
 	if match == nil {
@@ -245,6 +256,10 @@ func (g *Gateway) refreshRelease(target *url.URL, transport *http.Transport, cod
 	version := hex.EncodeToString(digest[:])
 	previous := g.release()
 	if version == previous {
+		return
+	}
+	if previous == "" && manifest.WaitForWorkspace && !g.workspaceSeen.Load() {
+		g.waitingWorkspace = true
 		return
 	}
 	if os.MkdirAll(g.releases, 0700) != nil {
