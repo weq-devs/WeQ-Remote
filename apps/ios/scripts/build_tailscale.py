@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""从校验过的固定源码构建真机 arm64 TailscaleKit，不使用私人项目。"""
+"""从校验过的固定源码构建带共用网页入口的 arm64 TailscaleKit。"""
+import argparse
 import hashlib
 import json
 import os
@@ -80,16 +81,25 @@ def directory_digest(root):
     return digest.hexdigest()
 
 
-def build_framework():
+def build_framework(simulator=False):
     lock = json.loads((SUPPORT / 'tailscale-dependency.json').read_text())
     go_version = (SUPPORT / '.go-version').read_text().strip()
     if capture(['go', 'env', 'GOVERSION']) != 'go' + go_version:
         raise ValueError('Use the Go version in apps/ios/Support/.go-version')
-    toolchain = {'xcode': capture(['xcodebuild', '-version']),
-                 'go': go_version, 'sdk': capture(['xcrun', '--sdk', 'iphoneos', '--show-sdk-version'])}
+    sdk = 'iphonesimulator' if simulator else 'iphoneos'
+    scheme = 'TailscaleKit (Simulator)' if simulator else 'TailscaleKit (iOS)'
+    destination = 'generic/platform=iOS Simulator' if simulator else 'generic/platform=iOS'
+    archive_name = 'libtailscale_ios_sim.a' if simulator else 'libtailscale_ios.a'
+    target = 'arm64-apple-ios17.0-simulator' if simulator else 'arm64-apple-ios17.0'
+    toolchain = {'xcode': capture(['xcodebuild', '-version']), 'go': go_version,
+                 'platform': sdk, 'sdk': capture(['xcrun', '--sdk', sdk, '--show-sdk-version'])}
     patch = SUPPORT / 'tailscale-privacy.patch'
+    gateway = ROOT.parent / 'android/network/webgateway'
+    gateway_files = [path for path in sorted(gateway.glob('*.go')) if not path.name.endswith('_test.go')]
+    bridge = [SUPPORT / name for name in ('webgateway.go', 'webgateway.h')]
     inputs = {'dependency': lock, 'patchSHA256': sha256(patch), 'toolchain': toolchain,
-              'builderSHA256': sha256(Path(__file__))}
+              'builderSHA256': sha256(Path(__file__)),
+              'webGateway': {path.name: sha256(path) for path in gateway_files + bridge}}
     fingerprint = hashlib.sha256(json.dumps(inputs, sort_keys=True).encode()).hexdigest()
     build = ROOT / '.build/tailscale'
     build.mkdir(parents=True, exist_ok=True)
@@ -128,23 +138,30 @@ def build_framework():
         source.mkdir()
         extract_source(archive, source, lock['revision'])
         run(['patch', '--batch', '--fuzz=0', '-p1', '-i', patch], cwd=source)
+        (source / 'webgateway').mkdir()
+        for path in gateway_files:
+            shutil.copyfile(path, source / 'webgateway' / path.name)
+        shutil.copyfile(bridge[0], source / 'weq_webgateway.go')
+        header = source / 'swift/TailscaleKit/TailscaleKit.h'
+        with header.open('a') as output:
+            output.write(bridge[1].read_text())
         environment = dict(os.environ, CGO_ENABLED='1', GOOS='ios', GOARCH='arm64', GOMAXPROCS='2',
                            GOFLAGS='-trimpath -mod=readonly -p=2')
-        compiler = [capture(['xcrun', '--sdk', 'iphoneos', '--find', 'clang']), '-arch', 'arm64',
-                    '-isysroot', capture(['xcrun', '--sdk', 'iphoneos', '--show-sdk-path']),
-                    '-miphoneos-version-min=17.0']
+        compiler = [capture(['xcrun', '--sdk', sdk, '--find', 'clang']), '-target', target,
+                    '-isysroot', capture(['xcrun', '--sdk', sdk, '--show-sdk-path'])]
         environment['CC'] = ' '.join(quote_go_argument(value) for value in compiler)
-        run(['go', 'build', '-buildmode=c-archive', '-ldflags=-w', '-tags=ios', '-o', 'libtailscale_ios.a', '.'],
+        run(['go', 'build', '-buildmode=c-archive', '-ldflags=-w', '-tags=ios', '-o', archive_name, '.'],
             cwd=source, env=environment)
         derived = temporary / 'derived'
-        run(['xcodebuild', '-project', source / 'swift/TailscaleKit.xcodeproj', '-scheme', 'TailscaleKit (iOS)',
-             '-configuration', 'Release', '-destination', 'generic/platform=iOS', '-derivedDataPath', derived,
+        run(['xcodebuild', '-project', source / 'swift/TailscaleKit.xcodeproj', '-scheme', scheme,
+             '-configuration', 'Release', '-destination', destination, '-derivedDataPath', derived,
              'ARCHS=arm64', 'IPHONEOS_DEPLOYMENT_TARGET=17.0', 'BUILD_LIBRARY_FOR_DISTRIBUTION=YES',
-             'CODE_SIGNING_ALLOWED=NO', 'CODE_SIGNING_REQUIRED=NO', 'CODE_SIGN_IDENTITY=', 'DEVELOPMENT_TEAM=', 'build'])
+             'CODE_SIGNING_ALLOWED=NO', 'CODE_SIGNING_REQUIRED=NO', 'CODE_SIGN_IDENTITY=', 'DEVELOPMENT_TEAM=',
+             'OTHER_LDFLAGS=$(inherited) -Wl,-u,_WeQOpenGateway -Wl,-u,_WeQGatewayOrigin -Wl,-u,_WeQGatewayHasRelease -Wl,-u,_WeQAttachGateway -Wl,-u,_WeQCloseGateway -Wl,-u,_WeQClearGatewayCache', 'build'])
         staging = temporary / 'product'
         staging.mkdir()
         framework = staging / 'TailscaleKit.xcframework'
-        run(['xcodebuild', '-create-xcframework', '-framework', derived / 'Build/Products/Release-iphoneos/TailscaleKit.framework',
+        run(['xcodebuild', '-create-xcframework', '-framework', derived / f'Build/Products/Release-{sdk}/TailscaleKit.framework',
              '-output', framework])
         manifest = dict(inputs, fingerprint=fingerprint, frameworkSHA256=directory_digest(framework))
         (staging / 'build.json').write_text(json.dumps(manifest, indent=2) + '\n')
@@ -158,4 +175,6 @@ def build_framework():
 
 
 if __name__ == '__main__':
-    print(build_framework())
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--simulator', action='store_true', help='构建 ARM64 iOS 模拟器框架')
+    print(build_framework(simulator=parser.parse_args().simulator))

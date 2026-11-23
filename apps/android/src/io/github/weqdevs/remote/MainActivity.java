@@ -24,6 +24,7 @@ import java.util.concurrent.Future;
 import org.json.JSONObject;
 import androidnet.Androidnet;
 import androidnet.Client;
+import androidnet.WebGateway;
 
 public final class MainActivity extends Activity {
     final Handler main = new Handler(Looper.getMainLooper());
@@ -47,11 +48,6 @@ public final class MainActivity extends Activity {
     private long enrollmentDeadline;
     private View setupView;
     private boolean setupProgressFramePending;
-    private RemoteInstantView instantView;
-    private String instantToken, instantHandoff;
-    private boolean instantBlocked, instantCapturePending, instantDirty;
-    private long startupStarted;
-    private final java.util.LinkedHashMap<String, Long> startupStages = new java.util.LinkedHashMap<>();
     android.webkit.WebView webView;
     private WebFeatures webFeatures;
     TextView networkState, computerState, detail, error, codeView, statusPill;
@@ -94,6 +90,7 @@ public final class MainActivity extends Activity {
     private android.view.View statusDot;
     private int accentColor, idleDotColor;
     private boolean webLoaded;
+    private WebGateway webGateway;
     private String webLoadingStage = "正在准备网页连接";
     private String webStartupProblem;
     private final Runnable webStartupTimeout = () -> {
@@ -104,7 +101,7 @@ public final class MainActivity extends Activity {
     private final Runnable approvalPoll = new Runnable() { public void run() { pollApproval(); } };
     private final Runnable reconnectPoll = () -> {
         if (!visible || busy || reconnectPaused) return;
-        if (webView != null) verify();
+        if (node != null && paired) verify();
         else if (claimID == null) restoreComputer();
     };
 
@@ -184,7 +181,6 @@ public final class MainActivity extends Activity {
     }
 
     @Override public void onCreate(Bundle saved) {
-        startupStarted = SystemClock.elapsedRealtime();
         super.onCreate(saved);
         go.Seq.setContext(getApplicationContext());
         try {
@@ -207,23 +203,7 @@ public final class MainActivity extends Activity {
                 if ("http".equals(uri.getScheme()) && "127.0.0.1".equals(uri.getHost()) && uri.getPort() > 0 && uri.getUserInfo() == null && "".equals(uri.getPath()) && uri.getQuery() == null && uri.getFragment() == null) testControl = control;
             } catch (Exception ignored) { }
         }
-        try {
-            JSONObject stored = ConnectionStore.load(this);
-            rememberedComputer = stored != null;
-            if (stored != null && getIntent().getData() == null) {
-                instantToken = stored.getString("token");
-                if (!instantToken.matches("[a-f0-9]{64}")) instantToken = null;
-                final String cachedToken = instantToken;
-                if (cachedToken != null) RemoteInstantStore.load(getApplicationContext(), cachedToken, snapshot -> main.post(() -> {
-                    if (isDestroyed() || instantBlocked || webLoaded || !cachedToken.equals(instantToken) || snapshot == null || snapshot.chats == null || snapshot.chats.isEmpty()) return;
-                    instantView = new RemoteInstantView(this, snapshot, () -> { reconnectPaused = false; restoreComputer(); }, this::dismissInstant);
-                    ((android.widget.FrameLayout)setupView).addView(instantView, new android.widget.FrameLayout.LayoutParams(-1, -1));
-                    instantView.requestApplyInsets();
-                    markStartup("缓存界面"); render();
-                }));
-            }
-        } catch (Exception ignored) { }
-        if (!rememberedComputer) startupStarted = 0;
+        try { rememberedComputer = ConnectionStore.load(this) != null; } catch (Exception ignored) { }
         buildUI();
         // 网页与连接页都铺满整屏；系统栏透明，连接页自己按 insets 留白。
         if (android.os.Build.VERSION.SDK_INT >= 30) {
@@ -253,8 +233,7 @@ public final class MainActivity extends Activity {
         health.resume(SystemClock.elapsedRealtime());
         startPathMonitor();
         scheduleConnectionWarning();
-        if (webView != null) { webView.onResume(); requestConnectionCheck(true); verify(); return; }
-        if (BuildConfig.TESTING && getIntent().getBooleanExtra("instant_offline_test", false)) return;
+        if (webView != null) { webView.onResume(); requestConnectionCheck(true); if (node != null && paired) verify(); else restoreComputer(); return; }
         if (!BuildConfig.TESTING && invitation.length() > 0) { main.post(this::pair); return; }
         if (node == null && !busy && !restoreComputer() && enabled) startNetwork();
     }
@@ -582,7 +561,6 @@ public final class MainActivity extends Activity {
 
     private void render() {
         boolean loading = busy || claimID != null || (paired && !webLoaded);
-        if (instantView != null) instantView.updateStatus(isConnecting() && error.length() == 0, instantHandoff != null);
         boolean canPair = claimID == null && !rememberedComputer && !paired;
         pairSection.setVisibility(canPair ? View.VISIBLE : View.GONE);
         scanButton.setEnabled(!busy);
@@ -663,7 +641,7 @@ public final class MainActivity extends Activity {
             .setNegativeButton("取消", null)
             .setPositiveButton("删除电脑", (dialog, which) -> {
                 reconnectPaused = true;
-                clearInstant(); ConnectionStore.delete(this); rememberedComputer = false; Androidnet.clearWebCache(); stopNetwork(true);
+                closeWeb(); ConnectionStore.delete(this); rememberedComputer = false; Androidnet.clearWebCache(); stopNetwork(true);
             }).show();
     }
 
@@ -676,63 +654,10 @@ public final class MainActivity extends Activity {
         String latency = health.latency == null ? "—" : health.latency + " ms";
         String build = "未知";
         try { build = Long.toString(android.os.Build.VERSION.SDK_INT >= 28 ? getPackageManager().getPackageInfo(getPackageName(), 0).getLongVersionCode() : getPackageManager().getPackageInfo(getPackageName(), 0).versionCode); } catch (Exception ignored) { }
-        StringBuilder startup = new StringBuilder();
-        startupStages.forEach((stage, elapsed) -> startup.append(startup.length() == 0 ? "启动：" : " · ").append(stage).append(' ').append(elapsed).append(" ms"));
         return "连接：" + (node == null ? "未连接" : health.status()) + "\n电脑：" + (endpoint == null ? "未选择" : endpoint)
             + "\n连接方式：" + connectionRoute + "\n" + networkState.getText()
             + "\n最近成功：" + checked + "\n请求耗时：" + latency
-            + (startup.length() == 0 ? "" : "\n" + startup)
             + "\nWeQ Remote " + appVersion + " (" + build + ") · Android " + android.os.Build.VERSION.RELEASE;
-    }
-
-    private void markStartup(String stage) {
-        if (startupStarted != 0) startupStages.putIfAbsent(stage, SystemClock.elapsedRealtime() - startupStarted);
-    }
-    private void dismissInstant() {
-        instantBlocked = true;
-        if (instantView != null) ((android.widget.FrameLayout)setupView).removeView(instantView);
-        instantView = null;
-    }
-    private void clearInstant() {
-        dismissInstant();
-        String credential = instantToken != null ? instantToken : token;
-        instantToken = null;
-        if (credential != null) RemoteInstantStore.clear(getApplicationContext(), credential);
-    }
-
-    void captureInstant(android.webkit.WebView page) {
-        if (page != webView || token == null) return;
-        if (instantCapturePending) { instantDirty = true; return; }
-        instantCapturePending = true;
-        instantDirty = false;
-        final int revision = webStartupRevision;
-        final String credential = token;
-        page.evaluateJavascript("JSON.stringify(window.weqRemoteInstantSnapshot ?? null)", value -> {
-            if (page != webView) return;
-            instantCapturePending = false;
-            if (instantDirty) captureInstant(page);
-            if (revision != webStartupRevision || !credential.equals(token) || value == null || value.length() > RemoteInstantStore.MAX_BYTES * 6) return;
-            try {
-                Object decoded = new org.json.JSONTokener(value).nextValue();
-                if (!(decoded instanceof String)) return;
-                String payload = (String)decoded;
-                RemoteInstantStore.Snapshot update = RemoteInstantStore.decode(payload, System.currentTimeMillis());
-                if (update == null) return;
-                instantBlocked = true;
-                if (instantView != null && !instantView.snapshot.scope.equals(update.scope)) dismissInstant();
-                instantToken = credential;
-                RemoteInstantStore.update(getApplicationContext(), credential, payload);
-            } catch (org.json.JSONException ignored) { }
-        });
-    }
-
-    void finishInstantHandoff(android.webkit.WebView page, String id) {
-        if (page != webView || !id.equals(instantHandoff)) return;
-        instantHandoff = null;
-        showWebPage(false);
-    }
-    void instantVerified(android.webkit.WebView page) {
-        if (page == webView) markStartup("首个聊天窗口核验");
     }
     private void showDetailsMenu() {
         if (!visible || isFinishing() || isDestroyed() || !getWindow().getDecorView().isAttachedToWindow()) return;
@@ -759,7 +684,7 @@ public final class MainActivity extends Activity {
         for (String action : actions) {
             content.addView(button(action, () -> {
                 menu.dismiss();
-                if ("立即检查".equals(action)) verify();
+                if ("立即检查".equals(action)) { if (node != null && paired) verify(); else restoreComputer(); }
                 else if ("检查更新".equals(action)) checkUpdates();
                 else if ("重新加载".equals(action)) reloadWeb();
                 else {
@@ -874,7 +799,10 @@ public final class MainActivity extends Activity {
                     if (revision != generation || !visible) { closeClient(client); return; }
                     networkDirectory = directory; node = client; busy = false; refreshNetwork();
                 });
-            } catch (Exception e) { main.post(() -> { if (revision == generation) { enrolling = null; busy = false; enabled = false; error.setText("网络启动失败，请重新生成一次性 Key 后重试"); networkState.setText("Tailscale：未启动"); render(); } }); }
+            } catch (Exception e) { main.post(() -> { if (revision == generation) {
+                enrolling = null; busy = false; enabled = false; networkState.setText("Tailscale：未启动");
+                fail(revision, "网络启动失败，请重新生成一次性 Key 后重试");
+            } }); }
         });
     }
     private void refreshNetwork() {
@@ -890,7 +818,7 @@ public final class MainActivity extends Activity {
                     networkState.setText("Tailscale：" + (online ? "已连接" : "NeedsMachineAuth".equals(state) ? "等待网络管理员批准" : loginURL != null ? "等待网络登录" : "正在连接"));
                     if (online) connectionRoute = "内嵌 Tailscale";
                     if (restoring && online) { busy = false; verify(); return; }
-                    if (restoring && loginURL != null) { stopNetwork(true); error.setText("网络授权需更新，请在电脑重新生成配对码"); return; }
+                    if (restoring && loginURL != null) { fail(revision, "网络授权需更新，请在电脑重新生成配对码"); return; }
                     if (enrolling != null) {
                         if (online) {
                             Invitation link = enrolling; enrolling = null;
@@ -908,7 +836,7 @@ public final class MainActivity extends Activity {
                     render();
                     if (!online && loginURL == null) main.postDelayed(networkPoll, 1500);
                 });
-            } catch (Exception e) { main.post(() -> { if (revision == generation) { stopNetwork(true); error.setText("网络状态读取失败，请重新连接"); render(); } }); }
+            } catch (Exception e) { main.post(() -> { if (revision == generation) fail(revision, "网络状态读取失败，请重新连接"); }); }
         });
     }
     private String safeLogin(String value) {
@@ -971,20 +899,28 @@ public final class MainActivity extends Activity {
             claim(link);
         } catch (Exception e) { error.setText("配对链接无效或已过期，请重新生成；旧版邀请需先连接网络"); render(); }
     }
+    private void beginRoute() {
+        if (webGateway == null || !restoring) { stopNetwork(true); return; }
+        Client previous = node;
+        node = null;
+        if (previous != null) closeClient(previous);
+        generation++;
+    }
+
     private void startDirect(String address, String pin, Runnable next) {
-        stopNetwork(true); busy = true; final int revision = generation; render();
+        beginRoute(); busy = true; final int revision = generation; render();
         worker.execute(() -> {
             try {
                 Client client = Androidnet.newDirectClient(address, pin);
                 main.post(() -> {
-                    if (revision != generation || !visible) { closeClient(client); return; }
+                    if (revision != generation || (!visible && webGateway == null)) { closeClient(client); return; }
                     node = client; fingerprint = pin; online = true; busy = false; connectionRoute = "系统网络（HTTPS）"; next.run();
                 });
             } catch (Exception e) { fail(revision, "无法创建连接，请重新扫描二维码"); }
         });
     }
     private void startMulti(String routes, String pin, String authKey, String token, Runnable next) {
-        stopNetwork(true); busy = true; final int revision = generation; render();
+        beginRoute(); busy = true; final int revision = generation; render();
         worker.execute(() -> {
             try {
                 Future<?> pendingClose = closing;
@@ -996,14 +932,14 @@ public final class MainActivity extends Activity {
                 if (revision != generation || !visible) return;
                 Client client = Androidnet.newPendingMultiClient(directory, routes, pin, authKey == null ? "" : authKey, token);
                 main.post(() -> {
-                    if (revision != generation || !visible) { closeClient(client); return; }
+                    if (revision != generation || (!visible && webGateway == null)) { closeClient(client); return; }
                     node = client;
                     worker.execute(() -> {
                         try {
                             client.connectRoutes();
                             boolean embedded = client.usesEmbeddedNetwork();
                             main.post(() -> {
-                                if (revision != generation || !visible) return;
+                                if (revision != generation || (!visible && webGateway == null)) return;
                                 if (embedded) {
                                     networkDirectory = directory;
                                     if (authKey != null) getPreferences(MODE_PRIVATE).edit().putString("networkState", new java.io.File(directory).getName()).apply();
@@ -1059,10 +995,19 @@ public final class MainActivity extends Activity {
         try {
             JSONObject saved = ConnectionStore.load(this);
             if (saved == null) return false;
-            if (startupStarted == 0) startupStarted = SystemClock.elapsedRealtime();
             rememberedComputer = true;
             String address = saved.getString("endpoint"), credential = saved.getString("token"), pin = saved.optString("fingerprint", "");
             if (!credential.matches("[a-f0-9]{64}")) throw new Exception("电脑凭据无效");
+            String localSecret = Invitation.credential();
+            boolean showCached = false;
+            if (webGateway == null) {
+                try {
+                    WebGateway cached = Androidnet.newWebGateway(credential, localSecret);
+                    if (cached.hasRelease()) { webGateway = cached; showCached = true; }
+                    else cached.close();
+                } catch (Exception unavailable) { /* 普通连接仍可继续。 */ }
+            }
+            restoring = true;
             Runnable resume = () -> { endpoint = address; token = credential; paired = true; restoring = true; computerState.setText("正在连接电脑"); verify(); };
             org.json.JSONArray routes = saved.optJSONArray("endpoints");
             if (routes != null) {
@@ -1071,6 +1016,7 @@ public final class MainActivity extends Activity {
             }
             else if (!pin.isEmpty()) startDirect(address, pin, resume);
             else { endpoint = address; token = credential; paired = true; restoring = true; enabled = true; startNetwork(); }
+            if (showCached) showWeb(webGateway.origin(), localSecret, generation);
             return true;
         } catch (Exception e) { error.setText("无法读取保存的电脑凭据，请重新配对"); render(); return false; }
     }
@@ -1119,6 +1065,7 @@ public final class MainActivity extends Activity {
         final long timeout = health.requestTimeout();
         final boolean recoverRoutes = health.recovering();
         final boolean liveCheck = webLoaded;
+        final WebGateway gateway = webGateway;
         final int epoch = healthEpoch;
         if (webLoaded) { health.beginCheck(SystemClock.elapsedRealtime()); scheduleConnectionWarning(); }
         busy = true; error.setText(""); render();
@@ -1129,7 +1076,8 @@ public final class MainActivity extends Activity {
                 JSONObject status = response(liveCheck ? client.checkConnection(address, credential, timeout, recoverRoutes) : client.request(address, "/v1/status", "GET", credential, ""));
                 long milliseconds = SystemClock.elapsedRealtime() - started;
                 if (!"WeQ Remote".equals(status.getString("product")) || status.getInt("protocol") != 1 || !"status:read".equals(status.getString("scope")) || !status.getBoolean("online")) throw new Exception("电脑返回了不兼容的数据");
-                boolean webReady = client.hasWeb();
+                if (gateway != null) client.attachWeb(gateway, address);
+                boolean webReady = gateway != null;
                 boolean embedded = client.usesEmbeddedNetwork();
                 String tailnet = liveCheck ? (embedded ? "Running" : "Stopped") : tailnetState(client, embedded);
                 main.post(() -> {
@@ -1151,7 +1099,9 @@ public final class MainActivity extends Activity {
                         main.removeCallbacks(reconnectPoll);
                         main.postDelayed(reconnectPoll, 15000);
                     }
-                    if (WebStartup.shouldOpenWeb(restoring, webView != null, webReady)) { restoring = false; if (visible) { markStartup("授权完成"); openWeb(); } }
+                    boolean open = WebStartup.shouldOpenWeb(restoring, webView != null, webReady);
+                    restoring = false;
+                    if (open && visible && webGateway == null) openWeb();
                 });
             } catch (Exception e) { main.post(() -> {
                 if (revision != generation) return;
@@ -1163,80 +1113,92 @@ public final class MainActivity extends Activity {
     private void openWeb() {
         final Client client = node; final int revision = generation;
         final String address = endpoint, credential = token, localSecret = Invitation.credential();
-        busy = true; webLoaded = false; webStartupProblem = null; webLoadingStage = "正在准备网页连接"; computerState.setText(webLoadingStage); render();
+        busy = true; webLoadingStage = "正在准备网页连接"; render();
         worker.execute(() -> {
+            WebGateway candidate = null;
             try {
-                final String origin = client.openWeb(address, credential, localSecret);
+                candidate = Androidnet.newWebGateway(credential, localSecret);
+                client.attachWeb(candidate, address);
+                final WebGateway gateway = candidate;
                 main.post(() -> {
-                    if (revision != generation || !visible) return;
+                    if (revision != generation || !visible) { gateway.close(); return; }
+                    webGateway = gateway;
                     busy = false;
-                    android.webkit.CookieManager cookies = android.webkit.CookieManager.getInstance();
-                    cookies.removeAllCookies(ignored -> {
-                        if (revision != generation || !visible) return;
-                        cookies.setCookie(origin, "weq_remote_local=" + localSecret + "; HttpOnly; SameSite=Strict; Path=/", accepted -> {
-                            if (revision != generation || !visible) return;
-                            if (webFeatures != null) { webFeatures.close(); webFeatures = null; }
-                            if (webView != null) { webView.stopLoading(); webView.destroy(); }
-                            webView = new android.webkit.WebView(this);
-                            final android.webkit.WebView page = webView;
-                            android.webkit.WebSettings settings = webView.getSettings();
-                            settings.setJavaScriptEnabled(true); settings.setDomStorageEnabled(true);
-                            settings.setUserAgentString(settings.getUserAgentString() + " WeQRemote");
-                            settings.setAllowFileAccess(false); settings.setAllowContentAccess(false);
-                            settings.setMixedContentMode(android.webkit.WebSettings.MIXED_CONTENT_NEVER_ALLOW);
-                            cookies.setAcceptThirdPartyCookies(webView, false);
-                            webFeatures = new WebFeatures(this, webView, origin);
-                            webView.setWebViewClient(new android.webkit.WebViewClient() {
-                                private boolean allowed(Uri url) { return "http".equals(url.getScheme()) && "127.0.0.1".equals(url.getHost()) && url.getPort() == Uri.parse(origin).getPort(); }
-                                @Override public void onPageStarted(android.webkit.WebView view, String url, android.graphics.Bitmap icon) {
-                                    if (webView != page) return;
-                                    webStartupRevision++;
-                                    instantHandoff = null;
-                                    webDownload = null; webDevelopmentProgress = null;
-                                    if (!webLoaded) { webLoadingStage = WebDownloadProgress.LOADING_MESSAGE; render(); }
-                                    main.removeCallbacks(webStartupTimeout);
-                                    main.postDelayed(webStartupTimeout, 45000);
-                                }
-                                @Override public void onPageCommitVisible(android.webkit.WebView view, String url) {
-                                    // 不等待图片等尾部资源完成，尽早订阅并补读网页已经发出的启动状态。
-                                    if (webView == page && allowed(Uri.parse(url)) && webFeatures != null) webFeatures.observeStartup();
-                                }
-                                @Override public void onPageFinished(android.webkit.WebView view, String url) {
-                                    if (view != page || webView != page || !allowed(Uri.parse(url))) return;
-                                    if (webFeatures != null) webFeatures.pageReady();
-                                }
-                                @Override public void onReceivedError(android.webkit.WebView view, android.webkit.WebResourceRequest request, android.webkit.WebResourceError error) {
-                                    if (webView == page && request.isForMainFrame() && !webLoaded) failWebLoad("无法加载 WeQ 页面，请检查电脑与网络后重试。");
-                                    else if (webView == page && allowed(request.getUrl()) && !webLoaded) recordWebResourceFailure(page, request.getUrl().getPath(), 0);
-                                }
-                                @Override public void onReceivedHttpError(android.webkit.WebView view, android.webkit.WebResourceRequest request, android.webkit.WebResourceResponse response) {
-                                    if (webView == page && request.isForMainFrame() && !webLoaded && response.getStatusCode() >= 400)
-                                        failWebLoad("无法加载 WeQ 页面，请检查电脑与网络后重试。");
-                                    else if (webView == page && allowed(request.getUrl()) && !webLoaded && response.getStatusCode() >= 400)
-                                        recordWebResourceFailure(page, request.getUrl().getPath(), response.getStatusCode());
-                                }
-                                @Override public boolean shouldOverrideUrlLoading(android.webkit.WebView view, android.webkit.WebResourceRequest request) { return request.isForMainFrame() ? webFeatures == null || webFeatures.navigate(request.getUrl()) : !allowed(request.getUrl()); }
-                                @Override public android.webkit.WebResourceResponse shouldInterceptRequest(android.webkit.WebView view, android.webkit.WebResourceRequest request) {
-                                    if (allowed(request.getUrl())) return null;
-                                    return new android.webkit.WebResourceResponse("text/plain", "UTF-8", 403, "Forbidden", java.util.Collections.emptyMap(), new java.io.ByteArrayInputStream(new byte[0]));
-                                }
-                            });
-                            // 网页铺满整屏，不再显示任何原生栏或按钮；未加载完时用连接页盖在上面显示进度。
-                            LinearLayout shell = new LinearLayout(this); shell.setOrientation(LinearLayout.VERTICAL); shell.setBackgroundColor(webBackgroundColor());
-                            final boolean manualInsets = android.os.Build.VERSION.SDK_INT >= 30 && !webViewHandlesSafeArea();
-                            shell.addView(webView, new LinearLayout.LayoutParams(-1, 0, 1f));
-                            if (manualInsets) applyWebInsets(shell);
-                            android.widget.FrameLayout root = new android.widget.FrameLayout(this);
-                            android.view.ViewGroup parent = (android.view.ViewGroup) setupView.getParent();
-                            if (parent != null) parent.removeView(setupView);
-                            root.addView(shell, new android.widget.FrameLayout.LayoutParams(-1, -1));
-                            root.addView(setupView, new android.widget.FrameLayout.LayoutParams(-1, -1));
-                            setContentView(root); render();
-                            webView.loadUrl(origin + "/");
-                        });
-                    });
+                    showWeb(gateway.origin(), localSecret, revision);
                 });
-            } catch (Exception e) { fail(revision, "无法打开 WeQ Web，请检查电脑上的 Web 服务"); }
+            } catch (Exception e) {
+                if (candidate != null) candidate.close();
+                fail(revision, "无法打开 WeQ Web，请检查电脑上的 Web 服务");
+            }
+        });
+    }
+
+    private void showWeb(String origin, String localSecret, int revision) {
+        webLoaded = false;
+        webStartupProblem = null;
+        android.webkit.CookieManager cookies = android.webkit.CookieManager.getInstance();
+        cookies.removeAllCookies(ignored -> {
+            if (revision != generation || !visible) return;
+            cookies.setCookie(origin, "weq_remote_local=" + localSecret + "; HttpOnly; SameSite=Strict; Path=/", accepted -> {
+                if (revision != generation || !visible) return;
+                if (webFeatures != null) { webFeatures.close(); webFeatures = null; }
+                if (webView != null) { webView.stopLoading(); webView.destroy(); }
+                webView = new android.webkit.WebView(this);
+                final android.webkit.WebView page = webView;
+                android.webkit.WebSettings settings = webView.getSettings();
+                settings.setJavaScriptEnabled(true); settings.setDomStorageEnabled(true);
+                settings.setUserAgentString(settings.getUserAgentString() + " WeQRemote");
+                settings.setAllowFileAccess(false); settings.setAllowContentAccess(false);
+                settings.setMixedContentMode(android.webkit.WebSettings.MIXED_CONTENT_NEVER_ALLOW);
+                cookies.setAcceptThirdPartyCookies(webView, false);
+                webFeatures = new WebFeatures(this, webView, origin);
+                webView.setWebViewClient(new android.webkit.WebViewClient() {
+                    private boolean allowed(Uri url) { return "http".equals(url.getScheme()) && "127.0.0.1".equals(url.getHost()) && url.getPort() == Uri.parse(origin).getPort(); }
+                    @Override public void onPageStarted(android.webkit.WebView view, String url, android.graphics.Bitmap icon) {
+                        if (webView != page) return;
+                        webStartupRevision++;
+                        webDownload = null; webDevelopmentProgress = null;
+                        if (!webLoaded) { webLoadingStage = WebDownloadProgress.LOADING_MESSAGE; render(); }
+                        main.removeCallbacks(webStartupTimeout);
+                        main.postDelayed(webStartupTimeout, 45000);
+                    }
+                    @Override public void onPageCommitVisible(android.webkit.WebView view, String url) {
+                        // 不等待图片等尾部资源完成，尽早订阅并补读网页已经发出的启动状态。
+                        if (webView == page && allowed(Uri.parse(url)) && webFeatures != null) webFeatures.observeStartup();
+                    }
+                    @Override public void onPageFinished(android.webkit.WebView view, String url) {
+                        if (view != page || webView != page || !allowed(Uri.parse(url))) return;
+                        if (webFeatures != null) webFeatures.pageReady();
+                    }
+                    @Override public void onReceivedError(android.webkit.WebView view, android.webkit.WebResourceRequest request, android.webkit.WebResourceError error) {
+                        if (webView == page && request.isForMainFrame() && !webLoaded) failWebLoad("无法加载 WeQ 页面，请检查电脑与网络后重试。");
+                        else if (webView == page && allowed(request.getUrl()) && !webLoaded) recordWebResourceFailure(page, request.getUrl().getPath(), 0);
+                    }
+                    @Override public void onReceivedHttpError(android.webkit.WebView view, android.webkit.WebResourceRequest request, android.webkit.WebResourceResponse response) {
+                        if (webView == page && request.isForMainFrame() && !webLoaded && response.getStatusCode() >= 400)
+                            failWebLoad("无法加载 WeQ 页面，请检查电脑与网络后重试。");
+                        else if (webView == page && allowed(request.getUrl()) && !webLoaded && response.getStatusCode() >= 400)
+                            recordWebResourceFailure(page, request.getUrl().getPath(), response.getStatusCode());
+                    }
+                    @Override public boolean shouldOverrideUrlLoading(android.webkit.WebView view, android.webkit.WebResourceRequest request) { return request.isForMainFrame() ? webFeatures == null || webFeatures.navigate(request.getUrl()) : !allowed(request.getUrl()); }
+                    @Override public android.webkit.WebResourceResponse shouldInterceptRequest(android.webkit.WebView view, android.webkit.WebResourceRequest request) {
+                        if (allowed(request.getUrl())) return null;
+                        return new android.webkit.WebResourceResponse("text/plain", "UTF-8", 403, "Forbidden", java.util.Collections.emptyMap(), new java.io.ByteArrayInputStream(new byte[0]));
+                    }
+                });
+                // 网页铺满整屏，不再显示任何原生栏或按钮；未加载完时用连接页盖在上面显示进度。
+                LinearLayout shell = new LinearLayout(this); shell.setOrientation(LinearLayout.VERTICAL); shell.setBackgroundColor(webBackgroundColor());
+                final boolean manualInsets = android.os.Build.VERSION.SDK_INT >= 30 && !webViewHandlesSafeArea();
+                shell.addView(webView, new LinearLayout.LayoutParams(-1, 0, 1f));
+                if (manualInsets) applyWebInsets(shell);
+                android.widget.FrameLayout root = new android.widget.FrameLayout(this);
+                android.view.ViewGroup parent = (android.view.ViewGroup) setupView.getParent();
+                if (parent != null) parent.removeView(setupView);
+                root.addView(shell, new android.widget.FrameLayout.LayoutParams(-1, -1));
+                root.addView(setupView, new android.widget.FrameLayout.LayoutParams(-1, -1));
+                setContentView(root); render();
+                webView.loadUrl(origin + "/");
+            });
         });
     }
     private String tailnetState(Client client, boolean embedded) {
@@ -1249,16 +1211,12 @@ public final class MainActivity extends Activity {
         if ("loading".equals(state)) {
             if (message == null || message.isEmpty()) return;
             webLoadingStage = message.substring(0, Math.min(message.length(), 100));
-            if (java.util.Arrays.asList("正在检查恢复状态", "正在恢复账号工作区", "正在初始化工作区", "正在绘制 WeQ 界面").contains(message)) markStartup(message);
             renderSetupProgress();
-        } else if ("ready".equals(state) || "action-required".equals(state)) {
-            markStartup("网页就绪"); captureInstant(page); showWebPage("ready".equals(state));
-        }
+        } else if ("ready".equals(state) || "action-required".equals(state)) showWebPage();
         else if ("error".equals(state)) failWebLoad(message == null || message.isEmpty() ? "WeQ 页面启动失败，请重试。" : message.substring(0, Math.min(message.length(), 500)));
     }
     void receiveWebDownload(android.webkit.WebView page, WebDownloadProgress value) {
         if (webView != page || webLoaded) return;
-        if (value.completed == value.total) markStartup("首屏资源就绪");
         webDownload = value;
         renderSetupProgress();
     }
@@ -1283,23 +1241,10 @@ public final class MainActivity extends Activity {
             if (!"true".equals(managed)) failWebLoad(problem);
         });
     }
-    private void showWebPage(boolean resumeCachedChat) {
-        if (webLoaded || instantHandoff != null) return;
-        if (resumeCachedChat && instantView != null && instantView.selection() != null) {
-            final android.webkit.WebView page = webView;
-            final String nonce = java.util.UUID.randomUUID().toString();
-            try {
-                JSONObject target = new JSONObject().put("scope", instantView.snapshot.scope).put("id", instantView.selection()).put("anchor", instantView.anchor());
-                instantHandoff = nonce; render();
-                String reply = "weqRemoteLinks.instantOpened(" + JSONObject.quote(nonce) + ")";
-                page.evaluateJavascript("(async()=>{try{await window.weqRemoteOpenCachedChat?.(" + target + ");}finally{" + reply + ";}})()", null);
-                main.postDelayed(() -> finishInstantHandoff(page, nonce), 1800);
-                return;
-            } catch (org.json.JSONException ignored) { }
-        }
+    private void showWebPage() {
+        if (webLoaded) return;
         main.removeCallbacks(webStartupTimeout);
         webLoaded = true;
-        markStartup("正式界面");
         webDevelopmentProgress = null;
         health.resume(SystemClock.elapsedRealtime());
         publishConnectionHealth();
@@ -1309,8 +1254,8 @@ public final class MainActivity extends Activity {
         android.view.ViewGroup parent = (android.view.ViewGroup) setupView.getParent();
         if (parent != null) {
             if (android.animation.ValueAnimator.areAnimatorsEnabled())
-                setupView.animate().alpha(0).setDuration(180).withEndAction(() -> { if (setupView.getParent() == parent && webLoaded) { parent.removeView(setupView); dismissInstant(); } setupView.setAlpha(1); }).start();
-            else { parent.removeView(setupView); dismissInstant(); }
+                setupView.animate().alpha(0).setDuration(180).withEndAction(() -> { if (setupView.getParent() == parent && webLoaded) parent.removeView(setupView); setupView.setAlpha(1); }).start();
+            else parent.removeView(setupView);
         }
         render();
     }
@@ -1347,14 +1292,12 @@ public final class MainActivity extends Activity {
         main.removeCallbacks(healthDeadline);
         main.removeCallbacks(webStartupTimeout);
         webLoaded = false;
-        instantCapturePending = false;
-        instantDirty = false;
-        instantHandoff = null;
         webDownload = null;
         webDevelopmentProgress = null;
         if (webFeatures != null) { webFeatures.close(); webFeatures = null; }
-        Client active = node;
-        if (active != null) worker.execute(active::closeWeb);
+        WebGateway gateway = webGateway;
+        webGateway = null;
+        if (gateway != null) gateway.close();
         if (webView == null) return;
         webView.stopLoading(); webView.loadUrl("about:blank"); webView.clearHistory(); webView.destroy(); webView = null;
         android.webkit.CookieManager.getInstance().removeAllCookies(null);
@@ -1364,8 +1307,6 @@ public final class MainActivity extends Activity {
         render();
     }
     @Override public void onBackPressed() {
-        if (instantHandoff != null) return;
-        if (!webLoaded && instantView != null && instantView.back()) return;
         if (webFeatures != null && webFeatures.exitFullscreen()) return;
         if (webView != null) {
             final android.webkit.WebView page = webView;
@@ -1384,14 +1325,19 @@ public final class MainActivity extends Activity {
     private void fail(int revision, String message) { main.post(() -> {
         if (revision != generation) return;
         boolean revoked = "设备未授权或授权已被撤销，请重新配对".equals(message);
-        if (!revoked && webView != null) {
+        if (!revoked && webGateway != null) {
             busy = false;
+            if (restoring && !paired && node != null) {
+                Client previous = node;
+                node = null;
+                closeClient(previous);
+            }
             if (visible && webLoaded) { health.checkFailed(SystemClock.elapsedRealtime()); scheduleConnectionWarning(); render(); }
             main.removeCallbacks(reconnectPoll);
             if (visible) main.postDelayed(reconnectPoll, webLoaded ? health.checkInterval() : 5000);
             return;
         }
-        if (revoked && !updatingConnection) { clearInstant(); ConnectionStore.delete(this); rememberedComputer = false; Androidnet.clearWebCache(); }
+        if (revoked && !updatingConnection) { closeWeb(); ConnectionStore.delete(this); rememberedComputer = false; Androidnet.clearWebCache(); }
         boolean updateFailed = updatingConnection;
         stopNetwork(true); error.setText(message == null ? "连接失败，请重试" : message); render();
         if (updateFailed) { reconnectPaused = true; return; }

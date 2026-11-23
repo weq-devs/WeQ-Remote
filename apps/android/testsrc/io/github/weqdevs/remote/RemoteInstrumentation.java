@@ -18,18 +18,12 @@ public final class RemoteInstrumentation extends Instrumentation {
     private boolean uiOnly;
     private boolean surfacesOnly;
     private boolean resourcesOnly;
-    private boolean instantOnly;
-    @Override public void onCreate(Bundle arguments) { super.onCreate(arguments); lan = "1".equals(arguments.getString("lan")); uiOnly = "1".equals(arguments.getString("ui")); surfacesOnly = "1".equals(arguments.getString("surfaces")); resourcesOnly = "1".equals(arguments.getString("resources")); instantOnly = "1".equals(arguments.getString("instant")); start(); }
+    @Override public void onCreate(Bundle arguments) { super.onCreate(arguments); lan = "1".equals(arguments.getString("lan")); uiOnly = "1".equals(arguments.getString("ui")); surfacesOnly = "1".equals(arguments.getString("surfaces")); resourcesOnly = "1".equals(arguments.getString("resources")); start(); }
     @Override public void onStart() {
         Bundle result = new Bundle();
         MainActivity activity = null;
         try {
             String pkg = getTargetContext().getPackageName();
-            if (instantOnly) {
-                testInstantStart(pkg);
-                result.putString("stream", "PASS: offline cache draws, opens chat and hands it to a ready WebView\n");
-                finish(android.app.Activity.RESULT_OK, result); return;
-            }
             if (resourcesOnly) {
                 testResourceTransfers(pkg);
                 result.putString("stream", "PASS: byte progress retained; download/cache/unknown separated; actual startup stage retained\n");
@@ -95,63 +89,6 @@ public final class RemoteInstrumentation extends Instrumentation {
             if (activity != null) { MainActivity previous = activity; runOnMainSync(previous::finish); }
             result.putString("stream", "FAIL: " + failure.getClass().getSimpleName() + ": " + failure.getMessage() + "\n");
             finish(android.app.Activity.RESULT_CANCELED, result);
-        }
-    }
-    private void testInstantStart(String pkg) throws Exception {
-        String token = Invitation.credential();
-        long now = System.currentTimeMillis();
-        String payload = new JSONObject().put("scope", "fixture").put("chats", new org.json.JSONArray().put(new JSONObject()
-            .put("id", "chat").put("title", "Fixture contact").put("expiresAt", now + 60000).put("rows", new org.json.JSONArray().put(new JSONObject()
-                .put("id", "row").put("text", "Cached message").put("mine", false))))).toString();
-        require(RemoteInstantStore.decode(payload, now + 60001).chats.isEmpty(), "expired content survived");
-        ConnectionStore.save(getTargetContext(), "https://192.168.0.1:7691", token, Invitation.credential());
-        RemoteInstantStore.update(getTargetContext(), token, payload);
-        MainActivity activity = (MainActivity)startActivitySync(new Intent().setComponent(new ComponentName(pkg, MainActivity.class.getName()))
-            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK).putExtra("instant_offline_test", true));
-        try {
-            java.lang.reflect.Field field = MainActivity.class.getDeclaredField("instantView"); field.setAccessible(true);
-            AtomicReference<RemoteInstantView> preview = new AtomicReference<>();
-            long deadline = android.os.SystemClock.elapsedRealtime() + 5000;
-            while (preview.get() == null && android.os.SystemClock.elapsedRealtime() < deadline) {
-                runOnMainSync(() -> { try { preview.set((RemoteInstantView)field.get(activity)); } catch (Exception e) { throw new AssertionError(e); } });
-                Thread.sleep(25);
-            }
-            require(preview.get() != null, "offline list never rendered");
-            runOnMainSync(() -> {
-                require(activity.webView == null, "loading cache must not require a web view");
-                ViewFinder.clickCachedChat(preview.get());
-                require("chat".equals(preview.get().selection()), "offline chat did not open");
-                String origin = "http://127.0.0.1:7691";
-                activity.webView = new android.webkit.WebView(activity);
-                android.webkit.WebView page = activity.webView;
-                page.getSettings().setJavaScriptEnabled(true);
-                new WebFeatures(activity, page, origin);
-                android.widget.FrameLayout setup = (android.widget.FrameLayout)preview.get().getParent();
-                ((android.widget.FrameLayout)setup.getParent()).addView(page, 0, new android.widget.FrameLayout.LayoutParams(-1, -1));
-                page.setWebViewClient(new android.webkit.WebViewClient() {
-                    @Override public void onPageFinished(android.webkit.WebView view, String url) { activity.receiveWebStartup(page, "ready", null); }
-                });
-                page.loadDataWithBaseURL(origin + "/", "<!doctype html><body>Waiting<script>window.weqRemoteOpenCachedChat=async function(t){if(t.scope==='fixture'&&t.id==='chat')document.body.textContent='Latest message';};</script>", "text/html", "UTF-8", origin + "/");
-            });
-            waitWeb(activity, "Latest message", 5000);
-            java.util.concurrent.atomic.AtomicBoolean unveiled = new java.util.concurrent.atomic.AtomicBoolean();
-            deadline = android.os.SystemClock.elapsedRealtime() + 3000;
-            while (!unveiled.get() && android.os.SystemClock.elapsedRealtime() < deadline) {
-                runOnMainSync(() -> unveiled.set(preview.get().getParent() == null));
-                if (!unveiled.get()) Thread.sleep(25);
-            }
-            require(unveiled.get(), "handoff left the offline overlay visible after its deadline");
-        } finally {
-            finishActivity(activity);
-            ConnectionStore.delete(getTargetContext());
-            RemoteInstantStore.clear(getTargetContext(), token);
-        }
-    }
-    private static class ViewFinder {
-        static void clickCachedChat(RemoteInstantView view) {
-            android.widget.ScrollView scroll = (android.widget.ScrollView)view.getChildAt(view.getChildCount() - 1);
-            android.view.ViewGroup rows = (android.view.ViewGroup)scroll.getChildAt(0);
-            require(rows.getChildAt(0).performClick(), "offline chat row not clickable");
         }
     }
     private void testResourceTransfers(String pkg) throws Exception {

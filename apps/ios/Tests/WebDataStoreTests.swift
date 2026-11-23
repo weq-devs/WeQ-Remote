@@ -3,33 +3,6 @@ import WebKit
 @testable import WeQRemote
 
 final class WebDataStoreTests: XCTestCase {
-    func testInstantSnapshotExpiresAndCannotCrossAuthorizationOrAccount() async throws {
-        let token = UUID().uuidString
-        let other = UUID().uuidString
-        defer { RemoteInstantStore.clear(token); RemoteInstantStore.clear(other) }
-        let now = Date().timeIntervalSince1970 * 1000
-        let chat = RemoteInstantSnapshot.Chat(id: "chat", title: "Synthetic", expiresAt: now + 60_000,
-            rows: [.init(id: "row", text: "Cached", mine: false)])
-        let first = RemoteInstantSnapshot(scope: "first", chats: [chat])
-        let data = try JSONEncoder().encode(first)
-        XCTAssertNil(RemoteInstantSnapshot.decode(data)?.current(now: now + 61_000))
-        RemoteInstantStore.update(String(decoding: data, as: UTF8.self), token: token)
-        let stored = await RemoteInstantStore.load(token)
-        let unrelated = await RemoteInstantStore.load(other)
-        XCTAssertEqual(stored, first)
-        XCTAssertNil(unrelated)
-        RemoteInstantStore.update(#"{"scope":"first"}"#, token: token)
-        let sameScope = await RemoteInstantStore.load(token)
-        XCTAssertEqual(sameScope, first)
-        RemoteInstantStore.update(#"{"scope":"second"}"#, token: token)
-        let switchedScope = await RemoteInstantStore.load(token)
-        XCTAssertNil(switchedScope)
-        RemoteInstantStore.update(String(decoding: data, as: UTF8.self), token: token)
-        RemoteInstantStore.clear(token)
-        let revoked = await RemoteInstantStore.load(token)
-        XCTAssertNil(revoked)
-    }
-
     @MainActor
     func testBusinessSnapshotsSurviveNewRouteAndDoNotCrossScopeOrRevocation() async {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

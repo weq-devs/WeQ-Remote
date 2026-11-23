@@ -6,7 +6,7 @@
 
 ## 构建
 
-通过 `WEQ_TAILSCALE_FRAMEWORK` 显式指定 TailscaleKit，不依赖开发者的其他项目路径。来源与初始构建指纹在 `Support/tailscale-dependency.json`，BSD 许可证随 App 打包。Framework 必须包含 `TailscaleNode.statusJSON()`，并支持 iOS 真机及模拟器。
+通过 `WEQ_TAILSCALE_FRAMEWORK` 显式指定 TailscaleKit，不依赖开发者的其他项目路径。来源与初始构建指纹在 `Support/tailscale-dependency.json`，BSD 许可证随 App 打包。Framework 必须包含 TailscaleNode.statusJSON() 和供 iOS 复用的 Go 本机网页入口。用 `python3 apps/ios/scripts/build_tailscale.py` 构建真机框架，附加 `--simulator` 构建 Apple Silicon 模拟器框架。
 
 ```sh
 cd /path/to/WeQ-Remote
@@ -80,7 +80,7 @@ HTTPS 页面沿用 WebKit 的设备采集；内嵌 Tailscale 的远端 HTTP 页�
 跨源外链由 `weqRemoteLinks.open` 本地桥交给系统；机器人控制台、频道登录等异步获取的链接不再依赖 `window.open` 当时仍保留用户激活。同源下载与 Blob 保留在当前鉴权下载链路，不交给系统浏览器，也不覆盖聊天页面。
 手机屏幕共享、原生推送、后台持续通话与真实 iPhone 验收仍未完成。
 
-设备凭据保存在 ThisDeviceOnly Keychain。已连接时退后台保留内存中的 WKWebView 与连接对象，返回前台校验授权，不主动重建网页；连接暂时不可用时保留页面并重试，401 撤销授权仍清除凭据与网页。未完成的配对在后台取消。系统回收进程后的冷启动从 Keychain 自动重连，不承诺恢复未保存的网页状态；不申请后台保活。TS 节点身份保留在 App 私有 Application Support，并排除系统备份；WKWebView 按电脑地址、授权和证书使用稳定的持久数据存储，跨重启复用资源与网页偏好，忘记电脑时清空当前及已保存入口的数据存储。内嵌模式 SOCKS 代理禁止失败后退回直连；局域网模式使用系统路由和精确证书指纹校验，不启动内嵌节点。
+设备凭据保存在 ThisDeviceOnly Keychain。已连接时退后台保留内存中的 WKWebView 与连接对象，返回前台校验授权，不主动重建网页；连接暂时不可用时保留页面并重试，401 撤销授权仍清除凭据与网页。未完成的配对在后台取消。系统回收进程后的冷启动从 Keychain 自动重连，不承诺恢复未保存的网页状态；不申请后台保活。TS 节点身份保留在 App 私有 Application Support，并排除系统备份；WKWebView 使用按配对授权固定的本机来源，重启可先打开完整的缓存网页，在后台接入已验证的电脑路线。忘记电脑时清理当前及已保存入口的数据存储。内嵌模式 SOCKS 代理禁止失败后退回直连；局域网模式使用系统路由和精确证书指纹校验，不启动内嵌节点。
 
 当前开发源码新增 v4 多入口邀请，保留全部地址，连接时错峰探测并采用首个可用入口，不逐个等待不可达地址超时；已配对设备恢复连接时的探测就是一次鉴权状态读取，成功结果直接用于本次连接，不再重复核验，也不把 3 秒探测超时当作入口不可用。内嵌入网不再阻塞可用的 HTTPS 直连。等待电脑批准时，临时超时会保留本次配对并重试，v4 可切换入口继续读取批准结果。Key 用于 App 内置 Tailscale 加入电脑所在网络。已发布的 0.1.0 尚不支持 v4，需要新版 App。继续支持旧 v1、带 Key/有效期的 v2 和带局域网 HTTPS 指纹的 v3。除 v4 的不同 `endpoint` 外拒绝重复/额外字段、公网域名、回环和控制面替换。ATS 例外限定私有 IPv4 / TS 网段；LAN 协议仍强制 HTTPS 且仅接受二维码中的指纹，不接受任意自签名证书。
 

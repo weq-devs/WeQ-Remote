@@ -86,7 +86,7 @@ type Client struct {
 	checkHTTP      *http.Client
 	ctx            context.Context
 	cancel         context.CancelFunc
-	web            *webProxy
+	web            *WebGateway
 	directEndpoint string
 }
 
@@ -391,7 +391,7 @@ func (c *Client) Close() {
 	}
 	c.mu.Unlock()
 	if web != nil {
-		web.close()
+		web.Close()
 	}
 	if client != nil {
 		client.CloseIdleConnections()

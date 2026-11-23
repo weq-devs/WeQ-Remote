@@ -1,4 +1,4 @@
-package androidnet
+package webgateway
 
 import (
 	"bytes"

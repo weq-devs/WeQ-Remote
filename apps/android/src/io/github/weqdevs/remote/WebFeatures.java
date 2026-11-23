@@ -102,26 +102,6 @@ final class WebFeatures extends WebChromeClient {
     public final class ExternalLinks {
         @android.webkit.JavascriptInterface public boolean supportsDressImages() { return true; }
 
-        @android.webkit.JavascriptInterface public void instantChanged() {
-            activity.runOnUiThread(() -> {
-                if (!closed && WebAccess.sameOrigin(origin, view.getUrl()) && activity instanceof MainActivity)
-                    ((MainActivity)activity).captureInstant(view);
-            });
-        }
-        @android.webkit.JavascriptInterface public void instantOpened(String id) {
-            if (id == null || id.length() != 36) return;
-            activity.runOnUiThread(() -> {
-                if (!closed && WebAccess.sameOrigin(origin, view.getUrl()) && activity instanceof MainActivity)
-                    ((MainActivity)activity).finishInstantHandoff(view, id);
-            });
-        }
-        @android.webkit.JavascriptInterface public void instantVerified() {
-            activity.runOnUiThread(() -> {
-                if (!closed && WebAccess.sameOrigin(origin, view.getUrl()) && activity instanceof MainActivity)
-                    ((MainActivity)activity).instantVerified(view);
-            });
-        }
-
         @android.webkit.JavascriptInterface public void loadQqImage(String id, String address) {
             if (closed || id == null || !id.matches("[a-zA-Z0-9-]{1,64}")) return;
             java.net.URI target = QqImageRequest.allowed(address);

@@ -167,32 +167,89 @@ final class EmbeddedNetwork: ObservableObject {
         return URLSession(configuration: configuration, delegate: NoRedirectDelegate(), delegateQueue: nil)
     }
 
-    func webSession(endpoint: URL, token: String, fingerprint: String? = nil) async throws -> RemoteWebSession {
-        guard (fingerprint != nil ? PairingInvitation.isDirectEndpoint(endpoint) : PairingInvitation.isTailnetEndpoint(endpoint)),
-              token.count == 64, token.allSatisfy({ "0123456789abcdef".contains($0) }) else { throw RemoteError.network }
+    private var gateway: Int32 = 0
+    private var gatewayToken: String?
+    private var webRoute: URL?
+
+    private static var codeCache: URL { URL.cachesDirectory.appendingPathComponent("WeQWebCode") }
+
+    private func localGateway(token: String, localSecret: String) throws -> Int32 {
+        var storage = URL.applicationSupportDirectory.appendingPathComponent("WeQWebOrigins")
+        try FileManager.default.createDirectory(at: storage, withIntermediateDirectories: true)
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        try storage.setResourceValues(values)
+        let handle = WeQOpenGateway(token, localSecret, Self.codeCache.path, storage.path)
+        guard handle != 0 else { throw RemoteError.network }
+        return handle
+    }
+
+    private func attachGateway(_ handle: Int32, endpoint: URL, fingerprint: String?) async throws {
         let generation = revision
+        let nodeHandle = fingerprint == nil ? await node?.tailscale ?? 0 : 0
+        guard generation == revision, !Task.isCancelled,
+              fingerprint != nil ? PairingInvitation.isDirectEndpoint(endpoint) :
+                PairingInvitation.isTailnetEndpoint(endpoint),
+              WeQAttachGateway(handle, nodeHandle, endpoint.absoluteString, fingerprint ?? "") == 1
+        else { throw RemoteError.network }
+    }
+
+    private var webRouteRevision = 0
+
+    func attachWeb(endpoint: URL, token: String, fingerprint: String?) async throws {
+        let handle = gateway
+        guard handle != 0, gatewayToken == token else { throw RemoteError.credential }
+        guard webRoute != endpoint || webRouteRevision != revision else { return }
+        try await attachGateway(handle, endpoint: endpoint, fingerprint: fingerprint)
+        guard gateway == handle else { throw CancellationError() }
+        webRoute = endpoint
+        webRouteRevision = revision
+    }
+
+    func webSession(token: String, endpoint: URL? = nil, fingerprint: String? = nil) async throws -> RemoteWebSession? {
+        let generation = revision
+        let localSecret = try DeviceCredential().token
+        let handle = try localGateway(token: token, localSecret: localSecret)
+        var adopted = false
+        defer { if !adopted { WeQCloseGateway(handle) } }
+        if let endpoint {
+            try await attachGateway(handle, endpoint: endpoint, fingerprint: fingerprint)
+        } else if WeQGatewayHasRelease(handle) == 0 { return nil }
+
+        guard let raw = WeQGatewayOrigin(handle) else { throw RemoteError.network }
+        defer { free(raw) }
+        guard let origin = URL(string: String(cString: raw)) else { throw RemoteError.network }
         let configuration = WKWebViewConfiguration()
-        configuration.websiteDataStore = webDataStore.dataStore(endpoint: endpoint, token: token, fingerprint: fingerprint)
-        configuration.websiteDataStore.proxyConfigurations = []
-        if fingerprint == nil {
-        guard connected, let node else { throw RemoteError.network }
-        let loopback = try await node.loopback()
-        guard let ip = loopback.ip, let port = loopback.port,
-              let proxyPort = NWEndpoint.Port(rawValue: UInt16(port)), generation == revision else { throw RemoteError.network }
-        var proxy = ProxyConfiguration(socksv5Proxy: .hostPort(host: NWEndpoint.Host(ip), port: proxyPort))
-        proxy.applyCredential(username: "tsnet", password: loopback.proxyCredential)
-        proxy.allowFailover = false
-        configuration.websiteDataStore.proxyConfigurations = [proxy]
-        }
+        configuration.websiteDataStore = webDataStore.dataStore(endpoint: origin, token: token, fingerprint: nil)
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
-        let cookieValue = "weq_remote=\(token); HttpOnly; SameSite=Strict; Path=/" + (endpoint.scheme == "https" ? "; Secure" : "")
-        guard let cookie = HTTPCookie.cookies(withResponseHeaderFields: ["Set-Cookie": cookieValue], for: endpoint).first else { throw RemoteError.credential }
+        let cookieValue = "weq_remote_local=\(localSecret); HttpOnly; SameSite=Strict; Path=/"
+        guard let cookie = HTTPCookie.cookies(withResponseHeaderFields: ["Set-Cookie": cookieValue], for: origin).first else {
+            throw RemoteError.credential
+        }
         await configuration.websiteDataStore.httpCookieStore.setCookie(cookie)
-        guard generation == revision, fingerprint != nil || connected else { throw CancellationError() }
-        let session = RemoteWebSession(configuration: configuration, endpoint: endpoint, fingerprint: fingerprint,
+        guard generation == revision, !Task.isCancelled else { throw CancellationError() }
+        closeWeb()
+        gateway = handle
+        gatewayToken = token
+        webRoute = endpoint
+        webRouteRevision = revision
+        adopted = true
+        let session = RemoteWebSession(configuration: configuration, endpoint: origin,
             networkCost: networkCost, businessCache: webDataStore.businessCache(token: token))
-        session.view.load(URLRequest(url: endpoint))
+        session.view.load(URLRequest(url: origin))
         return session
+    }
+
+    func closeWeb() {
+        if gateway != 0 { WeQCloseGateway(gateway) }
+        gateway = 0
+        gatewayToken = nil
+        webRoute = nil
+    }
+
+    func clearWebCache() {
+        closeWeb()
+        WeQClearGatewayCache(Self.codeCache.path)
     }
 
     static func configuration() -> URLSessionConfiguration {

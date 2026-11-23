@@ -1,4 +1,4 @@
-package androidnet
+package webgateway
 
 import (
 	"net"
@@ -55,18 +55,18 @@ func TestProxyReconnectReusesOriginWithFreshLocalSecret(t *testing.T) {
 	}
 	t.Cleanup(func() { webStorage.Lock(); webStorage.directory = ""; webStorage.Unlock() })
 	token := strings.Repeat("a", 64)
-	first := &Client{http: &http.Client{}}
-	origin, err := first.OpenWeb("http://100.64.0.10:7691", token, strings.Repeat("b", 64))
+	first, err := Open(token, strings.Repeat("b", 64))
 	if err != nil {
 		t.Fatal(err)
 	}
-	first.CloseWeb()
-	second := &Client{http: &http.Client{}}
-	next, err := second.OpenWeb("http://100.64.0.11:7691", token, strings.Repeat("c", 64))
+	origin := first.Origin()
+	first.Close()
+	second, err := Open(token, strings.Repeat("c", 64))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer second.CloseWeb()
+	defer second.Close()
+	next := second.Origin()
 	if next != origin {
 		t.Fatal("route change changed browser storage origin")
 	}
@@ -80,25 +80,4 @@ func TestProxyReconnectReusesOriginWithFreshLocalSecret(t *testing.T) {
 	if response.StatusCode != http.StatusForbidden {
 		t.Fatal("previous local secret remains authorized")
 	}
-}
-
-func TestWebProxyCloseBeforeServeReleasesOrigin(t *testing.T) {
-	listener, err := net.Listen("tcp4", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer listener.Close()
-	address := listener.Addr().String()
-	proxy := &webProxy{server: &http.Server{}, listener: listener}
-	proxy.close()
-	next, err := net.Listen("tcp4", address)
-	if err != nil {
-		t.Fatalf("close before Serve retained the local origin: %v", err)
-	}
-	defer next.Close()
-	// 模拟关闭之后才获得调度的 Serve，不得重新占用已释放的端口。
-	if err := proxy.server.Serve(listener); err != http.ErrServerClosed {
-		t.Fatalf("Serve after close: %v", err)
-	}
-	proxy.close()
 }
