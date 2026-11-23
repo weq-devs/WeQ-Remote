@@ -4,6 +4,115 @@ import WebKit
 @testable import WeQRemote
 
 final class WebDataStoreTests: XCTestCase {
+
+    private func request(_ time: Double, _ revision: String, base: String? = nil,
+                         keys: [String], updates: [(String, String)]) -> BusinessCacheRecordWrite {
+        BusinessCacheRecordWrite(savedAt: time, revision: revision, base: base, keys: keys,
+                                 records: updates.map { BusinessCacheRecord(key: $0.0, payload: $0.1) })
+    }
+
+    private func recordsFolder(_ directory: URL, scope: String, kind: String) -> URL {
+        let hash = SHA256.hash(data: Data(scope.utf8)).map { String(format: "%02x", $0) }.joined()
+        return directory.appendingPathComponent("\(kind)/\(hash).records")
+    }
+
+    @MainActor
+    func testIncrementalRecordsRetainUnchangedFileAndSupportLegacyWriters() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let scope = "account-a"
+        let folder = recordsFolder(directory, scope: scope, kind: "business")
+        let large = String(repeating: "好友", count: 100_000)
+        do {
+            let cache = RemoteBusinessCache(directory: directory)
+            await cache.put(scope: scope, payload: "old web", savedAt: 10)
+            guard case .legacy(let original) = await cache.getRecords(scope: scope, kind: .business, newerThan: 0) else {
+                return XCTFail("Expected legacy snapshot")
+            }
+            XCTAssertEqual(original, "old web")
+            let created = await cache.putRecords(scope: scope, kind: .business, request:
+                request(11, "initial", keys: ["directory", "preview"], updates: [("directory", large), ("preview", "before")]))
+            XCTAssertEqual(created, .stored)
+            let urls = try FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.fileSizeKey])
+            let untouched = try XCTUnwrap(urls.first { (try? $0.resourceValues(forKeys: [.fileSizeKey]).fileSize) == large.utf8.count })
+            let inode = try FileManager.default.attributesOfItem(atPath: untouched.path)[.systemFileNumber] as? NSNumber
+
+            let changed = await cache.putRecords(scope: scope, kind: .business, request:
+                request(12, "next", base: "initial", keys: ["preview", "directory"], updates: [("preview", "after")]))
+            XCTAssertEqual(changed, .stored)
+            XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: untouched.path)[.systemFileNumber] as? NSNumber, inode)
+            XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: folder.path).count, 3)
+        }
+
+        let reopened = RemoteBusinessCache(directory: directory)
+        guard case .records(let savedAt, let records) = await reopened.getRecords(scope: scope, kind: .business, newerThan: 11) else {
+            return XCTFail("Expected record snapshot")
+        }
+        XCTAssertEqual(savedAt, 12)
+        XCTAssertEqual(records.map(\.key), ["preview", "directory"])
+        XCTAssertTrue(records.map(\.payload) == ["after", large])
+        let current = await reopened.getRecords(scope: scope, kind: .business, newerThan: 12)
+        XCTAssertNil(current)
+        let stale = await reopened.putRecords(scope: scope, kind: .business, request:
+            request(13, "stale", base: "initial", keys: ["preview"], updates: [("preview", "stale")]))
+        XCTAssertEqual(stale, .needsFull)
+        await reopened.put(scope: scope, payload: "stale old writer", savedAt: 11)
+        let legacy = await reopened.get(scope: scope)
+        XCTAssertEqual(legacy, "old web")
+        await reopened.put(scope: scope, payload: "fresh old writer", savedAt: 14)
+        guard case .legacy(let replacement) = await reopened.getRecords(scope: scope, kind: .business, newerThan: 12) else {
+            return XCTFail("Expected newer legacy snapshot")
+        }
+        XCTAssertEqual(replacement, "fresh old writer")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: folder.path))
+    }
+
+    @MainActor
+    func testRecordLimitsMissingFilesAndRevocation() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let cache = RemoteBusinessCache(directory: directory)
+        let scope = "fixture"
+        let initial = await cache.putRecords(scope: scope, kind: .messages, request:
+            request(20, "start", keys: ["one", "two"], updates: [("one", "old-one"), ("two", "old-two")]))
+        XCTAssertEqual(initial, .stored)
+        let tooLarge = String(repeating: "X", count: RemoteBusinessCache.Kind.messages.maxPayload)
+        let rejected = await cache.putRecords(scope: scope, kind: .messages, request:
+            request(21, "over-limit", base: "start", keys: ["one", "two"], updates: [("one", tooLarge)]))
+        XCTAssertEqual(rejected, .unavailable)
+        guard case .records(let savedAt, let values) = await cache.getRecords(scope: scope, kind: .messages, newerThan: 19) else {
+            return XCTFail("Lost prior snapshot")
+        }
+        XCTAssertEqual(savedAt, 20)
+        XCTAssertEqual(values.map(\.payload), ["old-one", "old-two"])
+        let otherScope = await cache.getRecords(scope: "unrelated", kind: .messages, newerThan: 0)
+        XCTAssertNil(otherScope)
+
+        let folder = recordsFolder(directory, scope: scope, kind: "messages")
+        let files = try FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)
+        let lost = try XCTUnwrap(files.first { (try? String(contentsOf: $0, encoding: .utf8)) == "old-two" })
+        try FileManager.default.removeItem(at: lost)
+        let partial = await cache.putRecords(scope: scope, kind: .messages, request:
+            request(22, "partial", base: "start", keys: ["one", "two"], updates: [("one", "new-one")]))
+        XCTAssertEqual(partial, .needsFull)
+        let recovered = await cache.putRecords(scope: scope, kind: .messages, request:
+            request(22, "partial", keys: ["one", "two"], updates: [("one", "new-one"), ("two", "recovered")]))
+        XCTAssertEqual(recovered, .stored)
+        await cache.put(scope: scope, kind: .avatar, payload: "avatar", savedAt: 23)
+        cache.clear()
+        let oldWriter = await cache.putRecords(scope: scope, kind: .messages, request:
+            request(24, "late", keys: ["one"], updates: [("one", "late")]))
+        XCTAssertEqual(oldWriter, .unavailable)
+        let fresh = RemoteBusinessCache(directory: directory)
+        let purged = await fresh.getRecords(scope: scope, kind: .messages, newerThan: 0)
+        let avatar = await fresh.get(scope: scope, kind: .avatar)
+        XCTAssertNil(purged)
+        XCTAssertNil(avatar)
+        let newWriter = await fresh.putRecords(scope: scope, kind: .messages, request:
+            request(25, "fresh", keys: ["one"], updates: [("one", "fresh")]))
+        XCTAssertEqual(newWriter, .stored)
+    }
+
     @MainActor
     func testBusinessSnapshotsSurviveNewRouteAndDoNotCrossScopeOrRevocation() async {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -71,6 +180,16 @@ final class WebDataStoreTests: XCTestCase {
         let latest = await cache.get(scope: "snapshot-6")
         XCTAssertNil(first)
         XCTAssertEqual(latest, "snapshot")
+        let existing = await cache.putRecords(scope: "snapshot-6", kind: .business, request:
+            request(7, "existing", keys: ["query"], updates: [("query", "record")]))
+        let newScope = await cache.putRecords(scope: "snapshot-7", kind: .business, request:
+            request(8, "new", keys: ["query"], updates: [("query", "record")]))
+        let evicted = await cache.getRecords(scope: "snapshot-3", kind: .business, newerThan: 0)
+        let retained = await cache.getRecords(scope: "snapshot-4", kind: .business, newerThan: 0)
+        XCTAssertEqual(existing, .stored)
+        XCTAssertEqual(newScope, .stored)
+        XCTAssertNil(evicted)
+        XCTAssertNotNil(retained)
 
         let payload = String(repeating: "A", count: RemoteBusinessCache.Kind.avatar.maxPayload)
         for i in 1...34 {

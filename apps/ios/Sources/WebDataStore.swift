@@ -137,6 +137,24 @@ final class RemoteBusinessCache {
         }
     }
 
+    func getRecords(scope: String, kind: Kind, newerThan: Double) async -> BusinessCacheRecordRead? {
+        guard kind != .avatar, let (lane, name) = target(scope: scope, kind: kind) else { return nil }
+        let result = await withCheckedContinuation { (continuation: CheckedContinuation<BusinessCacheRecordRead?, Never>) in
+            lane.queue.async { continuation.resume(returning: lane.getRecords(name, newerThan: newerThan)) }
+        }
+        return generation.valid ? result : nil
+    }
+
+    func putRecords(scope: String, kind: Kind, request: BusinessCacheRecordWrite) async -> BusinessCacheRecordResult {
+        guard kind != .avatar, let (lane, name) = target(scope: scope, kind: kind),
+              request.savedAt.isFinite, request.savedAt > 0,
+              request.savedAt <= Date().timeIntervalSince1970 * 1000 + 60_000 else { return .unavailable }
+        let result = await withCheckedContinuation { (continuation: CheckedContinuation<BusinessCacheRecordResult, Never>) in
+            lane.queue.async { continuation.resume(returning: lane.putRecords(name, request: request)) }
+        }
+        return generation.valid ? result : .unavailable
+    }
+
     func clear() {
         guard generation.valid else { return }
         generation.valid = false
@@ -175,6 +193,7 @@ private final class SnapshotLane: @unchecked Sendable {
     let queue: DispatchQueue
     private let directory: URL
     private let kind: RemoteBusinessCache.Kind
+    private let records: BusinessCacheRecords
     private var entries: [String: Entry] = [:]
     private var bytes = 0
     private var indexed = false
@@ -183,6 +202,7 @@ private final class SnapshotLane: @unchecked Sendable {
     init(directory: URL, kind: RemoteBusinessCache.Kind) {
         self.directory = directory
         self.kind = kind
+        records = BusinessCacheRecords(directory: directory, maxBytes: kind.maxPayload)
         queue = Self.queues[kind]!
     }
 
@@ -225,11 +245,36 @@ private final class SnapshotLane: @unchecked Sendable {
         return snapshot.payload
     }
 
+    private func legacySavedAt(_ name: String) -> Double? {
+        let file = directory.appendingPathComponent(name)
+        guard let entry = observe(file) else { return nil }
+        return entry.savedAt ?? read(file, entry: entry)?.savedAt
+    }
+
+    func getRecords(_ name: String, newerThan: Double) -> BusinessCacheRecordRead? {
+        let old = legacySavedAt(name) ?? 0
+        let updated = records.savedAt(name) ?? 0
+        if updated >= old, let result = records.get(name, newerThan: newerThan) { return result }
+        if let payload = get(name, newerThan: newerThan) { return .legacy(payload) }
+        return updated < old ? records.get(name, newerThan: newerThan) : nil
+    }
+
+    func putRecords(_ name: String, request: BusinessCacheRecordWrite) -> BusinessCacheRecordResult {
+        if let old = legacySavedAt(name), old > request.savedAt { return .unchanged }
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            if !indexed { try indexDirectory() }
+        } catch { return .unavailable }
+        let result = records.put(name, request: request)
+        if result == .stored { prune() }
+        return result
+    }
+
     func put(_ name: String, payload: String, savedAt: Double) {
         let file = directory.appendingPathComponent(name)
-        if let entry = observe(file),
-           let previous = entry.savedAt ?? read(file, entry: entry)?.savedAt,
-           previous > savedAt { return }
+        if let previous = legacySavedAt(name), previous > savedAt { return }
+        let structured = kind == .avatar ? nil : records.savedAt(name)
+        if let structured, structured > savedAt { return }
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             if !indexed { try indexDirectory() }
@@ -241,6 +286,7 @@ private final class SnapshotLane: @unchecked Sendable {
             try data.write(to: file, options: .atomic)
             #endif
             set(name, stamp(file).map { Entry(stamp: $0, savedAt: savedAt) })
+            if structured != nil { records.remove(name) }
             prune()
         } catch { /* The webpage keeps its origin-local copy. */ }
     }
@@ -248,29 +294,39 @@ private final class SnapshotLane: @unchecked Sendable {
     private func indexDirectory() throws {
         let files = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: [])
         for file in files { _ = observe(file) }
+        if kind != .avatar { records.index(files) }
         indexed = true
     }
 
-    private var overBudget: Bool { entries.count > kind.maxFiles || bytes > kind.maxBytes }
+    private var overBudget: Bool {
+        if kind == .avatar { return entries.count > kind.maxFiles || bytes > kind.maxBytes }
+        return Set(entries.keys).union(records.ages.keys).count > kind.maxFiles || bytes + records.bytes > kind.maxBytes
+    }
 
     private func prune() {
         guard overBudget else { return }
-        for (name, _) in entries.sorted(by: { $0.value.stamp.modified < $1.value.stamp.modified }) {
+        let structured = records.ages
+        let ages = entries.mapValues { $0.stamp.modified }.merging(structured) { max($0, $1) }
+        for (name, _) in ages.sorted(by: { $0.value < $1.value }) {
             guard overBudget else { break }
-            let file = directory.appendingPathComponent(name)
-            do {
-                try FileManager.default.removeItem(at: file)
-                set(name, nil)
-            } catch {
-                // 第三方已移走缓存时也把对应字节从索引扣除。
-                _ = observe(file)
+            if entries[name] != nil {
+                let file = directory.appendingPathComponent(name)
+                do {
+                    try FileManager.default.removeItem(at: file)
+                    set(name, nil)
+                } catch {
+                    // 第三方已移走缓存时也把对应字节从索引扣除。
+                    _ = observe(file)
+                }
             }
+            if structured[name] != nil { records.remove(name) }
         }
     }
 
     func clear() {
         try? FileManager.default.removeItem(at: directory)
         entries.removeAll()
+        records.reset()
         bytes = 0
         indexed = false
     }

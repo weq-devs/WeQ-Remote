@@ -100,6 +100,8 @@ Android 在完整接收响应后立即提供内存缓存，后台分批写盘和
 
 同一已验证设备授权的 Android 代码缓存不再按上游地址分桶，仅复用 `public, immutable` 且带内容哈希的 JS/CSS；WebView 端口、授权检查及其他响应不变。iOS 使用按授权固定的环回 WKWebView 来源，主框架仍可使用 `weqBusinessCache` 本地桥将目录、已打开的近期聊天尾窗和小头像另存到同一授权的有界本地存储。两边来源各自保留原缓存；桥不可用时正常连接，缺失数据按现有途径获取，撤销或忘记电脑时清理共享缓存。JS/CSS 不经 iOS 本地桥，不变更邀请或鉴权协议。
 
+iOS 新壳通过主框架的 `weqRemoteBusinessRecords === 1` 宣告支持目录和近期消息的增量镜像。网页调用 `putRecords` 提交 `scope`、`kind`、`savedAt`、`revision`、有序 `keys` 和变动的 `{key, payload}`。`payload` 是单条查询的 SuperJSON 文本。携带 `base` 时必须匹配原生当前修订，收到 `needsFull` 后可省略 `base` 重送完整记录。成功返回 `stored`，已有更新数据返回 `unchanged`，超限、撤销或读写不可用时返回 `unavailable`。完整记录先落盘，再原子替换清单；同一分区的旧格式和新格式共用数量与空间预算。`getRecords` 按原来的 `newerThan` 返回更新的记录或旧快照。旧壳继续使用 `get` / `put`；旧网页在新壳仍可使用已有旧快照，最新增量需新版网页。小头像沿用原桥。
+
 手机 App 和电脑 WeQ 使用各自语义化版本，不要求版本号相同。当前开发版新增 v4，并继续兼容邀请 v1/v2/v3、状态协议 1 和完整 Web 授权；已发布的 0.1.0 不会因电脑更新而自动获得 v4 解析能力，需要更新手机 App。不兼容变更必须显式增加协议版本，并先给用户可理解的升级错误，不静默接受未知版本。
 
 跨仓库测试约定：电脑 checkout 提供 `scripts/remote-integration-server.ts`，`GET /test/contract` 返回：

@@ -88,6 +88,40 @@ private final class RemoteBusinessCacheHandler: NSObject, WKScriptMessageHandler
                 await cache.put(scope: scope, kind: kind, payload: payload, savedAt: savedAt)
                 replyHandler(true, nil)
             }
+        case "getRecords":
+            let newerThan = body["newerThan"] as? Double ?? 0
+            active += 1
+            Task {
+                defer { active -= 1 }
+                switch await cache.getRecords(scope: scope, kind: kind, newerThan: newerThan) {
+                case .legacy(let payload): replyHandler(payload, nil)
+                case .records(let savedAt, let records):
+                    replyHandler([
+                        "scope": scope, "savedAt": savedAt,
+                        "records": records.map { ["key": $0.key, "payload": $0.payload] }
+                    ], nil)
+                case nil: replyHandler(NSNull(), nil)
+                }
+            }
+        case "putRecords":
+            guard let savedAt = body["savedAt"] as? Double, let revision = body["revision"] as? String,
+                  let keys = body["keys"] as? [String], keys.count <= BusinessCacheRecords.countLimit,
+                  let rows = body["records"] as? [[String: String]], rows.count <= keys.count else {
+                replyHandler(nil, "Invalid records"); return
+            }
+            let records = rows.compactMap { row -> BusinessCacheRecord? in
+                guard let key = row["key"], let payload = row["payload"] else { return nil }
+                return BusinessCacheRecord(key: key, payload: payload)
+            }
+            guard records.count == rows.count else { replyHandler(nil, "Invalid records"); return }
+            let request = BusinessCacheRecordWrite(savedAt: savedAt, revision: revision,
+                                                   base: body["base"] as? String, keys: keys, records: records)
+            active += 1
+            Task {
+                defer { active -= 1 }
+                let result = await cache.putRecords(scope: scope, kind: kind, request: request)
+                replyHandler(result.rawValue, nil)
+            }
         default: replyHandler(nil, "Invalid cache action")
         }
     }
@@ -288,6 +322,8 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
             let cache = RemoteBusinessCacheHandler(cache: businessCache)
             cache.owner = self
             configuration.userContentController.addScriptMessageHandler(cache, contentWorld: .page, name: "weqBusinessCache")
+            configuration.userContentController.addUserScript(WKUserScript(
+                source: "window.weqRemoteBusinessRecords=1;", injectionTime: .atDocumentStart, forMainFrameOnly: true))
         }
         let images = RemoteQqImageHandler(gateway: imageGateway)
         images.owner = self
