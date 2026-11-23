@@ -62,6 +62,13 @@
 - 结果发送为本地 `weq-remote-media` 事件，`detail.id` 对应请求，`type` 为 `ready`、`audio`、`video`、`error` 或 `ended`。`audio` 带 `{sampleRate:16000,channels:1,pcmBase64}`，内容为每包 20 ms 的小端 Int16 PCM；`video` 带 `{width,height,rgbaBase64,timestampMs}`，内容为逐行紧凑 RGBA8888；`error` 带 `message`。
 - 视频最多保留一帧等待网页处理；音频交付过慢时结束对应采集并报告错误，不无限积压。设备权限、页面重载、退后台、系统中断、断开和销毁按订阅收尾。桥只传设备媒体，不新增业务或网络协议；手机安装包与共用网页需要配套更新。
 
+## 最近聊天首屏
+
+- 新手机壳从已保存的电脑授权读取一份私有本机快照，独立于 WebView 初始化、授权验证和网络入口。同一授权只保留最后确认的账号与数据源；只显示真实打开且成功读取过的普通私聊／群聊，每个最多 24 条文本摘要、最多 6 个会话，单份最多 256 KiB，沿用正文缓存原有的 24 小时过期时间。不保存原媒体、待发送消息或账号凭据。收到授权撤销、删除电脑、已确认换号／换源、隐私模式或应用锁启用时清除对应快照。
+- 新电脑网页在主文档提供 `window.weqRemoteInstantSnapshot`。`{scope}` 表示已确认账号／配置，切换时移除旧数据但不覆盖同范围快照；`{scope,chats}` 提交当前快照，`{scope:null,chats:[]}` 清除。`chats` 的项为 `{id,title,expiresAt,rows:[{id,text,mine}]}`。桥只通知壳从当前主文档读取，Android 子框架的桥调用不能直接提交快照内容。
+- 正式页面就绪后，手机把用户在缓存页实际选择的 `{scope,id,anchor?}` 交给 `window.weqRemoteOpenCachedChat`。网页重新检查账号、数据源和普通聊天权限，用原入口打开；加载窗口里找到锚点时尽量保留阅读位置。旧网页、不可用会话及超时续用正式页面的默认启动行为，不阻塞启动，不自动重发写操作。无缓存或未点选聊天时不额外导航。
+- 「连接详情」记录本次冷启动的可用阶段，缓存界面和首个已核验聊天窗口分别计时。没有对应事件就不补造阶段，也不把连接面的请求耗时当成首屏耗时。功能需更新手机壳和电脑网页，不新增网络 API 或修改配对协议。
+
 ## 首屏资源进度
 
 - 电脑识别 `WeQRemote` User-Agent，在 HTML 的 `meta[name="weq-startup-resources"]` 中附带 JSON：`{version:1,resources:[{path:"/assets/name-hash.js",size:1234}]}`。新构建覆盖入口、主工作区及默认首页的同源静态 JS/CSS 依赖，去重后逐项给出本次压缩协商下的响应体大小，不含 HTTP 头、HTML、媒体及后续按需业务模块；旧构建继续只统计 HTML 引用或 modulepreload 的资源。

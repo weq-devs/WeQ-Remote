@@ -33,7 +33,11 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--test', action='store_true', help='单独的本机集成测试 APK，不可作为产品交付')
     parser.add_argument('--skip-network', action='store_true', help='复用已构建 AAR；不用于首次构建')
+    parser.add_argument('--output-dir', type=Path, help='另存 APK 和构建记录，保留已有包')
     args = parser.parse_args()
+    destination = args.output_dir.resolve() if args.output_dir else BUILD
+    if args.output_dir and destination.exists() and (not destination.is_dir() or any(destination.iterdir())):
+        raise SystemExit('指定的产物目录必须为空，已有文件未改动')
     sdk = Path(os.environ.get('ANDROID_HOME', Path.home() / 'Library/Android/sdk'))
     ndk = Path(os.environ.get('ANDROID_NDK_HOME', sdk / 'ndk/28.2.13676358'))
     tools = sdk / 'build-tools/36.0.0'
@@ -129,7 +133,8 @@ def main():
     if not key.exists():
         key.parent.mkdir(exist_ok=True)
         run(['keytool', '-genkeypair', '-keystore', key, '-storepass', 'android', '-keypass', 'android', '-alias', 'androiddebugkey', '-keyalg', 'RSA', '-keysize', '2048', '-validity', '10000', '-dname', 'CN=Android Debug,O=Android,C=US'])
-    output = BUILD / f'weq-remote-{version}-arm64{"-test" if args.test else ""}.apk'
+    destination.mkdir(parents=True, exist_ok=True)
+    output = destination / f'weq-remote-{version}-arm64{"-test" if args.test else ""}.apk'
     run([tools / 'apksigner', 'sign', '--ks', key, '--ks-pass', 'pass:android', '--key-pass', 'pass:android', '--out', output, aligned])
     run([tools / 'apksigner', 'verify', '--verbose', output])
     identity = apk_identity(subprocess.check_output([str(tools / 'aapt2'), 'dump', 'badging', str(output)], text=True))
@@ -143,7 +148,7 @@ def main():
                       'sha256': hashlib.sha256(output.read_bytes()).hexdigest(),
                       'sourceCommit': subprocess.check_output(['git', '-C', str(repository), 'rev-parse', 'HEAD'], text=True).strip(),
                       'sourceDirty': bool(subprocess.check_output(['git', '-C', str(repository), 'status', '--porcelain'], text=True).strip())}
-        (BUILD / 'android-build.json').write_text(json.dumps(provenance, indent=2) + '\n')
+        (destination / 'android-build.json').write_text(json.dumps(provenance, indent=2) + '\n')
     print('APK:', output)
 
 

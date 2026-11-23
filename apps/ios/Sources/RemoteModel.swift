@@ -28,6 +28,14 @@ final class RemoteModel: ObservableObject {
     @Published private(set) var updateDownloads: [UpdateMirror] = []
     @Published private(set) var includePrerelease = UserDefaults.standard.bool(forKey: "checkPrerelease")
     @Published var showingDetails = false
+    @Published private(set) var instantSnapshot: RemoteInstantSnapshot?
+    @Published private(set) var instantHandoff = false
+    @Published var instantSelected: String?
+    @Published var instantAnchor: String?
+    @Published var instantDismissed = false
+    private var instantBlocked = false
+    private var startupStarted: TimeInterval?
+    private var startupStages: [(String, Int)] = []
     let network: EmbeddedNetwork
     private var api: RemoteAPI?
     private var credential: DeviceCredential?
@@ -154,6 +162,21 @@ final class RemoteModel: ObservableObject {
 
     var isConnecting: Bool { busy || code != nil || (webSession != nil && !webReady) }
 
+    var instantChats: [RemoteInstantSnapshot.Chat] { instantSnapshot?.current()?.chats ?? [] }
+
+    func loadInstant() async {
+        guard !instantBlocked, let saved = try? SavedConnection.load() else { return }
+        let result = await RemoteInstantStore.load(saved.token)
+        guard !Task.isCancelled, !webReady, !instantBlocked,
+              (try? SavedConnection.load())?.token == saved.token else { return }
+        instantSnapshot = result
+    }
+
+    func markStartup(_ stage: String) {
+        guard let started = startupStarted, !startupStages.contains(where: { $0.0 == stage }) else { return }
+        startupStages.append((stage, Int((ProcessInfo.processInfo.systemUptime - started) * 1000)))
+    }
+
     var appVersion: String {
         Bundle.main.infoDictionary?["WeQReleaseVersion"] as? String
             ?? Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "未知"
@@ -185,7 +208,8 @@ final class RemoteModel: ObservableObject {
     var connectionDetails: String {
         let checked = health.checkedAt?.formatted(date: .omitted, time: .standard) ?? "尚未验证"
         let latency = health.latency.map { "\($0) ms" } ?? "—"
-        return "连接：\(api == nil ? "未连接" : health.status)\n电脑：\(api?.endpoint.absoluteString ?? "未选择")\n连接方式：\(connectionRoute)\nTailscale：\(tailscaleStatus)\n最近成功：\(checked)\n请求耗时：\(latency)\n\(versionInfo)"
+        let startup = startupStages.map { "\($0.0) \($0.1) ms" }.joined(separator: " · ")
+        return "连接：\(api == nil ? "未连接" : health.status)\n电脑：\(api?.endpoint.absoluteString ?? "未选择")\n连接方式：\(connectionRoute)\nTailscale：\(tailscaleStatus)\n最近成功：\(checked)\n请求耗时：\(latency)\n\(startup.isEmpty ? "" : "启动：\(startup)\n")\(versionInfo)"
     }
 
     func checkUpdates() async {
@@ -255,6 +279,7 @@ final class RemoteModel: ObservableObject {
         defer { if generation == revision { busy = false } }
         do {
             guard let saved = try SavedConnection.load() else { rememberedComputer = false; return }
+            if startupStarted == nil { startupStarted = ProcessInfo.processInfo.systemUptime }
             rememberedComputer = true
             message = "正在连接电脑"
             let selection = try await selectConnection(saved.endpoints ?? [saved.endpoint], pin: saved.routeFingerprint ?? saved.fingerprint, probe: restoreProbe(for: saved.endpoints), token: saved.token)
@@ -339,6 +364,21 @@ final class RemoteModel: ObservableObject {
 
     // 页面加载完成后才切到全屏网页；失败时留在连接页，保留手动重连入口。
     func adoptWebSession(_ session: RemoteWebSession) {
+        session.onInstantSnapshot = { [weak self, weak session] text in
+            guard let self, self.webSession === session, let token = self.credential?.token,
+                  let update = RemoteInstantSnapshot.decode(Data(text.utf8)) else { return }
+            self.instantBlocked = true
+            if update.scope != self.instantSnapshot?.scope || update.scope == nil {
+                self.instantSnapshot = nil
+                self.instantSelected = nil
+                self.instantAnchor = nil
+            }
+            RemoteInstantStore.update(text, token: token)
+        }
+        session.onInstantVerified = { [weak self, weak session] in
+            guard let self, self.webSession === session else { return }
+            self.markStartup("首个聊天窗口核验")
+        }
         session.onNetworkPreference = { [weak self] mode in self?.network.dataSaverMode = mode }
         webReady = false
         webLoadingStage = WebDownloadProgress.loadingMessage
@@ -346,6 +386,7 @@ final class RemoteModel: ObservableObject {
         webDevelopmentProgress = nil
         session.onDownload = { [weak self, weak session] progress in
             guard let self, self.webSession === session else { return }
+            if let progress, progress.completed == progress.total { self.markStartup("首屏资源就绪") }
             self.webDownload = progress
         }
         session.onDevelopmentProgress = { [weak self, weak session] progress in
@@ -355,17 +396,32 @@ final class RemoteModel: ObservableObject {
         }
         session.onProgress = { [weak self, weak session] stage in
             guard let self, self.webSession === session, self.webLoadingStage != stage else { return }
+            if ["正在检查恢复状态", "正在恢复账号工作区", "正在初始化工作区", "正在绘制 WeQ 界面"].contains(stage) { self.markStartup(stage) }
             self.webLoadingStage = stage
         }
         session.onReady = { [weak self, weak session] in
-            guard let self, self.webSession === session else { return }
-            self.webReady = true
-            self.health.resume()
-            self.scheduleConnectionWarning()
-            self.publishConnectionHealth()
-            self.webDownload = nil
-            self.webDevelopmentProgress = nil
-            self.error = nil
+            guard let self, let session, self.webSession === session else { return }
+            self.markStartup("网页就绪")
+            session.captureInstant()
+            let finish = { [weak self, weak session] in
+                guard let self, self.webSession === session, !self.webReady else { return }
+                self.instantHandoff = false
+                self.instantSelected = nil
+                self.instantAnchor = nil
+                self.webReady = true
+                self.markStartup("正式界面")
+                self.health.resume()
+                self.scheduleConnectionWarning()
+                self.publishConnectionHealth()
+                self.webDownload = nil
+                self.webDevelopmentProgress = nil
+                self.error = nil
+            }
+            if !self.instantDismissed, let scope = self.instantSnapshot?.scope,
+               let id = self.instantSelected, self.instantChats.contains(where: { $0.id == id }) {
+                self.instantHandoff = true
+                session.openInstant(scope: scope, id: id, anchor: self.instantAnchor, completion: finish)
+            } else { finish() }
         }
         session.onFailure = { [weak self, weak session] error in
             guard let self, self.webSession === session else { return }
@@ -382,6 +438,7 @@ final class RemoteModel: ObservableObject {
         }
         session.onLoading = { [weak self, weak session] in
             guard let self, self.webSession === session else { return }
+            self.instantHandoff = false
             self.webReady = false
             self.webDownload = nil
             self.webDevelopmentProgress = nil
@@ -392,6 +449,7 @@ final class RemoteModel: ObservableObject {
     }
 
     private func failWebLoad(_ error: Error) {
+        instantHandoff = false
         webDownload = nil
         webDevelopmentProgress = nil
         webSession?.close()
@@ -404,6 +462,9 @@ final class RemoteModel: ObservableObject {
 
     func forget() {
         let saved = try? SavedConnection.load()
+        instantBlocked = true
+        instantSnapshot = nil
+        if let saved { RemoteInstantStore.clear(saved.token) }
         network.webDataStore.clearBusinessCache(token: saved?.token)
         network.webDataStore.clear()
         if let saved {
@@ -420,7 +481,9 @@ final class RemoteModel: ObservableObject {
 
     init(network: EmbeddedNetwork) {
         self.network = network
+        startupStarted = ProcessInfo.processInfo.systemUptime
         rememberedComputer = (try? SavedConnection.load()) != nil
+        if !rememberedComputer { startupStarted = nil }
     }
 
     // 仅模拟器 Debug 构建接受回环测试配置；真机/Release 无系统网络绕行入口。
@@ -594,6 +657,7 @@ final class RemoteModel: ObservableObject {
             }
             guard generation == revision, !Task.isCancelled else { return }
             if webSession == nil, !testMode {
+                markStartup("授权完成")
                 let session = try await network.webSession(endpoint: api.endpoint, token: credential.token, fingerprint: fingerprint)
                 guard generation == revision else { session.close(); return }
                 adoptWebSession(session)
@@ -718,6 +782,9 @@ final class RemoteModel: ObservableObject {
         for session in probingSessions.values { session.invalidateAndCancel() }
         probingSessions.removeAll()
         webReady = false
+        instantHandoff = false
+        instantSelected = nil
+        instantAnchor = nil
         webSession?.close()
         webSession = nil
         revision += 1

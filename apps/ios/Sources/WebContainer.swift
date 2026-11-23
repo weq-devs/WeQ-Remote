@@ -19,10 +19,12 @@ private final class RemoteCaptureHandler: NSObject, WKScriptMessageHandler {
 private final class RemoteShellHandler: NSObject, WKScriptMessageHandler {
     weak var owner: RemoteWebSession?
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-        guard message.frameInfo.isMainFrame, let owner,
+        guard message.frameInfo.isMainFrame, let owner, message.webView === owner.view,
               let url = message.frameInfo.request.url,
               RemoteWebPolicy.sameOrigin(url, endpoint: owner.endpoint) else { return }
         if message.body as? String == "menu" { owner.openMenu() }
+        else if message.body as? String == "instantChanged" { owner.captureInstant() }
+        else if message.body as? String == "instantVerified" { owner.onInstantVerified?() }
         else if let value = message.body as? [String: String], let mode = value["dataSaverMode"], ["auto", "always", "never"].contains(mode) { owner.onNetworkPreference?(mode) }
     }
 }
@@ -229,6 +231,44 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
     var onDevelopmentProgress: ((WebDevelopmentProgress) -> Void)?
     var onMenu: (() -> Void)?
     var onConnectionFailure: (() -> Void)?
+    var onInstantSnapshot: ((String) -> Void)?
+    var onInstantVerified: (() -> Void)?
+    private var readingInstant = false
+    private var instantPending = false
+
+    func captureInstant() {
+        guard !closed, let url = view.url, RemoteWebPolicy.sameOrigin(url, endpoint: endpoint) else { return }
+        if readingInstant { instantPending = true; return }
+        readingInstant = true
+        let generation = navigationGeneration
+        view.evaluateJavaScript("JSON.stringify(window.weqRemoteInstantSnapshot ?? null)") { [weak self] value, _ in
+            guard let self else { return }
+            self.readingInstant = false
+            if !self.closed, generation == self.navigationGeneration, let text = value as? String,
+               text.utf8.count <= RemoteInstantSnapshot.maxBytes { self.onInstantSnapshot?(text) }
+            if self.instantPending { self.instantPending = false; self.captureInstant() }
+        }
+    }
+
+    func openInstant(scope: String, id: String, anchor: String?, completion: @escaping () -> Void) {
+        var target = ["scope": scope, "id": id]
+        target["anchor"] = anchor
+        let generation = navigationGeneration
+        var finished = false
+        let finish = { [weak self] in
+            guard let self, !finished, !self.closed, generation == self.navigationGeneration else { return }
+            finished = true
+            completion()
+        }
+        view.callAsyncJavaScript(
+            "return typeof window.weqRemoteOpenCachedChat === 'function' && await window.weqRemoteOpenCachedChat(target);",
+            arguments: ["target": target], in: nil, in: .page
+        ) { _ in finish() }
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(1800))
+            finish()
+        }
+    }
 
     func updateConnectionHealth(warning: ConnectionHealth.Warning?, recovery: Int = 0) {
         guard !closed else { return }
@@ -287,7 +327,7 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
         qqImages = images
         configuration.userContentController.addScriptMessageHandler(images, contentWorld: .page, name: "weqQqImage")
         configuration.userContentController.addUserScript(WKUserScript(
-            source: "window.weqRemoteDressImages=true;", injectionTime: .atDocumentStart, forMainFrameOnly: true))
+            source: "window.weqRemoteDressImages=true;window.weqRemoteInstantSupport=true;", injectionTime: .atDocumentStart, forMainFrameOnly: true))
         configuration.userContentController.addUserScript(WKUserScript(
             source: Self.externalLinksScript, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         let startup = RemoteStartupHandler()

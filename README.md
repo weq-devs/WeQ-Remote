@@ -4,6 +4,7 @@ WeQ 的独立手机连接客户端。iOS 与 Android 负责扫码、连接、凭
 
 当前源码：iOS / Android 1.0.1，iOS build 13、Android versionCode 11。版本说明见 [1.0.1](docs/releases/1.0.1.md)。源码仓库：[weq-devs/WeQ-Remote](https://github.com/weq-devs/WeQ-Remote)（公开，默认分支 `dev`）。
 
+开发源码支持已配对手机重开时先浏览最近缓存的普通聊天。连接电脑与准备网页继续进行；正式网页按当前账号接手用户选中的聊天，不在本机缓存界面发送消息或标记已读。需要同时更新电脑网页和手机 App，并在线打开一次聊天建立缓存。首次无缓存继续使用原有连接页。
 Android 开发源码将连接页的资源进度更新合并到绘制帧，并减少重复的文本布局和进度环重绘。此项需要重新构建、安装 Android App。
 
 Android 开发源码将网页 JS/CSS 的磁盘缓存写入移到有界后台队列，磁盘命中后复用内存副本。WebView 可直接读完资源响应，下次打开时缺失的资源照常下载。此项需要更新 Android App。

@@ -17,6 +17,7 @@ struct WeQRemoteApp: App {
     var body: some Scene {
         WindowGroup {
             RemoteView(model: model, network: network)
+                .task { await model.loadInstant() }
                 .task {
                     #if DEBUG && targetEnvironment(simulator)
                     await WebSmoke.run(model: model, network: network)
@@ -82,8 +83,15 @@ struct RemoteView: View {
                     .accessibilityHidden(!model.webReady)
             }
             if !model.webReady {
-                connectionPage
-                    .transition(.opacity)
+                if !model.instantDismissed, !model.instantChats.isEmpty {
+                    RemoteInstantView(chats: model.instantChats,
+                                      status: model.error == nil && model.isConnecting ? "正在同步" : "本机缓存 · 未连接",
+                                      canRetry: !model.isConnecting, handoff: model.instantHandoff,
+                                      selected: $model.instantSelected, anchor: $model.instantAnchor,
+                                      retry: { model.resumeReconnect(); pairingTask = Task { await model.reconnect() } },
+                                      manage: { model.instantDismissed = true; model.instantSelected = nil })
+                    .onAppear { model.markStartup("缓存界面") }
+                } else { connectionPage.transition(.opacity) }
             }
             }
         }

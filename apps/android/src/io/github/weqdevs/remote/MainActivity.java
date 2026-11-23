@@ -47,6 +47,11 @@ public final class MainActivity extends Activity {
     private long enrollmentDeadline;
     private View setupView;
     private boolean setupProgressFramePending;
+    private RemoteInstantView instantView;
+    private String instantToken, instantHandoff;
+    private boolean instantBlocked, instantCapturePending, instantDirty;
+    private long startupStarted;
+    private final java.util.LinkedHashMap<String, Long> startupStages = new java.util.LinkedHashMap<>();
     android.webkit.WebView webView;
     private WebFeatures webFeatures;
     TextView networkState, computerState, detail, error, codeView, statusPill;
@@ -179,6 +184,7 @@ public final class MainActivity extends Activity {
     }
 
     @Override public void onCreate(Bundle saved) {
+        startupStarted = SystemClock.elapsedRealtime();
         super.onCreate(saved);
         go.Seq.setContext(getApplicationContext());
         try {
@@ -201,7 +207,23 @@ public final class MainActivity extends Activity {
                 if ("http".equals(uri.getScheme()) && "127.0.0.1".equals(uri.getHost()) && uri.getPort() > 0 && uri.getUserInfo() == null && "".equals(uri.getPath()) && uri.getQuery() == null && uri.getFragment() == null) testControl = control;
             } catch (Exception ignored) { }
         }
-        try { rememberedComputer = ConnectionStore.load(this) != null; } catch (Exception ignored) { }
+        try {
+            JSONObject stored = ConnectionStore.load(this);
+            rememberedComputer = stored != null;
+            if (stored != null && getIntent().getData() == null) {
+                instantToken = stored.getString("token");
+                if (!instantToken.matches("[a-f0-9]{64}")) instantToken = null;
+                final String cachedToken = instantToken;
+                if (cachedToken != null) RemoteInstantStore.load(getApplicationContext(), cachedToken, snapshot -> main.post(() -> {
+                    if (isDestroyed() || instantBlocked || webLoaded || !cachedToken.equals(instantToken) || snapshot == null || snapshot.chats == null || snapshot.chats.isEmpty()) return;
+                    instantView = new RemoteInstantView(this, snapshot, () -> { reconnectPaused = false; restoreComputer(); }, this::dismissInstant);
+                    ((android.widget.FrameLayout)setupView).addView(instantView, new android.widget.FrameLayout.LayoutParams(-1, -1));
+                    instantView.requestApplyInsets();
+                    markStartup("缓存界面"); render();
+                }));
+            }
+        } catch (Exception ignored) { }
+        if (!rememberedComputer) startupStarted = 0;
         buildUI();
         // 网页与连接页都铺满整屏；系统栏透明，连接页自己按 insets 留白。
         if (android.os.Build.VERSION.SDK_INT >= 30) {
@@ -232,6 +254,7 @@ public final class MainActivity extends Activity {
         startPathMonitor();
         scheduleConnectionWarning();
         if (webView != null) { webView.onResume(); requestConnectionCheck(true); verify(); return; }
+        if (BuildConfig.TESTING && getIntent().getBooleanExtra("instant_offline_test", false)) return;
         if (!BuildConfig.TESTING && invitation.length() > 0) { main.post(this::pair); return; }
         if (node == null && !busy && !restoreComputer() && enabled) startNetwork();
     }
@@ -559,6 +582,7 @@ public final class MainActivity extends Activity {
 
     private void render() {
         boolean loading = busy || claimID != null || (paired && !webLoaded);
+        if (instantView != null) instantView.updateStatus(isConnecting() && error.length() == 0, instantHandoff != null);
         boolean canPair = claimID == null && !rememberedComputer && !paired;
         pairSection.setVisibility(canPair ? View.VISIBLE : View.GONE);
         scanButton.setEnabled(!busy);
@@ -639,7 +663,7 @@ public final class MainActivity extends Activity {
             .setNegativeButton("取消", null)
             .setPositiveButton("删除电脑", (dialog, which) -> {
                 reconnectPaused = true;
-                ConnectionStore.delete(this); rememberedComputer = false; Androidnet.clearWebCache(); stopNetwork(true);
+                clearInstant(); ConnectionStore.delete(this); rememberedComputer = false; Androidnet.clearWebCache(); stopNetwork(true);
             }).show();
     }
 
@@ -652,10 +676,63 @@ public final class MainActivity extends Activity {
         String latency = health.latency == null ? "—" : health.latency + " ms";
         String build = "未知";
         try { build = Long.toString(android.os.Build.VERSION.SDK_INT >= 28 ? getPackageManager().getPackageInfo(getPackageName(), 0).getLongVersionCode() : getPackageManager().getPackageInfo(getPackageName(), 0).versionCode); } catch (Exception ignored) { }
+        StringBuilder startup = new StringBuilder();
+        startupStages.forEach((stage, elapsed) -> startup.append(startup.length() == 0 ? "启动：" : " · ").append(stage).append(' ').append(elapsed).append(" ms"));
         return "连接：" + (node == null ? "未连接" : health.status()) + "\n电脑：" + (endpoint == null ? "未选择" : endpoint)
             + "\n连接方式：" + connectionRoute + "\n" + networkState.getText()
             + "\n最近成功：" + checked + "\n请求耗时：" + latency
+            + (startup.length() == 0 ? "" : "\n" + startup)
             + "\nWeQ Remote " + appVersion + " (" + build + ") · Android " + android.os.Build.VERSION.RELEASE;
+    }
+
+    private void markStartup(String stage) {
+        if (startupStarted != 0) startupStages.putIfAbsent(stage, SystemClock.elapsedRealtime() - startupStarted);
+    }
+    private void dismissInstant() {
+        instantBlocked = true;
+        if (instantView != null) ((android.widget.FrameLayout)setupView).removeView(instantView);
+        instantView = null;
+    }
+    private void clearInstant() {
+        dismissInstant();
+        String credential = instantToken != null ? instantToken : token;
+        instantToken = null;
+        if (credential != null) RemoteInstantStore.clear(getApplicationContext(), credential);
+    }
+
+    void captureInstant(android.webkit.WebView page) {
+        if (page != webView || token == null) return;
+        if (instantCapturePending) { instantDirty = true; return; }
+        instantCapturePending = true;
+        instantDirty = false;
+        final int revision = webStartupRevision;
+        final String credential = token;
+        page.evaluateJavascript("JSON.stringify(window.weqRemoteInstantSnapshot ?? null)", value -> {
+            if (page != webView) return;
+            instantCapturePending = false;
+            if (instantDirty) captureInstant(page);
+            if (revision != webStartupRevision || !credential.equals(token) || value == null || value.length() > RemoteInstantStore.MAX_BYTES * 6) return;
+            try {
+                Object decoded = new org.json.JSONTokener(value).nextValue();
+                if (!(decoded instanceof String)) return;
+                String payload = (String)decoded;
+                RemoteInstantStore.Snapshot update = RemoteInstantStore.decode(payload, System.currentTimeMillis());
+                if (update == null) return;
+                instantBlocked = true;
+                if (instantView != null && !instantView.snapshot.scope.equals(update.scope)) dismissInstant();
+                instantToken = credential;
+                RemoteInstantStore.update(getApplicationContext(), credential, payload);
+            } catch (org.json.JSONException ignored) { }
+        });
+    }
+
+    void finishInstantHandoff(android.webkit.WebView page, String id) {
+        if (page != webView || !id.equals(instantHandoff)) return;
+        instantHandoff = null;
+        showWebPage(false);
+    }
+    void instantVerified(android.webkit.WebView page) {
+        if (page == webView) markStartup("首个聊天窗口核验");
     }
     private void showDetailsMenu() {
         if (!visible || isFinishing() || isDestroyed() || !getWindow().getDecorView().isAttachedToWindow()) return;
@@ -982,6 +1059,7 @@ public final class MainActivity extends Activity {
         try {
             JSONObject saved = ConnectionStore.load(this);
             if (saved == null) return false;
+            if (startupStarted == 0) startupStarted = SystemClock.elapsedRealtime();
             rememberedComputer = true;
             String address = saved.getString("endpoint"), credential = saved.getString("token"), pin = saved.optString("fingerprint", "");
             if (!credential.matches("[a-f0-9]{64}")) throw new Exception("电脑凭据无效");
@@ -1073,7 +1151,7 @@ public final class MainActivity extends Activity {
                         main.removeCallbacks(reconnectPoll);
                         main.postDelayed(reconnectPoll, 15000);
                     }
-                    if (WebStartup.shouldOpenWeb(restoring, webView != null, webReady)) { restoring = false; if (visible) openWeb(); }
+                    if (WebStartup.shouldOpenWeb(restoring, webView != null, webReady)) { restoring = false; if (visible) { markStartup("授权完成"); openWeb(); } }
                 });
             } catch (Exception e) { main.post(() -> {
                 if (revision != generation) return;
@@ -1113,6 +1191,7 @@ public final class MainActivity extends Activity {
                                 @Override public void onPageStarted(android.webkit.WebView view, String url, android.graphics.Bitmap icon) {
                                     if (webView != page) return;
                                     webStartupRevision++;
+                                    instantHandoff = null;
                                     webDownload = null; webDevelopmentProgress = null;
                                     if (!webLoaded) { webLoadingStage = WebDownloadProgress.LOADING_MESSAGE; render(); }
                                     main.removeCallbacks(webStartupTimeout);
@@ -1170,12 +1249,16 @@ public final class MainActivity extends Activity {
         if ("loading".equals(state)) {
             if (message == null || message.isEmpty()) return;
             webLoadingStage = message.substring(0, Math.min(message.length(), 100));
+            if (java.util.Arrays.asList("正在检查恢复状态", "正在恢复账号工作区", "正在初始化工作区", "正在绘制 WeQ 界面").contains(message)) markStartup(message);
             renderSetupProgress();
-        } else if ("ready".equals(state) || "action-required".equals(state)) showWebPage();
+        } else if ("ready".equals(state) || "action-required".equals(state)) {
+            markStartup("网页就绪"); captureInstant(page); showWebPage("ready".equals(state));
+        }
         else if ("error".equals(state)) failWebLoad(message == null || message.isEmpty() ? "WeQ 页面启动失败，请重试。" : message.substring(0, Math.min(message.length(), 500)));
     }
     void receiveWebDownload(android.webkit.WebView page, WebDownloadProgress value) {
         if (webView != page || webLoaded) return;
+        if (value.completed == value.total) markStartup("首屏资源就绪");
         webDownload = value;
         renderSetupProgress();
     }
@@ -1200,10 +1283,23 @@ public final class MainActivity extends Activity {
             if (!"true".equals(managed)) failWebLoad(problem);
         });
     }
-    private void showWebPage() {
-        if (webLoaded) return;
+    private void showWebPage(boolean resumeCachedChat) {
+        if (webLoaded || instantHandoff != null) return;
+        if (resumeCachedChat && instantView != null && instantView.selection() != null) {
+            final android.webkit.WebView page = webView;
+            final String nonce = java.util.UUID.randomUUID().toString();
+            try {
+                JSONObject target = new JSONObject().put("scope", instantView.snapshot.scope).put("id", instantView.selection()).put("anchor", instantView.anchor());
+                instantHandoff = nonce; render();
+                String reply = "weqRemoteLinks.instantOpened(" + JSONObject.quote(nonce) + ")";
+                page.evaluateJavascript("(async()=>{try{await window.weqRemoteOpenCachedChat?.(" + target + ");}finally{" + reply + ";}})()", null);
+                main.postDelayed(() -> finishInstantHandoff(page, nonce), 1800);
+                return;
+            } catch (org.json.JSONException ignored) { }
+        }
         main.removeCallbacks(webStartupTimeout);
         webLoaded = true;
+        markStartup("正式界面");
         webDevelopmentProgress = null;
         health.resume(SystemClock.elapsedRealtime());
         publishConnectionHealth();
@@ -1213,8 +1309,8 @@ public final class MainActivity extends Activity {
         android.view.ViewGroup parent = (android.view.ViewGroup) setupView.getParent();
         if (parent != null) {
             if (android.animation.ValueAnimator.areAnimatorsEnabled())
-                setupView.animate().alpha(0).setDuration(180).withEndAction(() -> { if (setupView.getParent() == parent && webLoaded) parent.removeView(setupView); setupView.setAlpha(1); }).start();
-            else parent.removeView(setupView);
+                setupView.animate().alpha(0).setDuration(180).withEndAction(() -> { if (setupView.getParent() == parent && webLoaded) { parent.removeView(setupView); dismissInstant(); } setupView.setAlpha(1); }).start();
+            else { parent.removeView(setupView); dismissInstant(); }
         }
         render();
     }
@@ -1251,6 +1347,9 @@ public final class MainActivity extends Activity {
         main.removeCallbacks(healthDeadline);
         main.removeCallbacks(webStartupTimeout);
         webLoaded = false;
+        instantCapturePending = false;
+        instantDirty = false;
+        instantHandoff = null;
         webDownload = null;
         webDevelopmentProgress = null;
         if (webFeatures != null) { webFeatures.close(); webFeatures = null; }
@@ -1265,6 +1364,8 @@ public final class MainActivity extends Activity {
         render();
     }
     @Override public void onBackPressed() {
+        if (instantHandoff != null) return;
+        if (!webLoaded && instantView != null && instantView.back()) return;
         if (webFeatures != null && webFeatures.exitFullscreen()) return;
         if (webView != null) {
             final android.webkit.WebView page = webView;
@@ -1290,7 +1391,7 @@ public final class MainActivity extends Activity {
             if (visible) main.postDelayed(reconnectPoll, webLoaded ? health.checkInterval() : 5000);
             return;
         }
-        if (revoked && !updatingConnection) { ConnectionStore.delete(this); rememberedComputer = false; Androidnet.clearWebCache(); }
+        if (revoked && !updatingConnection) { clearInstant(); ConnectionStore.delete(this); rememberedComputer = false; Androidnet.clearWebCache(); }
         boolean updateFailed = updatingConnection;
         stopNetwork(true); error.setText(message == null ? "连接失败，请重试" : message); render();
         if (updateFailed) { reconnectPaused = true; return; }
