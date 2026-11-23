@@ -46,14 +46,13 @@ struct WebDownloadProgress: Equatable {
     }
 
     var fraction: Double { Double(loadedBytes) / Double(totalBytes) }
-    var downloading: Bool { completed < total }
+    var percentage: Int { completed == total ? 100 : min(99, Int((fraction * 100).rounded())) }
     var fullyCached: Bool { completed == total && downloadedBytes == 0 && cachedBytes == totalBytes && unknownBytes == 0 }
+    var showsRing: Bool { !fullyCached }
     var detail: String {
         if fullyCached { return "已复用网页缓存" }
-        var lines = ["资源加载 \(progressBytes(loadedBytes)) / \(progressBytes(totalBytes))"]
-        if let downloadedBytes { lines.append("已确认下载 \(progressBytes(downloadedBytes)) · 缓存复用 \(progressBytes(cachedBytes))") }
-        if unknownBytes > 0 { lines.append("来源待确认 \(progressBytes(unknownBytes))") }
-        lines.append("资源 \(completed) / \(total) 项")
+        var lines = ["资源 \(completed) / \(total) 项"]
+        if let downloadedBytes, downloadedBytes > 0 { lines.append("已下载 \(progressBytes(downloadedBytes))") }
         return lines.joined(separator: "\n")
     }
 }
@@ -78,7 +77,10 @@ struct WebDevelopmentProgress: Equatable {
     }
 
     var detail: String {
-        "已确认下载 \(progressBytes(downloadedBytes))\n缓存复用 \(cached) 项 · 来源待确认 \(unknown) 项"
+        var lines: [String] = []
+        if downloadedBytes > 0 { lines.append("已下载 \(progressBytes(downloadedBytes))") }
+        if cached > 0 { lines.append("缓存复用 \(cached) 项") }
+        return lines.joined(separator: "\n")
     }
 }
 
@@ -91,5 +93,5 @@ private func progressNumber(_ field: Any?) -> Int64? {
 }
 
 private func progressBytes(_ value: Int64) -> String {
-    value == 0 ? "0 B" : ByteCountFormatter.string(fromByteCount: value, countStyle: .file)
+    ByteCountFormatter.string(fromByteCount: value, countStyle: .file)
 }

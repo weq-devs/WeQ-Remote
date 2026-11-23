@@ -17,7 +17,7 @@ final class DownloadRing extends View {
     void update(WebDownloadProgress value) {
         boolean redraw = progress == null || value == null
             ? progress != value
-            : progress.fraction() != value.fraction();
+            : progress.fraction() != value.fraction() || progress.percentage() != value.percentage();
         progress = value;
         if (redraw) invalidate();
     }
@@ -42,7 +42,7 @@ final class DownloadRing extends View {
         float labelBottom = getHeight() / 2f - 6 * density;
         canvas.drawText("资源加载", getWidth() / 2f, labelBottom, paint);
         paint.setTextSize(22 * getResources().getDisplayMetrics().scaledDensity);
-        String percentage = Math.round(progress.fraction() * 100) + "%";
+        String percentage = progress.percentage() + "%";
         float width = paint.measureText(percentage);
         if (width > available) paint.setTextSize(paint.getTextSize() * available / width);
         canvas.drawText(percentage, getWidth() / 2f, labelBottom - paint.ascent() + 4 * density, paint);

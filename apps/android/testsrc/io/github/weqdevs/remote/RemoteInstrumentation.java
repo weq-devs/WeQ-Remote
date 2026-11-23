@@ -26,7 +26,7 @@ public final class RemoteInstrumentation extends Instrumentation {
             String pkg = getTargetContext().getPackageName();
             if (resourcesOnly) {
                 testResourceTransfers(pkg);
-                result.putString("stream", "PASS: byte progress retained; download/cache/unknown separated; actual startup stage retained\n");
+                result.putString("stream", "PASS: measured transfer and item count shown; actual startup stage retained\n");
                 finish(android.app.Activity.RESULT_OK, result); return;
             }
             if (surfacesOnly) {
@@ -103,7 +103,7 @@ public final class RemoteInstrumentation extends Instrumentation {
                 activity.receiveWebDownload(activity.webView, new WebDownloadProgress(18, 24, 7500000, 10000000, 1250000L, 6250000, 0));
                 require(activity.computerState.getText().toString().equals(WebDownloadProgress.LOADING_MESSAGE), "resource title claims a full download");
             });
-            require(read(activity.detail).contains("已确认下载 1.25 MB") && read(activity.detail).contains("缓存复用 6.25 MB"), "real transfer details missing");
+            require(read(activity.detail).equals("资源 18 / 24 项\n已下载 1.25 MB"), "real transfer details missing");
             long deadline = android.os.SystemClock.elapsedRealtime() + 5000;
             android.view.accessibility.AccessibilityNodeInfo window = null;
             while (android.os.SystemClock.elapsedRealtime() < deadline) {
@@ -124,7 +124,7 @@ public final class RemoteInstrumentation extends Instrumentation {
             getUiAutomation().waitForIdle(500, 5000);
             saveScreenshot("resources-cached.png");
             runOnMainSync(() -> activity.receiveWebDownload(activity.webView, new WebDownloadProgress(18, 24, 7500000, 10000000)));
-            require(read(activity.detail).contains("来源待确认") && !read(activity.detail).contains("已确认下载"), "unknown source was guessed");
+            require(read(activity.detail).equals("资源 18 / 24 项"), "unmeasured transfer was shown");
         } finally { finishActivity(activity); }
     }
     private void testWebSurfaces(String pkg) throws Exception {

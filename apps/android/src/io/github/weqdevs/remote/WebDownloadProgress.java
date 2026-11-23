@@ -29,14 +29,13 @@ final class WebDownloadProgress {
             throw new IllegalArgumentException("invalid progress number");
         return ((Number) value).longValue();
     }
-    boolean downloading() { return completed < total; }
+    int percentage() { return completed == total ? 100 : Math.min(99, Math.round(fraction() * 100)); }
     boolean fullyCached() { return completed == total && downloadedBytes != null && downloadedBytes == 0 && cachedBytes == totalBytes && unknownBytes == 0; }
+    boolean showsRing() { return !fullyCached(); }
     String detail() {
         if (fullyCached()) return "已复用网页缓存";
-        String result = "资源加载 " + bytes(loadedBytes) + " / " + bytes(totalBytes);
-        if (downloadedBytes != null) result += "\n已确认下载 " + bytes(downloadedBytes) + " · 缓存复用 " + bytes(cachedBytes);
-        if (unknownBytes > 0) result += "\n来源待确认 " + bytes(unknownBytes);
-        return result + "\n资源 " + completed + " / " + total + " 项";
+        String result = "资源 " + completed + " / " + total + " 项";
+        return downloadedBytes != null && downloadedBytes > 0 ? result + "\n已下载 " + bytes(downloadedBytes) : result;
     }
     private static String bytes(long value) {
         if (value < 1000) return value + " B";
@@ -57,7 +56,9 @@ final class WebDownloadProgress {
         }
 
         String detail() {
-            return "已确认下载 " + bytes(downloadedBytes) + "\n缓存复用 " + cached + " 项 · 来源待确认 " + unknown + " 项";
+            String download = downloadedBytes > 0 ? "已下载 " + bytes(downloadedBytes) : "";
+            if (cached == 0) return download;
+            return (download.isEmpty() ? "" : download + "\n") + "缓存复用 " + cached + " 项";
         }
     }
 }

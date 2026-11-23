@@ -568,7 +568,7 @@ public final class MainActivity extends Activity {
         pairButton.setVisibility(invitation.length() > 0 ? View.VISIBLE : View.GONE);
         verifyButton.setVisibility(paired && BuildConfig.TESTING ? View.VISIBLE : View.GONE);
         verifyButton.setEnabled(!busy);
-        boolean measured = loading && webView != null && !webLoaded && webDownload != null && webDownload.downloading();
+        boolean measured = loading && webView != null && !webLoaded && webDownload != null && webDownload.showsRing();
         boolean development = loading && !webLoaded && webDevelopmentProgress != null && webDownload == null;
         downloadRing.update(measured ? webDownload : null);
         progress.setVisibility(loading && !measured && !development ? View.VISIBLE : View.GONE);

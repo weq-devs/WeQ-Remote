@@ -242,12 +242,15 @@ struct RemoteView: View {
                     .font(.title2.weight(.semibold))
                     .multilineTextAlignment(.center)
                     .accessibilityIdentifier("computerState")
-                Text(heroDetail)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .lineSpacing(3)
-                    .fixedSize(horizontal: false, vertical: true)
+                let detail = heroDetail
+                if !detail.isEmpty {
+                    Text(detail)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .lineSpacing(3)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             if let code = model.code {
                 Text(code)
@@ -290,22 +293,25 @@ struct RemoteView: View {
             Circle()
                 .strokeBorder(accent.opacity(0.16), lineWidth: 1)
                 .frame(width: 142, height: 142)
-            if loadingStage != nil, let progress = model.webDownload, progress.downloading {
+            if loadingStage != nil, let progress = model.webDownload, progress.showsRing {
                 Circle()
                     .trim(from: 0, to: progress.fraction)
                     .stroke(accent, style: StrokeStyle(lineWidth: 4, lineCap: .round))
                     .rotationEffect(.degrees(-90))
                     .frame(width: 138, height: 138)
+                    .accessibilityHidden(true)
                 VStack(spacing: 4) {
                     Text("资源加载").font(.caption)
-                    Text("\(Int((progress.fraction * 100).rounded()))%")
+                    Text("\(progress.percentage)%")
                         .font(.title2.monospacedDigit().weight(.medium))
                 }
                     .foregroundStyle(accent)
                     .frame(width: 104, height: 60)
                     .minimumScaleFactor(0.6)
                     .lineLimit(1)
-            } else if loadingStage != nil, let resources = model.webDevelopmentProgress {
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("资源加载 \(progress.percentage)%")
+            } else if loadingStage != nil, model.webDownload == nil, let resources = model.webDevelopmentProgress {
                 TimelineView(.animation(paused: reduceMotion)) { context in
                     let angle = reduceMotion ? 0 : context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.4) / 1.4 * 360
                     Circle()
@@ -334,7 +340,7 @@ struct RemoteView: View {
             }
         }
         .frame(height: 150)
-        .accessibilityHidden(loadingStage == nil || model.webDevelopmentProgress == nil)
+        .accessibilityHidden(loadingStage == nil || !(model.webDownload?.showsRing ?? (model.webDevelopmentProgress != nil)))
     }
 
     // 主操作贴近拇指：底部操作坞随状态切换扫码、链接或已保存电脑的入口。
