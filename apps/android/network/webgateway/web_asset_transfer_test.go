@@ -21,6 +21,19 @@ func TestReleaseAndWebViewShareStreamingCode(t *testing.T) {
 	}
 }
 
+func TestWebCodeEncodingRespectsGzipQuality(t *testing.T) {
+	for _, input := range []string{"br, gzip", "*;q=0.5"} {
+		if got := webCodeEncoding(input); got != "gzip" {
+			t.Errorf("webCodeEncoding(%q) = %q, want gzip", input, got)
+		}
+	}
+	for _, input := range []string{"br", "gzip;q=2", "*;q=1, gzip;q=0", "gzip;q=1, gzip;q=0"} {
+		if got := webCodeEncoding(input); got != input {
+			t.Errorf("webCodeEncoding(%q) = %q, want original encoding", input, got)
+		}
+	}
+}
+
 func testReleaseAndWebViewShareCode(t *testing.T, visibility string) {
 	const path = "/assets/main-H1234567.js"
 	const first = "/* first chunk */"

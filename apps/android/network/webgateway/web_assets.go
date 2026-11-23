@@ -116,10 +116,11 @@ func (t *webAssetTransport) RoundTrip(req *http.Request) (*http.Response, error)
 
 // WeQ 静态服务支持 gzip 和原始正文。统一浏览器可接受的 gzip 请求以便与后台共用。
 func webCodeEncoding(value string) string {
-	var accepted bool
+	var specific, accepted, wildcard bool
 	for _, entry := range strings.Split(value, ",") {
 		name, params, _ := strings.Cut(strings.TrimSpace(entry), ";")
-		if !strings.EqualFold(strings.TrimSpace(name), "gzip") {
+		name = strings.TrimSpace(name)
+		if !strings.EqualFold(name, "gzip") && name != "*" {
 			continue
 		}
 		weight := 1.0
@@ -129,9 +130,14 @@ func webCodeEncoding(value string) string {
 				weight, _ = strconv.ParseFloat(weightText, 64)
 			}
 		}
-		accepted = weight > 0
+		valid := weight > 0 && weight <= 1
+		if name == "*" {
+			wildcard = valid
+		} else {
+			specific, accepted = true, valid
+		}
 	}
-	if accepted {
+	if accepted || !specific && wildcard {
 		return "gzip"
 	}
 	return value
