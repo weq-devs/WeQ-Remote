@@ -1,6 +1,7 @@
 package webgateway
 
 import (
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -146,14 +147,14 @@ func (g *Gateway) serveRelease(w http.ResponseWriter, r *http.Request) bool {
 
 func (g *Gateway) checkRelease() {
 	g.mu.Lock()
-	target, transport, done := g.target, g.assets, g.routeDone
+	target, transport, code, done := g.target, g.assets, g.code, g.routeDone
 	g.mu.Unlock()
 	if target != nil {
-		g.refreshRelease(target, transport, done, false)
+		g.refreshRelease(target, transport, code, done, false)
 	}
 }
 
-func (g *Gateway) refreshRelease(target *url.URL, transport *http.Transport, routeDone chan struct{}, attach bool) {
+func (g *Gateway) refreshRelease(target *url.URL, transport *http.Transport, code *webAssetTransport, routeDone chan struct{}, attach bool) {
 	if g.releases == "" || transport == nil {
 		return
 	}
@@ -181,7 +182,9 @@ func (g *Gateway) refreshRelease(target *url.URL, transport *http.Transport, rou
 			cancel()
 		}
 	}()
-	client := &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	keepRedirect := func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	client := &http.Client{Transport: transport, CheckRedirect: keepRedirect}
+	codeClient := &http.Client{Transport: code, CheckRedirect: keepRedirect}
 	get := func(path string, limit int64) ([]byte, string, error) {
 		endpoint := target.ResolveReference(&url.URL{Path: path})
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
@@ -190,10 +193,15 @@ func (g *Gateway) refreshRelease(target *url.URL, transport *http.Transport, rou
 		}
 		req.Header.Set("Authorization", "Bearer "+g.token)
 		req.Header.Set("User-Agent", "WeQRemote")
+		resourceClient := client
 		if path == "/" {
 			req.Header.Set("Accept", "text/html")
+		} else if hashedWebCode.MatchString(path) {
+			// 与 WebView 共用 gzip 分包，落盘的完整网页版本仍使用解压后的代码。
+			req.Header.Set("Accept-Encoding", "gzip")
+			resourceClient = codeClient
 		}
-		response, err := client.Do(req)
+		response, err := resourceClient.Do(req)
 		if err != nil {
 			return nil, "", err
 		}
@@ -201,7 +209,16 @@ func (g *Gateway) refreshRelease(target *url.URL, transport *http.Transport, rou
 		if response.StatusCode != 200 {
 			return nil, "", errors.New("resource unavailable")
 		}
-		data, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
+		var body io.Reader = response.Body
+		if strings.EqualFold(response.Header.Get("Content-Encoding"), "gzip") {
+			compressed, err := gzip.NewReader(body)
+			if err != nil {
+				return nil, "", err
+			}
+			defer compressed.Close()
+			body = compressed
+		}
+		data, err := io.ReadAll(io.LimitReader(body, limit+1))
 		if err != nil || len(data) == 0 || int64(len(data)) > limit {
 			return nil, "", errors.New("invalid web resource size")
 		}

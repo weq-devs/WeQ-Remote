@@ -7,6 +7,7 @@ import (
 	"mime"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -64,11 +65,12 @@ func ClearWebCache() {
 }
 
 type webAssetTransport struct {
-	base  http.RoundTripper
-	cache *webAssetCache
+	base      http.RoundTripper
+	cache     *webAssetCache
+	transfers *webAssetTransfers
 }
 
-func cachedWebTransport(base http.RoundTripper, token string) http.RoundTripper {
+func cachedWebTransport(base http.RoundTripper, token string) *webAssetTransport {
 	if base == nil {
 		base = http.DefaultTransport
 	}
@@ -90,17 +92,62 @@ func (t *webAssetTransport) RoundTrip(req *http.Request) (*http.Response, error)
 	if req.Method != http.MethodGet || !hashedWebCode.MatchString(req.URL.Path) || req.Header.Get("Range") != "" {
 		return t.base.RoundTrip(req)
 	}
-	key := req.URL.RequestURI() + "\n" + req.Header.Get("Accept-Encoding")
-	asset, found := t.cache.load(key)
-	if found {
-		header := asset.header.Clone()
-		if header == nil {
-			header = make(http.Header)
-		}
-		header.Add("Server-Timing", `weq-remote-source;desc="cache"`)
-		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: header,
-			Body: io.NopCloser(bytes.NewReader(asset.body)), ContentLength: int64(len(asset.body)), Request: req}, nil
+	oldEncoding := req.Header.Get("Accept-Encoding")
+	encoding := webCodeEncoding(oldEncoding)
+	key := req.URL.RequestURI() + "\n" + encoding
+	if asset, found := t.cache.load(key); found {
+		return asset.response(req), nil
 	}
+	if encoding != oldEncoding {
+		if asset, found := t.cache.load(req.URL.RequestURI() + "\n" + oldEncoding); found {
+			return asset.response(req), nil
+		}
+		req = req.Clone(req.Context())
+		req.Header.Set("Accept-Encoding", encoding)
+	}
+	if t.transfers != nil && req.Header.Get("If-Match") == "" && req.Header.Get("If-None-Match") == "" &&
+		req.Header.Get("If-Modified-Since") == "" && req.Header.Get("If-Unmodified-Since") == "" {
+		if response, err := t.transfers.open(req, key); response != nil || err != nil {
+			return response, err
+		}
+	}
+	return t.fetch(req, key)
+}
+
+// WeQ 静态服务支持 gzip 和原始正文。统一浏览器可接受的 gzip 请求以便与后台共用。
+func webCodeEncoding(value string) string {
+	var accepted bool
+	for _, entry := range strings.Split(value, ",") {
+		name, params, _ := strings.Cut(strings.TrimSpace(entry), ";")
+		if !strings.EqualFold(strings.TrimSpace(name), "gzip") {
+			continue
+		}
+		weight := 1.0
+		for _, param := range strings.Split(params, ";") {
+			key, weightText, _ := strings.Cut(strings.TrimSpace(param), "=")
+			if strings.EqualFold(key, "q") {
+				weight, _ = strconv.ParseFloat(weightText, 64)
+			}
+		}
+		accepted = weight > 0
+	}
+	if accepted {
+		return "gzip"
+	}
+	return value
+}
+
+func (a webAsset) response(req *http.Request) *http.Response {
+	header := a.header.Clone()
+	if header == nil {
+		header = make(http.Header)
+	}
+	header.Add("Server-Timing", `weq-remote-source;desc="cache"`)
+	return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: header,
+		Body: io.NopCloser(bytes.NewReader(a.body)), ContentLength: int64(len(a.body)), Request: req}
+}
+
+func (t *webAssetTransport) fetch(req *http.Request, key string) (*http.Response, error) {
 	response, err := t.base.RoundTrip(req)
 	if err != nil {
 		return response, err
@@ -111,14 +158,22 @@ func (t *webAssetTransport) RoundTrip(req *http.Request) (*http.Response, error)
 	// 缓存只保存上游头，来源标识按本次实际读取重新生成，不持久化旧命中状态。
 	cacheHeader := response.Header.Clone()
 	response.Header.Add("Server-Timing", `weq-remote-source;desc="network"`)
-	if response.StatusCode != http.StatusOK || response.ContentLength > webAssetLimit || len(response.Header.Values("Set-Cookie")) > 0 {
-		return response, err
+	if _, persist := webAssetPolicy(response); persist {
+		response.Body = &cachingWebBody{source: response.Body, cache: t.cache, key: key, header: cacheHeader, expected: response.ContentLength}
+	}
+	return response, nil
+}
+
+func webAssetPolicy(response *http.Response) (share, persist bool) {
+	if response.StatusCode != http.StatusOK || response.ContentLength > webAssetLimit ||
+		len(response.Header.Values("Set-Cookie")) > 0 || len(response.Trailer) != 0 {
+		return false, false
 	}
 	mediaType, _, _ := mime.ParseMediaType(response.Header.Get("Content-Type"))
 	if mediaType != "text/javascript" && mediaType != "application/javascript" && mediaType != "text/css" {
-		return response, nil
+		return false, false
 	}
-	// 只接受明确标记 public + immutable 的构建代码，绝不缓存 HTML、接口或媒体。
+	// 开发版的 private 分包仅在当前授权、当前选路内共用。跨选路及写盘仍要求 public。
 	directives := make(map[string]bool)
 	for _, part := range strings.Split(strings.ToLower(strings.Join(response.Header.Values("Cache-Control"), ",")), ",") {
 		name, _, hasValue := strings.Cut(strings.TrimSpace(part), "=")
@@ -126,16 +181,16 @@ func (t *webAssetTransport) RoundTrip(req *http.Request) (*http.Response, error)
 			directives[name] = true
 		}
 	}
-	if !directives["public"] || !directives["immutable"] || directives["no-store"] || directives["private"] || directives["no-cache"] {
-		return response, nil
+	if !directives["immutable"] || directives["no-store"] || directives["no-cache"] ||
+		!(directives["public"] || directives["private"]) {
+		return false, false
 	}
 	for _, vary := range strings.Split(strings.Join(response.Header.Values("Vary"), ","), ",") {
 		if value := strings.TrimSpace(vary); value != "" && !strings.EqualFold(value, "Accept-Encoding") {
-			return response, nil
+			return false, false
 		}
 	}
-	response.Body = &cachingWebBody{source: response.Body, cache: t.cache, key: key, header: cacheHeader, expected: response.ContentLength}
-	return response, nil
+	return true, directives["public"] && !directives["private"]
 }
 
 // 不预读响应体；浏览器立即收到响应头及后续数据，仅完整 EOF 才提交缓存。
@@ -179,6 +234,13 @@ func (c *webAssetCache) disable() {
 	c.size = 0
 	c.pending = nil
 	c.pendingBytes = 0
+}
+
+func (c *webAssetCache) memoryAsset(key string) (webAsset, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	asset, found := c.entries[key]
+	return asset, found
 }
 
 func (c *webAssetCache) load(key string) (webAsset, bool) {

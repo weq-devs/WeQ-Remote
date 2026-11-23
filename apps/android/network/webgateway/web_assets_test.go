@@ -148,7 +148,7 @@ func TestClearWebCacheCancelsQueuedPersistence(t *testing.T) {
 		sharedWebAssets.Unlock()
 	})
 	transport := cachedWebTransport(nil, strings.Repeat("a", 64))
-	cache := transport.(*webAssetTransport).cache
+	cache := transport.cache
 	webAssetDiskWrites.Lock()
 	cache.put("pending", webAsset{body: []byte("synthetic")})
 	cleared := make(chan struct{})

@@ -27,6 +27,7 @@ type Gateway struct {
 	proxy            *httputil.ReverseProxy
 	target           *url.URL
 	assets           *http.Transport
+	code             *webAssetTransport
 	releases         string
 	currentRelease   atomic.Value
 	routeDone        chan struct{}
@@ -87,6 +88,10 @@ func (g *Gateway) detachLocked() {
 	g.routeDone = nil
 	g.proxy = nil
 	g.target = nil
+	if g.code != nil {
+		g.code.transfers.cancel()
+		g.code = nil
+	}
 	if g.assets != nil {
 		g.assets.CloseIdleConnections()
 		g.assets = nil
@@ -110,7 +115,9 @@ func (g *Gateway) Attach(target *url.URL, transport http.RoundTripper) {
 		g.assets = base.Clone()
 	}
 	proxy := httputil.NewSingleHostReverseProxy(target)
-	proxy.Transport = cachedWebTransport(transport, g.token)
+	g.code = cachedWebTransport(transport, g.token)
+	g.code.transfers = newWebAssetTransfers(g.code)
+	proxy.Transport = g.code
 	proxy.ModifyResponse = func(response *http.Response) error {
 		g.secure(response.Header)
 		return nil
@@ -136,7 +143,7 @@ func (g *Gateway) Attach(target *url.URL, transport http.RoundTripper) {
 	}
 	g.proxy = proxy
 	g.target = target
-	go g.refreshRelease(target, g.assets, g.routeDone, true)
+	go g.refreshRelease(target, g.assets, g.code, g.routeDone, true)
 }
 
 func (g *Gateway) secure(header http.Header) {
