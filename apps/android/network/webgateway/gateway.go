@@ -30,6 +30,7 @@ type Gateway struct {
 	code             *webAssetTransport
 	releases         string
 	currentRelease   atomic.Value
+	releaseChanged   chan struct{} // protected by mu
 	routeDone        chan struct{}
 	releaseMu        sync.Mutex
 	lastReleaseRoute chan struct{}
@@ -47,7 +48,8 @@ func Open(token, secret string) (*Gateway, error) {
 		return nil, errors.New("网页本地端口不可用，请稍后重新连接")
 	}
 	g := &Gateway{listener: listener, origin: "http://" + listener.Addr().String(), secret: secret,
-		token: token, connections: make(map[net.Conn]struct{}), releases: releaseDirectory(token)}
+		token: token, connections: make(map[net.Conn]struct{}), releases: releaseDirectory(token),
+		releaseChanged: make(chan struct{})}
 	g.currentRelease.Store(readRelease(g.releases))
 	g.server = &http.Server{ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second,
 		ConnState: func(conn net.Conn, state http.ConnState) {

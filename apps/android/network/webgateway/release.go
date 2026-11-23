@@ -24,6 +24,7 @@ const releaseBudget = 32 << 20
 const resourceLimit = 12 << 20
 const releaseCookie = "weq_remote_release"
 const updatePath = "/_weq-remote-local/release"
+const releaseCheckInterval = 15 * time.Second
 
 const offlineMarker = `<meta name="weq-remote-offline" content="1">`
 
@@ -72,14 +73,7 @@ func (g *Gateway) serveRelease(w http.ResponseWriter, r *http.Request) bool {
 	path := r.URL.Path
 	switch {
 	case path == updatePath:
-		w.Header().Set("Cache-Control", "no-store")
-		w.Header().Set("Content-Type", "text/plain")
-		w.Header().Set("X-WeQ-Local-Release", "1")
-		_, _ = io.WriteString(w, version)
-		if r.Method == http.MethodGet {
-			entered := r.URL.Query().Get("workspace") == "1" && g.workspaceSeen.CompareAndSwap(false, true)
-			go g.checkRelease(entered)
-		}
+		g.serveReleaseVersion(w, r)
 		return true
 	case version == "":
 		return false
@@ -148,6 +142,38 @@ func (g *Gateway) serveRelease(w http.ResponseWriter, r *http.Request) bool {
 	return true
 }
 
+func (g *Gateway) serveReleaseVersion(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Type", "text/plain")
+	w.Header().Set("X-WeQ-Local-Release", "1")
+	w.Header().Set("X-WeQ-Local-Release-Wait", "1")
+	if r.Method == http.MethodHead {
+		return
+	}
+
+	query := r.URL.Query()
+	entered := query.Get("workspace") == "1" && g.workspaceSeen.CompareAndSwap(false, true)
+	go g.checkRelease(entered)
+
+	since := query.Get("since")
+	g.mu.Lock()
+	version, changed := g.release(), g.releaseChanged
+	g.mu.Unlock()
+	if query.Has("since") && since == version {
+		// 首次还没有离线包时也可以等待，从空版本等到第一次完整发布。
+		timeout := time.NewTimer(releaseCheckInterval)
+		defer timeout.Stop()
+		select {
+		case <-r.Context().Done():
+			return
+		case <-changed:
+		case <-timeout.C:
+		}
+		version = g.release()
+	}
+	_, _ = io.WriteString(w, version)
+}
+
 func (g *Gateway) checkRelease(entered bool) {
 	g.mu.Lock()
 	target, transport, code, done := g.target, g.assets, g.code, g.routeDone
@@ -177,7 +203,7 @@ func (g *Gateway) refreshRelease(target *url.URL, transport *http.Transport, cod
 			if !g.workspaceSeen.Load() {
 				return
 			}
-		} else if time.Since(g.lastReleaseCheck) < 15*time.Second {
+		} else if time.Since(g.lastReleaseCheck) < releaseCheckInterval {
 			return
 		}
 	}
@@ -195,6 +221,7 @@ func (g *Gateway) refreshRelease(target *url.URL, transport *http.Transport, cod
 	keepRedirect := func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	client := &http.Client{Transport: transport, CheckRedirect: keepRedirect}
 	codeClient := &http.Client{Transport: code, CheckRedirect: keepRedirect}
+	previous := g.release()
 	get := func(path string, limit int64) ([]byte, string, error) {
 		endpoint := target.ResolveReference(&url.URL{Path: path})
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
@@ -206,6 +233,9 @@ func (g *Gateway) refreshRelease(target *url.URL, transport *http.Transport, cod
 		resourceClient := client
 		if path == "/" {
 			req.Header.Set("Accept", "text/html")
+			if previous != "" {
+				req.Header.Set("If-None-Match", `"weq-release-`+previous+`"`)
+			}
 		} else if hashedWebCode.MatchString(path) {
 			// 与 WebView 共用 gzip 分包，落盘的完整网页版本仍使用解压后的代码。
 			req.Header.Set("Accept-Encoding", "gzip")
@@ -216,6 +246,9 @@ func (g *Gateway) refreshRelease(target *url.URL, transport *http.Transport, cod
 			return nil, "", err
 		}
 		defer response.Body.Close()
+		if path == "/" && previous != "" && response.StatusCode == http.StatusNotModified {
+			return nil, "", nil
+		}
 		if response.StatusCode != 200 {
 			return nil, "", errors.New("resource unavailable")
 		}
@@ -236,7 +269,7 @@ func (g *Gateway) refreshRelease(target *url.URL, transport *http.Transport, cod
 	}
 
 	shell, contentType, err := get("/", 2<<20)
-	if err != nil || !strings.HasPrefix(contentType, "text/html") || !strings.Contains(string(shell), offlineMarker) {
+	if err != nil || shell == nil || !strings.HasPrefix(contentType, "text/html") || !strings.Contains(string(shell), offlineMarker) {
 		return
 	}
 	var manifest struct {
@@ -254,7 +287,6 @@ func (g *Gateway) refreshRelease(target *url.URL, transport *http.Transport, cod
 	}
 	digest := sha256.Sum256(shell)
 	version := hex.EncodeToString(digest[:])
-	previous := g.release()
 	if version == previous {
 		return
 	}
@@ -348,6 +380,8 @@ func (g *Gateway) refreshRelease(target *url.URL, transport *http.Transport, cod
 		return
 	}
 	g.currentRelease.Store(version)
+	close(g.releaseChanged)
+	g.releaseChanged = make(chan struct{})
 	entries, _ := os.ReadDir(g.releases)
 	for _, entry := range entries {
 		if entry.IsDir() && entry.Name() != version && entry.Name() != previous {

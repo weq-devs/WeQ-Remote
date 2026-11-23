@@ -1,6 +1,8 @@
 package webgateway
 
 import (
+	"context"
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"net/http"
@@ -31,6 +33,7 @@ func TestReleaseStartsOfflineAndSwitchesOnlyAfterCompleteUpdate(t *testing.T) {
 
 	token, secret := strings.Repeat("a", 64), strings.Repeat("b", 64)
 	var version, sharedDownloads atomic.Int32
+	var htmlBodies, unchangedChecks atomic.Int32
 	version.Store(1)
 	var breakUpdate atomic.Bool
 	updateRequested := make(chan struct{}, 1)
@@ -41,7 +44,17 @@ func TestReleaseStartsOfflineAndSwitchesOnlyAfterCompleteUpdate(t *testing.T) {
 		switch r.URL.Path {
 		case "/":
 			w.Header().Set("Content-Type", "text/html")
-			fmt.Fprintf(w, `<html><head>%s<meta name="weq-startup-resources" content='{"version":1,"resources":[{"path":"/assets/shared-A1234567.js"},{"path":"/assets/entry-A123456%d.js"}]}'></head><body>version %d</body></html>`, offlineMarker, version.Load(), version.Load())
+			current := version.Load()
+			body := fmt.Sprintf(`<html><head>%s<meta name="weq-startup-resources" content='{"version":1,"resources":[{"path":"/assets/shared-A1234567.js"},{"path":"/assets/entry-A123456%d.js"}]}'></head><body>version %d</body></html>`, offlineMarker, current, current)
+			tag := fmt.Sprintf(`"weq-release-%x"`, sha256.Sum256([]byte(body)))
+			w.Header().Set("ETag", tag)
+			if r.Header.Get("If-None-Match") == tag {
+				unchangedChecks.Add(1)
+				w.WriteHeader(http.StatusNotModified)
+				return
+			}
+			htmlBodies.Add(1)
+			io.WriteString(w, body)
 		case "/assets/shared-A1234567.js", "/assets/entry-A1234561.js", "/startup-theme.js":
 			if r.URL.Path == "/assets/shared-A1234567.js" {
 				sharedDownloads.Add(1)
@@ -120,6 +133,12 @@ func TestReleaseStartsOfflineAndSwitchesOnlyAfterCompleteUpdate(t *testing.T) {
 	}
 	if code, _ := get(next, "/trpc/read", secret); code != 503 {
 		t.Fatalf("offline RPC: %d", code)
+	}
+
+	next.Attach(target, &http.Transport{})
+	wait(func() bool { return unchangedChecks.Load() == 1 })
+	if n := htmlBodies.Load(); n != 1 {
+		t.Fatalf("unchanged release downloaded %d HTML bodies, want 1", n)
 	}
 
 	breakUpdate.Store(true)
@@ -204,17 +223,25 @@ func TestFirstOfflineReleaseWaitsForWorkspace(t *testing.T) {
 		t.Fatalf("account selection downloaded %d offline resources", n)
 	}
 
-	req, _ := http.NewRequest(http.MethodGet, gateway.Origin()+updatePath+"?workspace=1", nil)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, gateway.Origin()+updatePath+"?workspace=1&since=", nil)
 	req.AddCookie(&http.Cookie{Name: "weq_remote_local", Value: secret})
 	response, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	response.Body.Close()
+	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("workspace notification: HTTP %d", response.StatusCode)
 	}
-	wait(gateway.HasRelease)
+	body, err := io.ReadAll(response.Body)
+	if err != nil || !Credential(string(body)) || string(body) != gateway.release() {
+		t.Fatalf("version waiter returned before the complete release: %q, %v", body, err)
+	}
+	if response.Header.Get("X-WeQ-Local-Release-Wait") != "1" {
+		t.Fatal("gateway did not advertise version waiting")
+	}
 	if n := codeRequests.Load(); n != 2 {
 		t.Fatalf("opening workspace downloaded %d resources, want asset and theme", n)
 	}
