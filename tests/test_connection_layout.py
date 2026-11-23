@@ -12,7 +12,8 @@ ANDROID = ROOT / 'apps/android/src/io/github/weqdevs/remote'
 class ConnectionLayoutTests(unittest.TestCase):
     def test_insets_use_shared_compatibility_entry(self):
         source = (ANDROID / 'MainActivity.java').read_text()
-        self.assertEqual(source.count('WindowInsetsHelper.contentInsets(insets)'), 2)
+        self.assertIn('WindowInsetsHelper.contentInsets(insets)', source)
+        self.assertIn('WindowInsetsHelper.webInsets(insets)', source)
         self.assertNotIn('WindowInsets.Type.', source)
 
     def test_details_are_in_menus_not_home_footer(self):
@@ -25,7 +26,8 @@ class ConnectionLayoutTests(unittest.TestCase):
         self.assertIn('Label(model.checkingUpdates', ios)
         android = (ANDROID / 'MainActivity.java').read_text()
         self.assertNotIn('dock.addView(networkState', android)
-        self.assertIn('more.setOnClickListener(view -> showDetailsMenu())', android)
+        self.assertIn('setupMenu = connectionMenuButton(', android)
+        self.assertIn('button.setOnClickListener(view -> showDetailsMenu())', android)
         self.assertIn('prerelease.setText("检查测试版")', android)
         self.assertNotIn('Text(warning.message)', ios)
         self.assertNotIn('connectionWarning', android)
@@ -49,7 +51,8 @@ class ConnectionLayoutTests(unittest.TestCase):
         self.assertIn('ScrollView {', source)
         self.assertNotIn('.scrollDisabled(true)', source)
         for text in ['Text("WeQ Remote")', 'Text(statusText)', 'Text(heroTitle)', 'Text(code)',
-                     'Text("扫码连接")', 'Text(model.isConnecting ? "停止" : "连接")']:
+                     'Text(needsAuthorization ?', 'Text(reconnectTitle)']:
+            self.assertIn(text, source)
             font = source.split(text, 1)[1].split('.font(', 1)[1].split('\n', 1)[0]
             self.assertNotIn('.system(size:', font, text)
         field = source.split('private var linkField:', 1)[1].split('private var reconnectRow:', 1)[0]
@@ -59,22 +62,23 @@ class ConnectionLayoutTests(unittest.TestCase):
     def test_saved_computer_actions_and_update_do_not_repair(self):
         ios = (ROOT / 'apps/ios/Sources/WeQRemoteApp.swift').read_text()
         row = ios.split('private var reconnectRow:', 1)[1].split('private func pair()', 1)[0]
-        self.assertLess(row.index('qrcode.viewfinder'), row.index('Text(model.isConnecting'))
-        self.assertLess(row.index('Text(model.isConnecting'), row.index('"trash"'))
-        self.assertNotIn('.disabled(model.busy', row)
+        self.assertLess(row.index('qrcode.viewfinder'), row.index('Text(reconnectTitle)'))
+        self.assertLess(row.index('Text(reconnectTitle)'), row.index('"trash"'))
+        self.assertIn('stopConnection()', row)
+        self.assertIn('model.reconnect(manually: true)', row)
         model = (ROOT / 'apps/ios/Sources/RemoteModel.swift').read_text()
         update = model.split('private func updateConnection()', 1)[1].split('private func waitForApproval', 1)[0]
         self.assertIn('probe: .status, token: saved.token', update)
         self.assertNotIn('"v1/pair"', update)
         self.assertNotIn('SavedConnection.delete', update)
         android = (ANDROID / 'MainActivity.java').read_text()
-        update = android.split('private void updateConnection(Invitation link)', 1)[1].split('private String routeFailureMessage', 1)[0]
+        update = android.split('private void updateConnection(Invitation link)', 1)[1].split('private void failRoute(', 1)[0]
         self.assertIn('token = credential', update)
         self.assertIn('updatingConnection = true; verify()', update)
         self.assertNotIn('claim(link)', update)
         self.assertNotIn('ConnectionStore.delete', update)
-        self.assertIn('setTextIfChanged(retryButton, isConnecting() ? "停止" : "连接")', android)
         self.assertIn('if (isConnecting()) { reconnectPaused = true; stopNetwork(true); }', android)
+        self.assertIn('else retryComputer()', android)
 
     @unittest.skipUnless(shutil.which('javac') and shutil.which('java'), '需要 JDK')
     def test_insets_on_legacy_runtime_without_api30_classes(self):
@@ -100,23 +104,32 @@ public class WindowInsets {
  public int getSystemWindowInsetRight() { return 3; }
  public int getSystemWindowInsetBottom() { return 4; }
  public android.graphics.Insets getInsets(int mask) {
-  if (mask != 3) throw new AssertionError("system bars and IME must both be requested");
+  if (mask != 3 && mask != 7) throw new AssertionError("unexpected inset types");
+  requestedMask = mask;
   return new android.graphics.Insets();
  }
+ public int requestedMask;
  public static class Type {
   public static int systemBars() { return 1; }
   public static int ime() { return 2; }
+  public static int displayCutout() { return 4; }
  }
 }''',
             'io/github/weqdevs/remote/InsetsProbe.java': '''package io.github.weqdevs.remote;
 public class InsetsProbe {
  public static void main(String[] args) {
   android.os.Build.VERSION.SDK_INT = Integer.parseInt(args[0]);
-  android.graphics.Rect r = WindowInsetsHelper.contentInsets(new android.view.WindowInsets());
+  android.view.WindowInsets insets = new android.view.WindowInsets();
+  android.graphics.Rect r = WindowInsetsHelper.contentInsets(insets);
   boolean modern = android.os.Build.VERSION.SDK_INT >= 30;
   if (r.left != (modern ? 11 : 1) || r.top != (modern ? 22 : 2)
    || r.right != (modern ? 33 : 3) || r.bottom != (modern ? 300 : 4))
    throw new AssertionError("wrong insets");
+  if (modern) {
+   if (insets.requestedMask != 3) throw new AssertionError("content needs system bars and IME");
+   WindowInsetsHelper.webInsets(insets);
+   if (insets.requestedMask != 7) throw new AssertionError("web also needs display cutout");
+  }
  }
 }''',
         }

@@ -44,7 +44,8 @@ class ProjectIdentityTests(unittest.TestCase):
             env['WEQ_TAILSCALE_FRAMEWORK'] = str(Path(directory) / 'missing.xcframework')
             invalid = subprocess.run(['bash', str(script)], env=env, capture_output=True, text=True)
             self.assertNotEqual(invalid.returncode, 0)
-            self.assertIn('statusJSON()', invalid.stderr)
+            self.assertIn('WEQ_TAILSCALE_FRAMEWORK', invalid.stderr)
+            self.assertIn('TailscaleKit.xcframework', invalid.stderr)
 
 
 if __name__ == '__main__':
