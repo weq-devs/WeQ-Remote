@@ -189,7 +189,8 @@ final class EmbeddedNetwork: ObservableObject {
         guard let cookie = HTTPCookie.cookies(withResponseHeaderFields: ["Set-Cookie": cookieValue], for: endpoint).first else { throw RemoteError.credential }
         await configuration.websiteDataStore.httpCookieStore.setCookie(cookie)
         guard generation == revision, fingerprint != nil || connected else { throw CancellationError() }
-        let session = RemoteWebSession(configuration: configuration, endpoint: endpoint, fingerprint: fingerprint, networkCost: networkCost)
+        let session = RemoteWebSession(configuration: configuration, endpoint: endpoint, fingerprint: fingerprint,
+            networkCost: networkCost, businessCache: webDataStore.businessCache(token: token))
         session.view.load(URLRequest(url: endpoint))
         return session
     }

@@ -39,6 +39,46 @@ private final class RemoteExternalLinkHandler: NSObject, WKScriptMessageHandler 
 }
 
 @MainActor
+private final class RemoteBusinessCacheHandler: NSObject, WKScriptMessageHandlerWithReply {
+    weak var owner: RemoteWebSession?
+    let cache: RemoteBusinessCache
+    private var active = 0
+
+    init(cache: RemoteBusinessCache) { self.cache = cache }
+
+    func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage,
+                               replyHandler: @escaping (Any?, String?) -> Void) {
+        guard active < 4, message.frameInfo.isMainFrame, let owner, message.webView === owner.view,
+              let url = message.frameInfo.request.url, RemoteWebPolicy.sameOrigin(url, endpoint: owner.endpoint),
+              let body = message.body as? [String: Any], let scope = body["scope"] as? String,
+              let name = body["kind"] as? String, let kind = RemoteBusinessCache.Kind(rawValue: name) else {
+            replyHandler(nil, "Cache unavailable"); return
+        }
+        switch body["action"] as? String {
+        case "get":
+            let newerThan = body["newerThan"] as? Double ?? 0
+            active += 1
+            Task {
+                defer { active -= 1 }
+                let payload = await cache.get(scope: scope, kind: kind, newerThan: newerThan)
+                replyHandler(payload as Any? ?? NSNull(), nil)
+            }
+        case "put":
+            guard let payload = body["payload"] as? String, let savedAt = body["savedAt"] as? Double else {
+                replyHandler(nil, "Invalid snapshot"); return
+            }
+            active += 1
+            Task {
+                defer { active -= 1 }
+                await cache.put(scope: scope, kind: kind, payload: payload, savedAt: savedAt)
+                replyHandler(true, nil)
+            }
+        default: replyHandler(nil, "Invalid cache action")
+        }
+    }
+}
+
+@MainActor
 private final class RemoteQqImageHandler: NSObject, WKScriptMessageHandlerWithReply {
     weak var owner: RemoteWebSession?
     private var active = 0
@@ -217,7 +257,7 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
         view.evaluateJavaScript(cost.script, completionHandler: nil)
     }
 
-    init(configuration: WKWebViewConfiguration, endpoint: URL, fingerprint: String? = nil, networkCost: RemoteNetworkCost = .unknown) {
+    init(configuration: WKWebViewConfiguration, endpoint: URL, fingerprint: String? = nil, networkCost: RemoteNetworkCost = .unknown, businessCache: RemoteBusinessCache? = nil) {
         self.endpoint = endpoint
         self.fingerprint = fingerprint
         // 网页背景已有 playsinline；iPhone 还需在创建 WebView 前允许页内播放。
@@ -237,6 +277,11 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
         let links = RemoteExternalLinkHandler()
         links.owner = self
         configuration.userContentController.add(links, name: "weqLinks")
+        if let businessCache {
+            let cache = RemoteBusinessCacheHandler(cache: businessCache)
+            cache.owner = self
+            configuration.userContentController.addScriptMessageHandler(cache, contentWorld: .page, name: "weqBusinessCache")
+        }
         let images = RemoteQqImageHandler()
         images.owner = self
         qqImages = images
@@ -611,6 +656,7 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
         view.configuration.userContentController.removeScriptMessageHandler(forName: "weqCapture")
         view.configuration.userContentController.removeScriptMessageHandler(forName: "weqShell")
         view.configuration.userContentController.removeScriptMessageHandler(forName: "weqLinks")
+        view.configuration.userContentController.removeScriptMessageHandler(forName: "weqBusinessCache", contentWorld: .page)
         view.configuration.userContentController.removeScriptMessageHandler(forName: "weqQqImage", contentWorld: .page)
         view.configuration.userContentController.removeScriptMessageHandler(forName: "weqStartup")
         view.configuration.userContentController.removeScriptMessageHandler(forName: "weqResources")

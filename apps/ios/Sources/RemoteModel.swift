@@ -404,10 +404,14 @@ final class RemoteModel: ObservableObject {
 
     func forget() {
         let saved = try? SavedConnection.load()
+        network.webDataStore.clearBusinessCache(token: saved?.token)
         network.webDataStore.clear()
         if let saved {
-            _ = network.webDataStore.dataStore(endpoint: saved.endpoint, token: saved.token, fingerprint: saved.fingerprint)
-            network.webDataStore.clear()
+            for endpoint in saved.endpoints ?? [saved.endpoint] {
+                let pin = endpoint.scheme == "https" ? saved.routeFingerprint ?? saved.fingerprint : nil
+                _ = network.webDataStore.dataStore(endpoint: endpoint, token: saved.token, fingerprint: pin)
+                network.webDataStore.clear()
+            }
         }
         SavedConnection.delete()
         rememberedComputer = false

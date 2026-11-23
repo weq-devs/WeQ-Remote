@@ -83,7 +83,7 @@ func (c *Client) OpenWeb(endpoint, token, localSecret string) (string, error) {
 	}
 	origin := "http://" + listener.Addr().String()
 	proxy := httputil.NewSingleHostReverseProxy(target)
-	proxy.Transport = cachedWebTransport(c.http.Transport, endpoint, token)
+	proxy.Transport = cachedWebTransport(c.http.Transport, token)
 	proxy.ModifyResponse = func(response *http.Response) error {
 		response.Header.Set("Content-Security-Policy", "default-src 'self' blob: data:; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' "+strings.Replace(origin, "http:", "ws:", 1)+"; frame-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 		return nil

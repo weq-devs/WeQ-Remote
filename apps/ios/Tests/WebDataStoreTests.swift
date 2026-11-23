@@ -4,6 +4,29 @@ import WebKit
 
 final class WebDataStoreTests: XCTestCase {
     @MainActor
+    func testBusinessSnapshotsSurviveNewRouteAndDoNotCrossScopeOrRevocation() async {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let first = RemoteBusinessCache(directory: directory)
+        await first.put(scope: "account-a", payload: "new snapshot", savedAt: 10)
+        await first.put(scope: "account-a", payload: "late stale snapshot", savedAt: 9)
+        await first.put(scope: "account-a", kind: .avatar, payload: "image", savedAt: 9)
+        let next = RemoteBusinessCache(directory: directory)
+        let snapshot = await next.get(scope: "account-a")
+        let avatar = await next.get(scope: "account-a", kind: .avatar)
+        let unrelated = await next.get(scope: "account-b")
+        let unchanged = await next.get(scope: "account-a", newerThan: 10)
+        XCTAssertEqual(snapshot, "new snapshot")
+        XCTAssertEqual(avatar, "image")
+        XCTAssertNil(unrelated)
+        XCTAssertNil(unchanged)
+        first.clear()
+        await first.put(scope: "account-a", payload: "late session", savedAt: 11)
+        let revoked = await next.get(scope: "account-a")
+        XCTAssertNil(revoked)
+    }
+
+    @MainActor
     func testReconnectReusesOnlyTheSameComputerAndAuthorization() async {
         let cache = RemoteWebDataStore()
         let endpoint = URL(string: "https://192.168.1.8:7691")!

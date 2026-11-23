@@ -68,11 +68,12 @@ type webAssetTransport struct {
 	cache *webAssetCache
 }
 
-func cachedWebTransport(base http.RoundTripper, endpoint, token string) http.RoundTripper {
+func cachedWebTransport(base http.RoundTripper, token string) http.RoundTripper {
 	if base == nil {
 		base = http.DefaultTransport
 	}
-	identity := sha256.Sum256([]byte(endpoint + "\n" + token))
+	// 选路已验证设备令牌。只有内容哈希固定的构建代码能跨同一授权的入口复用。
+	identity := sha256.Sum256([]byte("weq-web-assets-v2\n" + token))
 	sharedWebAssets.Lock()
 	defer sharedWebAssets.Unlock()
 	if sharedWebAssets.cache == nil || sharedWebAssets.identity != identity {

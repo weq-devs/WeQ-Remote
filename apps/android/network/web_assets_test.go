@@ -147,7 +147,7 @@ func TestClearWebCacheCancelsQueuedPersistence(t *testing.T) {
 		sharedWebAssets.directory = ""
 		sharedWebAssets.Unlock()
 	})
-	transport := cachedWebTransport(nil, "http://100.64.0.1:7691", strings.Repeat("a", 64))
+	transport := cachedWebTransport(nil, strings.Repeat("a", 64))
 	cache := transport.(*webAssetTransport).cache
 	webAssetDiskWrites.Lock()
 	cache.put("pending", webAsset{body: []byte("synthetic")})
@@ -173,6 +173,36 @@ func TestClearWebCacheCancelsQueuedPersistence(t *testing.T) {
 	<-cleared
 	if _, err := os.Stat(directory); !os.IsNotExist(err) {
 		t.Fatalf("cleared cache directory still exists: %v", err)
+	}
+}
+
+func TestWebAssetReuseAcrossRoutesButNotAuthorizations(t *testing.T) {
+	ClearWebCache()
+	t.Cleanup(ClearWebCache)
+	calls := 0
+	base := assetRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		calls++
+		return &http.Response{StatusCode: 200, Header: http.Header{"Cache-Control": {"public, immutable"}, "Content-Type": {"text/javascript"}}, Body: io.NopCloser(strings.NewReader("code")), ContentLength: 4}, nil
+	})
+	get := func(endpoint, token string) string {
+		req, _ := http.NewRequest("GET", endpoint+"/assets/index-Abcd1234.js", nil)
+		res, err := cachedWebTransport(base, token).RoundTrip(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		if body, err := io.ReadAll(res.Body); err != nil || string(body) != "code" {
+			t.Fatalf("body = %q, err = %v", body, err)
+		}
+		return res.Header.Get("Server-Timing")
+	}
+	first := strings.Repeat("a", 64)
+	get("https://192.168.10.2:7691", first)
+	if got := get("http://100.64.0.10:7691", first); !strings.Contains(got, `desc="cache"`) || calls != 1 {
+		t.Fatalf("route switch missed: %q, calls = %d", got, calls)
+	}
+	if got := get("http://100.64.0.10:7691", strings.Repeat("b", 64)); !strings.Contains(got, `desc="network"`) || calls != 2 {
+		t.Fatalf("authorization reused a different cache: %q, calls = %d", got, calls)
 	}
 }
 
