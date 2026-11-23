@@ -61,6 +61,7 @@ struct RemoteView: View {
     }
 
     private var loadingStage: String? {
+        if model.checkingWebReload { return "正在向电脑检查网页更新" }
         if model.failure?.kind.retriesWeb == true { return nil }
         if model.webSession != nil, !model.webReady { return model.webLoadingStage }
         if model.code != nil { return "等待电脑确认" }
@@ -72,7 +73,9 @@ struct RemoteView: View {
         model.openingCachedWeb || model.webSession != nil || model.failure?.kind.retriesWeb == true
     }
 
-    private var showsNativeMenu: Bool { hasWebRecovery && !(model.webReady && model.webMenuReady) }
+    private var showsWebPage: Bool { model.webReady && !model.checkingWebReload }
+
+    private var showsNativeMenu: Bool { hasWebRecovery && !(showsWebPage && model.webMenuReady) }
 
     var body: some View {
         NavigationStack {
@@ -81,11 +84,11 @@ struct RemoteView: View {
                     WebContainer(session: session)
                         .id(ObjectIdentifier(session))
                         .ignoresSafeArea()
-                        .opacity(model.webReady ? 1 : 0)
-                        .allowsHitTesting(model.webReady)
-                        .accessibilityHidden(!model.webReady)
+                        .opacity(showsWebPage ? 1 : 0)
+                        .allowsHitTesting(showsWebPage)
+                        .accessibilityHidden(!showsWebPage)
                 }
-                if !model.webReady && !model.openingCachedWeb { connectionPage }
+                if model.checkingWebReload || (!model.webReady && !model.openingCachedWeb) { connectionPage }
                 if showsNativeMenu { startupMenu }
             }
             .background((colorScheme == .dark ? Color(red: 0.07, green: 0.08, blue: 0.09) : Color(red: 0.96, green: 0.97, blue: 0.97)).ignoresSafeArea())
@@ -109,7 +112,7 @@ struct RemoteView: View {
                         Button(model.webReady ? "重新加载" : "重试打开") {
                             model.showingDetails = false
                             Task { await model.retryWebFromMenu() }
-                        }
+                        }.disabled(model.checkingWebReload)
                         Button("断开连接") {
                             model.showingDetails = false
                             model.disconnect()
@@ -200,6 +203,8 @@ struct RemoteView: View {
         }
         .alert("相机不可用", isPresented: $cameraError) { Button("好", role: .cancel) {} }
             message: { Text("可在系统设置中允许相机访问，或粘贴电脑的配对链接。") }
+        .alert("重新加载失败", isPresented: $model.webReloadFailed) { Button("好", role: .cancel) {} }
+            message: { Text("无法从电脑检查或准备网页更新，请稍后重试。") }
         .alert("删除电脑？", isPresented: $confirmingDelete) {
             Button("取消", role: .cancel) {}
             Button("删除电脑", role: .destructive) { model.forget(); Task { await network.stop() } }

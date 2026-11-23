@@ -71,10 +71,9 @@ func (g *Gateway) release() string { return g.currentRelease.Load().(string) }
 
 func (g *Gateway) HasRelease() bool { return g.release() != "" }
 
-func (g *Gateway) ActivateLatest() {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	g.activeRelease.Store(g.release())
+// Reload 检查当前电脑的网页，只有取得可用页面才切换。手动请求优先于后台准备。
+func (g *Gateway) Reload() bool {
+	return g.checkRelease(true, true)
 }
 
 func (g *Gateway) serveRelease(w http.ResponseWriter, r *http.Request) bool {
@@ -166,7 +165,7 @@ func (g *Gateway) serveReleaseVersion(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 	entered := query.Get("workspace") == "1" && g.workspaceSeen.CompareAndSwap(false, true)
 	if entered || g.needsLegacyReleaseCheck() {
-		go g.checkRelease(entered)
+		go g.checkRelease(entered, false)
 	}
 
 	// 旧网页会对版本变化直接重载，只向新版监听器报告已备好的候选。
@@ -200,49 +199,65 @@ func (g *Gateway) needsLegacyReleaseCheck() bool {
 	return g.target != nil && g.upstreamRelease == ""
 }
 
-func (g *Gateway) checkRelease(entered bool) {
+func (g *Gateway) checkRelease(wait, manual bool) bool {
 	g.mu.Lock()
 	target, transport, code, done, expected := g.target, g.assets, g.code, g.routeDone, g.upstreamRelease
-	g.mu.Unlock()
-	if target != nil {
-		g.refreshRelease(target, transport, code, done, expected, entered)
+	if target == nil {
+		g.mu.Unlock()
+		return false
 	}
+	if manual {
+		g.manualReloads++
+		if g.backgroundRelease != nil {
+			g.backgroundRelease()
+		}
+		defer func() {
+			g.mu.Lock()
+			g.manualReloads--
+			g.mu.Unlock()
+		}()
+	}
+	g.mu.Unlock()
+	return g.refreshRelease(target, transport, code, done, expected, wait, manual)
 }
 
-func (g *Gateway) refreshRelease(target *url.URL, transport *http.Transport, code *webAssetTransport, routeDone chan struct{}, expected string, wait bool) {
-	if g.releases == "" || transport == nil {
-		return
+func (g *Gateway) refreshRelease(target *url.URL, transport *http.Transport, code *webAssetTransport, routeDone chan struct{}, expected string, wait, manual bool) bool {
+	if transport == nil || (!manual && g.releases == "") {
+		return false
 	}
 	if wait {
 		g.releaseMu.Lock()
 	} else if !g.releaseMu.TryLock() {
-		return
+		return false
 	}
 	defer g.releaseMu.Unlock()
-	select {
-	case <-routeDone:
-		return
-	default:
-	}
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
 	g.mu.Lock()
-	stale := g.routeDone != routeDone || g.upstreamRelease != expected
-	g.mu.Unlock()
-	if stale || (expected != "" && expected == g.release()) {
-		return
+	stale := g.routeDone != routeDone || (!manual && (g.upstreamRelease != expected || g.manualReloads != 0))
+	if !stale && !manual {
+		g.backgroundRelease = cancel
+		defer func() {
+			g.mu.Lock()
+			g.backgroundRelease = nil
+			g.mu.Unlock()
+		}()
 	}
-	if g.lastReleaseRoute == routeDone && g.lastUpstreamRelease == expected {
+	g.mu.Unlock()
+	if stale || (!manual && expected != "" && expected == g.release()) {
+		return false
+	}
+	if !manual && g.lastReleaseRoute == routeDone && g.lastUpstreamRelease == expected {
 		if g.waitingWorkspace {
 			if !g.workspaceSeen.Load() {
-				return
+				return false
 			}
 		} else if time.Since(g.lastReleaseCheck) < releaseCheckInterval {
-			return
+			return false
 		}
 	}
 	g.lastReleaseRoute, g.lastUpstreamRelease, g.lastReleaseCheck = routeDone, expected, time.Now()
 	g.waitingWorkspace = false
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
-	defer cancel()
 	go func() {
 		select {
 		case <-ctx.Done():
@@ -265,7 +280,11 @@ func (g *Gateway) refreshRelease(target *url.URL, transport *http.Transport, cod
 		resourceClient := client
 		if path == "/" {
 			req.Header.Set("Accept", "text/html")
-			if expected != "" {
+			if manual {
+				// 不使用上次连接检查的构建号，以本次电脑的应答为准。
+				req.Header.Set("Cache-Control", "no-cache")
+			}
+			if expected != "" && !manual {
 				// The authenticated build digest describes the identity HTML variant.
 				req.Header.Set("Accept-Encoding", "identity")
 			} else if previous != "" {
@@ -306,8 +325,17 @@ func (g *Gateway) refreshRelease(target *url.URL, transport *http.Transport, cod
 	}
 
 	shell, contentType, err := get("/", 2<<20)
-	if err != nil || shell == nil || !strings.HasPrefix(contentType, "text/html") || !strings.Contains(string(shell), offlineMarker) {
-		return
+	if err != nil {
+		return false
+	}
+	if shell == nil {
+		return manual && g.activateReload(routeDone, previous)
+	}
+	if !strings.HasPrefix(contentType, "text/html") {
+		return false
+	}
+	if !strings.Contains(string(shell), offlineMarker) || g.releases == "" {
+		return manual && g.activateReload(routeDone, "")
 	}
 	var manifest struct {
 		Version          int
@@ -315,47 +343,55 @@ func (g *Gateway) refreshRelease(target *url.URL, transport *http.Transport, cod
 		Resources        []struct{ Path string }
 	}
 	var match [][]byte
-	if expected != "" {
+	if manual || expected != "" {
 		match = completeManifest.FindSubmatch(shell)
-		if match == nil {
-			return
+		if match == nil && !manual {
+			return false
 		}
-	} else {
+	}
+	if match == nil {
 		match = offlineManifest.FindSubmatch(shell)
 	}
 	if match == nil {
 		match = startupManifest.FindSubmatch(shell)
 	}
-	if match == nil || json.Unmarshal([]byte(html.UnescapeString(string(match[1])+string(match[2]))), &manifest) != nil ||
+	if match == nil {
+		// 逐模块开发和旧电脑可以在线加载，保留已经落盘的离线版本。
+		return manual && g.activateReload(routeDone, "")
+	}
+	if json.Unmarshal([]byte(html.UnescapeString(string(match[1])+string(match[2]))), &manifest) != nil ||
 		manifest.Version != 1 || len(manifest.Resources) == 0 || len(manifest.Resources) > 2048 {
-		return
+		return false
 	}
 	digest := sha256.Sum256(shell)
 	version := hex.EncodeToString(digest[:])
-	if version == previous || (expected != "" && version != expected) {
-		return
+	if version == previous {
+		return manual && g.activateReload(routeDone, version)
 	}
-	if previous == "" && manifest.WaitForWorkspace && !g.workspaceSeen.Load() {
+	if !manual && expected != "" && version != expected {
+		return false
+	}
+	if !manual && previous == "" && manifest.WaitForWorkspace && !g.workspaceSeen.Load() {
 		g.waitingWorkspace = true
-		return
+		return false
 	}
 	if os.MkdirAll(g.releases, 0700) != nil {
-		return
+		return false
 	}
 	staging, err := os.MkdirTemp(g.releases, ".staging-")
 	if err != nil {
-		return
+		return false
 	}
 	defer os.RemoveAll(staging)
 	if os.Mkdir(filepath.Join(staging, "assets"), 0700) != nil ||
 		os.WriteFile(filepath.Join(staging, "index.html"), shell, 0600) != nil {
-		return
+		return false
 	}
 
 	paths := map[string]bool{"/startup-theme.js": true}
 	for _, resource := range manifest.Resources {
 		if !releaseAsset(resource.Path) {
-			return
+			return false
 		}
 		paths[resource.Path] = true
 	}
@@ -413,32 +449,44 @@ func (g *Gateway) refreshRelease(target *url.URL, transport *http.Transport, cod
 	// 发布与撤销互斥。任一资源失败时继续使用上一套完整页面。
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if ctx.Err() != nil || g.routeDone != routeDone || g.upstreamRelease != expected {
-		return
+	if ctx.Err() != nil || g.routeDone != routeDone || (!manual && g.upstreamRelease != expected) {
+		return false
 	}
 	destination := filepath.Join(g.releases, version)
 	if _, err := os.Stat(filepath.Join(destination, "index.html")); err != nil {
 		if os.Rename(staging, destination) != nil {
-			return
+			return false
 		}
 	}
 	pointer := filepath.Join(g.releases, ".current")
 	if os.WriteFile(pointer, []byte(version), 0600) != nil ||
 		os.Rename(pointer, filepath.Join(g.releases, "current")) != nil {
-		return
+		return false
 	}
 	g.currentRelease.Store(version)
-	if g.activeRelease.Load().(string) == "" {
+	active := g.activeRelease.Load().(string)
+	if manual || active == "" {
 		g.activeRelease.Store(version)
 	}
 	close(g.releaseChanged)
 	g.releaseChanged = make(chan struct{})
 	entries, _ := os.ReadDir(g.releases)
 	for _, entry := range entries {
-		if entry.IsDir() && entry.Name() != version && entry.Name() != previous && entry.Name() != g.activeRelease.Load().(string) {
+		if entry.IsDir() && entry.Name() != version && entry.Name() != previous && entry.Name() != active {
 			_ = os.RemoveAll(filepath.Join(g.releases, entry.Name()))
 		}
 	}
+	return true
+}
+
+func (g *Gateway) activateReload(routeDone chan struct{}, version string) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.routeDone != routeDone {
+		return false
+	}
+	g.activeRelease.Store(version)
+	return true
 }
 
 func scriptResource(path string) bool {

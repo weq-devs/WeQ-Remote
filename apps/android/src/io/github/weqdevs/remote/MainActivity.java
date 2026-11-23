@@ -114,6 +114,7 @@ public final class MainActivity extends Activity {
     private int accentColor, idleDotColor;
     private boolean webLoaded;
     private WebGateway webGateway;
+    private boolean checkingWebReload;
     private String webLoadingStage = "正在准备网页连接";
     private String webStartupProblem;
     private final Runnable webStartupTimeout = () -> {
@@ -624,7 +625,7 @@ public final class MainActivity extends Activity {
     private boolean hasWebRecovery() { return openingSavedWeb || webGateway != null || webView != null || hasWebFailure(); }
 
     private void renderConnectionMenu() {
-        boolean fallback = hasWebRecovery() && !(webLoaded && webMenuReady);
+        boolean fallback = hasWebRecovery() && (checkingWebReload || !(webLoaded && webMenuReady));
         fallbackMenu.setVisibility(fallback ? View.VISIBLE : View.GONE);
         setupMenu.setVisibility(fallback ? View.INVISIBLE : View.VISIBLE);
     }
@@ -683,7 +684,7 @@ public final class MainActivity extends Activity {
         error.setVisibility(failure == null ? View.GONE : View.VISIBLE);
     }
 
-    private boolean isConnecting() { return busy || claimID != null || ((paired || webView != null) && !webLoaded); }
+    private boolean isConnecting() { return checkingWebReload || busy || claimID != null || ((paired || webView != null) && !webLoaded); }
 
     private boolean hasWebFailure() { return failure != null && failure.kind.retriesWeb(); }
 
@@ -705,6 +706,7 @@ public final class MainActivity extends Activity {
 
     private String heroTitle() {
         if (claimID != null) return "等待电脑确认";
+        if (checkingWebReload) return "正在向电脑检查网页更新";
         if (!webLoaded && (paired || webView != null)) return webLoadingStage;
         if (busy) return paired ? "正在验证电脑授权" : "正在连接电脑";
         if (failure != null) return failure.kind.title;
@@ -782,6 +784,7 @@ public final class MainActivity extends Activity {
         android.app.AlertDialog menu = new android.app.AlertDialog.Builder(this).setTitle("连接详情")
             .setView(scroll).setNegativeButton("完成", null).create();
         for (String action : actions) {
+            if (checkingWebReload && ("重新加载".equals(action) || "重试打开".equals(action))) continue;
             content.addView(button(action, () -> {
                 menu.dismiss();
                 if ("立即检查".equals(action)) { if (node != null && paired) verify(); else retryComputer(); }
@@ -869,8 +872,37 @@ public final class MainActivity extends Activity {
     }
 
     private void reloadWeb() {
-        if (webView == null) return;
-        if (webGateway != null) webGateway.activateLatest();
+        if (webView == null || webGateway == null || checkingWebReload) return;
+        final android.webkit.WebView page = webView;
+        final WebGateway gateway = webGateway;
+        checkingWebReload = true;
+        showSetup();
+        render();
+        Thread reload = new Thread(() -> {
+            boolean checked = gateway.reload();
+            main.post(() -> {
+                if (webView != page || webGateway != gateway) return;
+                checkingWebReload = false;
+                if (checked) {
+                    reloadWebView();
+                } else {
+                    String detail = "无法从电脑检查或准备网页更新，请稍后重试。";
+                    if (webLoaded) {
+                        surface.removeView(setupView);
+                        render();
+                        if (visible && !isFinishing() && !isDestroyed()) {
+                            new android.app.AlertDialog.Builder(this).setTitle("重新加载失败")
+                                .setMessage(detail).setPositiveButton("好", null).show();
+                        }
+                    } else finishWebFailure(FailureKind.WEB_LOAD, detail);
+                }
+            });
+        }, "weq-web-reload");
+        reload.setDaemon(true);
+        reload.start();
+    }
+
+    private void reloadWebView() {
         webLoaded = false;
         webMenuReady = false;
         webStartupRevision++;
@@ -1422,7 +1454,7 @@ public final class MainActivity extends Activity {
         scheduleConnectionWarning();
         main.removeCallbacks(reconnectPoll);
         if (visible) main.post(reconnectPoll);
-        surface.removeView(setupView);
+        if (!checkingWebReload) surface.removeView(setupView);
         render();
     }
     private String webRecovery() {
@@ -1478,6 +1510,7 @@ public final class MainActivity extends Activity {
         shell.requestApplyInsets();
     }
     private void closeWeb() {
+        checkingWebReload = false;
         main.removeCallbacks(healthDeadline);
         main.removeCallbacks(webStartupTimeout);
         webLoaded = false;

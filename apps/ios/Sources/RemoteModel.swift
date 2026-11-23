@@ -46,6 +46,8 @@ final class RemoteModel: ObservableObject {
     @Published private(set) var webLoadingStage = WebDownloadProgress.loadingMessage
     @Published private(set) var webDownload: WebDownloadProgress?
     @Published private(set) var webDevelopmentProgress: WebDevelopmentProgress?
+    @Published private(set) var checkingWebReload = false
+    @Published var webReloadFailed = false
     @Published private(set) var rememberedComputer = false
     @Published private(set) var health = ConnectionHealth()
     @Published private(set) var checkingUpdates = false
@@ -178,7 +180,7 @@ final class RemoteModel: ObservableObject {
 
     var connectionCheckInterval: TimeInterval { health.checkInterval }
 
-    var isConnecting: Bool { busy || code != nil || (webSession != nil && !webReady) }
+    var isConnecting: Bool { checkingWebReload || busy || code != nil || (webSession != nil && !webReady) }
 
     var appVersion: String {
         Bundle.main.infoDictionary?["WeQReleaseVersion"] as? String
@@ -450,16 +452,24 @@ final class RemoteModel: ObservableObject {
         webSession = session
     }
 
-    func reloadWeb() {
-        guard let session = webSession else { return }
-        network.activateLatestWebRelease()
-        webLoadingStage = WebDownloadProgress.loadingMessage
-        webReady = false
-        session.reload()
-    }
-
     func retryWebFromMenu() async {
-        if webSession != nil { reloadWeb(); return }
+        guard !checkingWebReload else { return }
+        if let session = webSession {
+            checkingWebReload = true
+            webReloadFailed = false
+            let checked = await network.checkWebReload()
+            guard webSession === session else { return }
+            checkingWebReload = false
+            if checked {
+                webLoadingStage = WebDownloadProgress.loadingMessage
+                session.reload()
+            } else if webReady {
+                webReloadFailed = true
+            } else {
+                failWebLoad(RemoteWebStartupError.reported("无法从电脑检查或准备网页更新，请稍后重试。"))
+            }
+            return
+        }
         disconnect()
         await network.stop()
         resumeReconnect()
@@ -467,6 +477,7 @@ final class RemoteModel: ObservableObject {
     }
 
     private func failWebLoad(_ error: Error) {
+        checkingWebReload = false
         let recovery = checkedAt != nil
             ? "本次已连到电脑，无需重新扫码。"
             : "可使用已保存的配对重试，无需重新扫码。"
@@ -839,6 +850,8 @@ final class RemoteModel: ObservableObject {
     }
 
     func disconnect() {
+        checkingWebReload = false
+        webReloadFailed = false
         healthEpoch += 1
         connectionRecovery = 0
         eventCheck?.cancel()

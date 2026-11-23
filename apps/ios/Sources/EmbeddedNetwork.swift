@@ -250,7 +250,15 @@ final class EmbeddedNetwork: ObservableObject {
         webRoute = nil
     }
 
-    func activateLatestWebRelease() { WeQActivateGatewayRelease(gateway) }
+    func checkWebReload() async -> Bool {
+        let handle = gateway
+        guard handle != 0 else { return false }
+        return await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                continuation.resume(returning: WeQReloadGateway(handle) != 0)
+            }
+        }
+    }
 
     func clearWebCache() {
         closeWeb()

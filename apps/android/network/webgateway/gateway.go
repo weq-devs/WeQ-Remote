@@ -1,6 +1,7 @@
 package webgateway
 
 import (
+	"context"
 	"crypto/subtle"
 	"errors"
 	"io"
@@ -37,6 +38,8 @@ type Gateway struct {
 	releaseChanged      chan struct{} // protected by mu
 	routeDone           chan struct{}
 	releaseMu           sync.Mutex
+	backgroundRelease   context.CancelFunc // protected by mu
+	manualReloads       int                // protected by mu
 	lastReleaseRoute    chan struct{}
 	lastUpstreamRelease string
 	lastReleaseCheck    time.Time
@@ -185,7 +188,7 @@ func (g *Gateway) setUpstreamRelease(version string, attached bool) {
 	g.upstreamRelease = version
 	if g.target != nil && (attached || changed || (version != "" && version != g.release())) &&
 		(version == "" || version != g.release()) {
-		go g.refreshRelease(g.target, g.assets, g.code, g.routeDone, version, attached || changed)
+		go g.refreshRelease(g.target, g.assets, g.code, g.routeDone, version, attached || changed, false)
 	}
 }
 

@@ -111,11 +111,12 @@ func WeQSetGatewayRelease(id C.int, release *C.char) {
 	}
 }
 
-//export WeQActivateGatewayRelease
-func WeQActivateGatewayRelease(id C.int) {
-	if gateway := weqGateway(id); gateway != nil {
-		gateway.ActivateLatest()
+//export WeQReloadGateway
+func WeQReloadGateway(id C.int) C.int {
+	if gateway := weqGateway(id); gateway != nil && gateway.Reload() {
+		return 1
 	}
+	return 0
 }
 
 //export WeQStoreGatewayImage

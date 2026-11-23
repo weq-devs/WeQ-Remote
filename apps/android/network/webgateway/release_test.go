@@ -33,7 +33,7 @@ func TestReleaseStartsOfflineAndSwitchesOnlyAfterCompleteUpdate(t *testing.T) {
 
 	token, secret := strings.Repeat("a", 64), strings.Repeat("b", 64)
 	var version, sharedDownloads atomic.Int32
-	var htmlBodies, unchangedChecks atomic.Int32
+	var htmlBodies, unchangedChecks, manualChecks atomic.Int32
 	version.Store(1)
 	var breakUpdate atomic.Bool
 	updateRequested := make(chan struct{}, 1)
@@ -44,7 +44,14 @@ func TestReleaseStartsOfflineAndSwitchesOnlyAfterCompleteUpdate(t *testing.T) {
 		switch r.URL.Path {
 		case "/":
 			w.Header().Set("Content-Type", "text/html")
+			if r.Header.Get("Cache-Control") == "no-cache" {
+				manualChecks.Add(1)
+			}
 			current := version.Load()
+			if current == 4 {
+				io.WriteString(w, "<html><head></head><body>online-only Web</body></html>")
+				return
+			}
 			body := fmt.Sprintf(`<html><head>%s<meta name="weq-startup-resources" content='{"version":1,"resources":[{"path":"/assets/shared-A1234567.js"},{"path":"/assets/entry-A123456%d.js"}]}'></head><body>version %d</body></html>`, offlineMarker, current, current)
 			tag := fmt.Sprintf(`"weq-release-%x"`, sha256.Sum256([]byte(body)))
 			w.Header().Set("ETag", tag)
@@ -61,10 +68,13 @@ func TestReleaseStartsOfflineAndSwitchesOnlyAfterCompleteUpdate(t *testing.T) {
 			}
 			w.Header().Set("Content-Type", "text/javascript")
 			fmt.Fprintln(w, "/* cached code */")
-		case "/assets/entry-A1234562.js":
+		case "/assets/entry-A1234562.js", "/assets/entry-A1234563.js":
 			if breakUpdate.Load() {
 				w.WriteHeader(503)
-				updateRequested <- struct{}{}
+				select {
+				case updateRequested <- struct{}{}:
+				default:
+				}
 				return
 			}
 			w.Header().Set("Content-Type", "text/javascript")
@@ -166,7 +176,9 @@ func TestReleaseStartsOfflineAndSwitchesOnlyAfterCompleteUpdate(t *testing.T) {
 	if _, version := get(next, updatePath+"?notice=1", secret); version != next.release() {
 		t.Fatal("notice watcher did not see the complete candidate")
 	}
-	next.ActivateLatest()
+	if !next.Reload() || manualChecks.Load() != 1 {
+		t.Fatal("manual reload did not revalidate the prepared candidate with the computer")
+	}
 	if _, html := get(next, "/", secret); !strings.Contains(html, "version 2") {
 		t.Fatal("manual reload did not activate candidate")
 	}
@@ -178,6 +190,83 @@ func TestReleaseStartsOfflineAndSwitchesOnlyAfterCompleteUpdate(t *testing.T) {
 	}
 	if n := sharedDownloads.Load(); n != 1 {
 		t.Fatalf("unchanged chunk downloaded %d times", n)
+	}
+	// 连接状态仍记录第二版。点击应立即发现第三版，无需等待后台再次检查。
+	next.SetUpstreamRelease(next.release())
+	version.Store(3)
+	breakUpdate.Store(true)
+	if next.Reload() || manualChecks.Load() != 2 {
+		t.Fatal("manual reload failed to check the computer or accepted incomplete code")
+	}
+	if _, html := get(next, "/", secret); !strings.Contains(html, "version 2") {
+		t.Fatal("failed manual reload replaced the active page")
+	}
+	breakUpdate.Store(false)
+	if !next.Reload() || manualChecks.Load() != 3 {
+		t.Fatal("retry should check again immediately, even during the polling cooldown")
+	}
+	if _, html := get(next, "/", secret); !strings.Contains(html, "version 3") {
+		t.Fatal("manual reload did not activate freshly downloaded code")
+	}
+
+	cached := next.release()
+	version.Store(4)
+	if !next.Reload() {
+		t.Fatal("manual reload did not allow loading from an online-only computer")
+	}
+	if _, html := get(next, "/", secret); !strings.Contains(html, "online-only Web") || next.release() != cached {
+		t.Fatal("online reload continued serving the previous shell or erased its offline copy")
+	}
+}
+
+func TestManualReloadPreemptsBlockedBackgroundCheck(t *testing.T) {
+	if err := SetWebCacheDirectory(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ClearWebCache()
+		sharedWebAssets.Lock()
+		sharedWebAssets.directory = ""
+		sharedWebAssets.Unlock()
+	})
+	checking, canceled := make(chan struct{}), make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Cache-Control") == "no-cache" {
+			w.Header().Set("Content-Type", "text/html")
+			io.WriteString(w, "<html>online page</html>")
+			return
+		}
+		close(checking)
+		<-r.Context().Done()
+		close(canceled)
+	}))
+	t.Cleanup(upstream.Close)
+	gateway, err := Open(strings.Repeat("d", 64), strings.Repeat("e", 64))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(gateway.Close)
+	target, _ := url.Parse(upstream.URL)
+	gateway.Attach(target, &http.Transport{})
+	select {
+	case <-checking:
+	case <-time.After(4 * time.Second):
+		t.Fatal("background check did not reach the computer")
+	}
+	result := make(chan bool, 1)
+	go func() { result <- gateway.Reload() }()
+	select {
+	case ok := <-result:
+		if !ok {
+			t.Fatal("manual reload did not obtain the online page")
+		}
+	case <-time.After(4 * time.Second):
+		t.Fatal("manual reload waited for the blocked background check")
+	}
+	select {
+	case <-canceled:
+	case <-time.After(4 * time.Second):
+		t.Fatal("background request was not canceled")
 	}
 }
 
@@ -247,7 +336,7 @@ func TestStableReleaseDoesNotRequestCodeAgainOnReconnect(t *testing.T) {
 	for range 3 {
 		gateway.AttachRelease(target, &http.Transport{}, version)
 		gateway.SetUpstreamRelease(version)
-		gateway.checkRelease(false)
+		gateway.checkRelease(false, false)
 		get(updatePath + "?notice=1")
 		get(lazy + "?query=1")
 		if got := get("/trpc/read"); got != "live" {
@@ -310,7 +399,7 @@ func TestFirstOfflineReleaseWaitsForWorkspace(t *testing.T) {
 		defer gateway.releaseMu.Unlock()
 		return gateway.waitingWorkspace
 	})
-	gateway.checkRelease(false)
+	gateway.checkRelease(false, false)
 	if n := codeRequests.Load(); n != 0 || gateway.HasRelease() {
 		t.Fatalf("account selection downloaded %d offline resources", n)
 	}
