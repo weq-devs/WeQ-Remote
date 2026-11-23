@@ -26,6 +26,8 @@ final class WebFeatures extends WebChromeClient {
     private final WebView view;
     private final String origin;
     private final ExecutorService downloads = Executors.newSingleThreadExecutor();
+    private final ExecutorService images = new java.util.concurrent.ThreadPoolExecutor(
+        0, 4, 20, java.util.concurrent.TimeUnit.SECONDS, new java.util.concurrent.SynchronousQueue<>());
     private ValueCallback<Uri[]> chooser;
     private PermissionRequest permission;
     private String downloadURL, downloadCookie;
@@ -98,6 +100,23 @@ final class WebFeatures extends WebChromeClient {
         blobToken = null; blobOffset = 0;
     }
     public final class ExternalLinks {
+        @android.webkit.JavascriptInterface public void loadQqImage(String id, String address) {
+            if (closed || id == null || !id.matches("[a-zA-Z0-9-]{1,64}")) return;
+            java.net.URI target = QqImageRequest.allowed(address);
+            activity.runOnUiThread(() -> {
+                if (closed || !WebAccess.sameOrigin(origin, view.getUrl())) return;
+                if (target == null) { imageResult(id, null); return; }
+                try {
+                    images.execute(() -> {
+                        String[] result = null;
+                        try { result = QqImageRequest.fetch(target, () -> closed || Thread.currentThread().isInterrupted()); }
+                        catch (java.io.IOException | RuntimeException ignored) { }
+                        String[] reply = result;
+                        activity.runOnUiThread(() -> imageResult(id, reply));
+                    });
+                } catch (java.util.concurrent.RejectedExecutionException ignored) { imageResult(id, null); }
+            });
+        }
         @android.webkit.JavascriptInterface public void networkPreference(String mode) {
             activity.runOnUiThread(() -> {
                 if (mode != null && !closed && WebAccess.sameOrigin(origin, view.getUrl()) && activity instanceof MainActivity)
@@ -212,6 +231,14 @@ final class WebFeatures extends WebChromeClient {
                 activity.runOnUiThread(() -> { downloadURL = null; if (!closed) message("下载中断，请重新下载"); });
             }
         }
+    }
+
+    private void imageResult(String id, String[] image) {
+        if (closed || !WebAccess.sameOrigin(origin, view.getUrl())) return;
+        String payload = image == null ? "null" : "{type:" + org.json.JSONObject.quote(image[0]) +
+            ",base64:" + org.json.JSONObject.quote(image[1]) + "}";
+        view.evaluateJavascript("window.dispatchEvent(new CustomEvent('weq-remote-qq-image',{detail:{id:" +
+            org.json.JSONObject.quote(id) + ",image:" + payload + "}}))", null);
     }
     private void captureResult(String id, boolean ok) {
         if (closed) return;
@@ -391,6 +418,7 @@ final class WebFeatures extends WebChromeClient {
         HttpURLConnection request = connection;
         if (request != null) request.disconnect();
         downloads.shutdown();
+        images.shutdownNow();
         view.setDownloadListener(null); view.setWebChromeClient(null);
         view.removeJavascriptInterface("weqRemoteLinks");
     }

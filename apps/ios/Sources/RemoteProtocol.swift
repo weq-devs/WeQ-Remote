@@ -366,6 +366,29 @@ final class NoRedirectDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sen
 }
 
 enum RemoteWebPolicy {
+    static func qqImage(_ raw: String) -> URL? {
+        guard raw.utf8.count <= 8192, let value = URLComponents(string: raw),
+              value.scheme == "https", value.port == nil, value.fragment == nil,
+              value.user == nil, value.password == nil, let host = value.host,
+              let url = value.url else { return nil }
+        let query = value.queryItems ?? []
+        func field(_ name: String) -> String? {
+            let matches = query.filter { $0.name == name }
+            return matches.count == 1 ? matches.first?.value : nil
+        }
+        if ["thirdqq.qlogo.cn", "q.qlogo.cn", "q1.qlogo.cn", "q2.qlogo.cn"].contains(host),
+           value.percentEncodedPath == "/g", query.count == 3,
+           ["qq", "sdk"].contains(field("b") ?? ""),
+           field("nk")?.range(of: "^[0-9]{1,20}$", options: .regularExpression) != nil,
+           field("s")?.range(of: "^[0-9]{1,4}$", options: .regularExpression) != nil { return url }
+        if host == "p.qlogo.cn", query.isEmpty,
+           value.percentEncodedPath.range(of: "^/gh/[0-9]{1,20}/[0-9]{1,20}/[0-9]{1,4}$", options: .regularExpression) != nil { return url }
+        if host == "multimedia.nt.qq.com.cn", value.percentEncodedPath == "/download", query.count == 4,
+           ["1406", "1407"].contains(field("appid") ?? ""), ["198", "720"].contains(field("spec") ?? ""),
+           let token = field("fileid"), !token.isEmpty, let rkey = field("rkey"), !rkey.isEmpty { return url }
+        return nil
+    }
+
     static func sameOrigin(_ url: URL, endpoint: URL) -> Bool {
         func port(_ value: URL) -> Int { value.port ?? (value.scheme == "https" ? 443 : 80) }
         return url.scheme == endpoint.scheme && url.host == endpoint.host && port(url) == port(endpoint)

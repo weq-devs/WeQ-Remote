@@ -38,6 +38,61 @@ private final class RemoteExternalLinkHandler: NSObject, WKScriptMessageHandler 
     }
 }
 
+@MainActor
+private final class RemoteQqImageHandler: NSObject, WKScriptMessageHandlerWithReply {
+    weak var owner: RemoteWebSession?
+    private var active = 0
+    private let session: URLSession = {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.httpShouldSetCookies = false
+        configuration.httpCookieStorage = nil
+        configuration.urlCredentialStorage = nil
+        configuration.timeoutIntervalForResource = 5
+        return URLSession(configuration: configuration, delegate: NoRedirectDelegate(), delegateQueue: nil)
+    }()
+
+    func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage,
+                               replyHandler: @escaping (Any?, String?) -> Void) {
+        guard message.frameInfo.isMainFrame, let owner, message.webView === owner.view,
+              let source = message.frameInfo.request.url, RemoteWebPolicy.sameOrigin(source, endpoint: owner.endpoint),
+              let raw = message.body as? String, let url = RemoteWebPolicy.qqImage(raw), active < 4 else {
+            replyHandler(nil, "Image unavailable"); return
+        }
+        active += 1
+        Task {
+            defer { active -= 1 }
+            do {
+                replyHandler(try await Self.load(url, session: session), nil)
+            } catch {
+                replyHandler(nil, "Image unavailable")
+            }
+        }
+    }
+
+    private nonisolated static func load(_ url: URL, session: URLSession) async throws -> [String: String] {
+        let limit = 2 * 1024 * 1024
+        let (bytes, response) = try await session.bytes(from: url)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200,
+              let type = http.mimeType, ["image/jpeg", "image/png", "image/gif", "image/webp", "image/avif"].contains(type),
+              http.expectedContentLength <= limit else {
+            bytes.task.cancel()
+            throw URLError(.badServerResponse)
+        }
+        var image = Data()
+        for try await byte in bytes {
+            guard image.count < limit else {
+                bytes.task.cancel()
+                throw URLError(.dataLengthExceedsMaximum)
+            }
+            image.append(byte)
+        }
+        guard !image.isEmpty else { throw URLError(.zeroByteResource) }
+        return ["type": type, "base64": image.base64EncodedString()]
+    }
+
+    func close() { session.invalidateAndCancel() }
+}
+
 private final class RemoteStartupHandler: NSObject, WKScriptMessageHandler {
     weak var owner: RemoteWebSession?
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
@@ -122,6 +177,7 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
     private var navigationGeneration = 0
     private var windowLayout = RemoteWindowLayout()
     private var nativeMedia: RemoteNativeMedia?
+    private var qqImages: RemoteQqImageHandler?
     private var dialogQueue: [(id: UUID, alert: UIAlertController, cancel: () -> Void)] = []
     private var activeDialog: (id: UUID, alert: UIAlertController, cancel: () -> Void)?
     // 正式页面准备完成才切到全屏；HTML 加载完成仍留在首页。
@@ -181,6 +237,10 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
         let links = RemoteExternalLinkHandler()
         links.owner = self
         configuration.userContentController.add(links, name: "weqLinks")
+        let images = RemoteQqImageHandler()
+        images.owner = self
+        qqImages = images
+        configuration.userContentController.addScriptMessageHandler(images, contentWorld: .page, name: "weqQqImage")
         configuration.userContentController.addUserScript(WKUserScript(
             source: Self.externalLinksScript, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         let startup = RemoteStartupHandler()
@@ -538,6 +598,8 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
         cancelWebDialogs()
         nativeMedia?.close()
         nativeMedia = nil
+        qqImages?.close()
+        qqImages = nil
         startupTimeout?.cancel()
         startupTimeout = nil
         for (_, (download, file)) in downloads { download.cancel { _ in }; removeDownload(file) }
@@ -549,6 +611,7 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
         view.configuration.userContentController.removeScriptMessageHandler(forName: "weqCapture")
         view.configuration.userContentController.removeScriptMessageHandler(forName: "weqShell")
         view.configuration.userContentController.removeScriptMessageHandler(forName: "weqLinks")
+        view.configuration.userContentController.removeScriptMessageHandler(forName: "weqQqImage", contentWorld: .page)
         view.configuration.userContentController.removeScriptMessageHandler(forName: "weqStartup")
         view.configuration.userContentController.removeScriptMessageHandler(forName: "weqResources")
         view.configuration.userContentController.removeScriptMessageHandler(forName: "weqDevelopmentResources")

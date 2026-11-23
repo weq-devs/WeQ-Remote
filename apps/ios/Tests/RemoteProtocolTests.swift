@@ -2,6 +2,20 @@ import XCTest
 @testable import WeQRemote
 
 final class RemoteProtocolTests: XCTestCase {
+    func testQqImageRequestOnlyAcceptsPublicAvatarsAndChatThumbnails() {
+        let thumb = "https://multimedia.nt.qq.com.cn/download?appid=1406&fileid=fixture&spec=198&rkey=fixture"
+        XCTAssertNotNil(RemoteWebPolicy.qqImage(thumb))
+        XCTAssertNotNil(RemoteWebPolicy.qqImage("https://thirdqq.qlogo.cn/g?b=sdk&s=100&nk=123"))
+        XCTAssertNotNil(RemoteWebPolicy.qqImage("https://p.qlogo.cn/gh/123/123/100"))
+        for value in [thumb + "&spec=198", thumb + "&cookie=fixture",
+                      thumb.replacingOccurrences(of: "spec=198", with: "spec=0"),
+                      thumb.replacingOccurrences(of: "qq.com.cn/", with: "qq.com.cn.example/"),
+                      thumb.replacingOccurrences(of: "https:", with: "http:"),
+                      "https://x@p.qlogo.cn/gh/123/123/100", "https://q.qlogo.cn/g?b=qq&s=100&ek=123"] {
+            XCTAssertNil(RemoteWebPolicy.qqImage(value))
+        }
+    }
+
     func testDeviceInfoTravelsOnExistingRequestsWithoutChangingBody() async throws {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [DeviceInfoURLProtocol.self]
