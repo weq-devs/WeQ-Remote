@@ -137,6 +137,7 @@ func TestReleaseStartsOfflineAndSwitchesOnlyAfterCompleteUpdate(t *testing.T) {
 
 	next.Attach(target, &http.Transport{})
 	wait(func() bool { return unchangedChecks.Load() == 1 })
+	previous := next.release()
 	if n := htmlBodies.Load(); n != 1 {
 		t.Fatalf("unchanged release downloaded %d HTML bodies, want 1", n)
 	}
@@ -155,7 +156,20 @@ func TestReleaseStartsOfflineAndSwitchesOnlyAfterCompleteUpdate(t *testing.T) {
 
 	breakUpdate.Store(false)
 	next.Attach(target, &http.Transport{})
-	wait(func() bool { _, html := get(next, "/", secret); return strings.Contains(html, "version 2") })
+	wait(func() bool { return next.release() != previous })
+	if _, html := get(next, "/", secret); !strings.Contains(html, "version 1") {
+		t.Fatal("preparing an update changed the document without confirmation")
+	}
+	if _, version := get(next, updatePath+"?workspace=1", secret); version != previous {
+		t.Fatal("legacy release watcher would reload automatically")
+	}
+	if _, version := get(next, updatePath+"?notice=1", secret); version != next.release() {
+		t.Fatal("notice watcher did not see the complete candidate")
+	}
+	next.ActivateLatest()
+	if _, html := get(next, "/", secret); !strings.Contains(html, "version 2") {
+		t.Fatal("manual reload did not activate candidate")
+	}
 	if code, body := get(next, "/assets/entry-A1234562.js", secret); code != 200 || !strings.Contains(body, "updated code") {
 		t.Fatalf("active shell lacks its changed chunk: %d %q", code, body)
 	}
@@ -164,6 +178,84 @@ func TestReleaseStartsOfflineAndSwitchesOnlyAfterCompleteUpdate(t *testing.T) {
 	}
 	if n := sharedDownloads.Load(); n != 1 {
 		t.Fatalf("unchanged chunk downloaded %d times", n)
+	}
+}
+
+func TestStableReleaseDoesNotRequestCodeAgainOnReconnect(t *testing.T) {
+	if err := SetWebCacheDirectory(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ClearWebCache()
+		sharedWebAssets.Lock()
+		sharedWebAssets.directory = ""
+		sharedWebAssets.Unlock()
+	})
+	const lazy = "/assets/Tool-A1234567.js"
+	const shell = `<html><head>` + offlineMarker + `<meta name="weq-offline-code" content='{"version":1,"resources":[{"path":"` + lazy + `"}]}'></head></html>`
+	version := fmt.Sprintf("%x", sha256.Sum256([]byte(shell)))
+	var codeRequests, dataRequests atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/":
+			codeRequests.Add(1)
+			if r.Header.Get("Accept-Encoding") != "identity" {
+				t.Error("requested an HTML variant different from the advertised digest")
+			}
+			w.Header().Set("Content-Type", "text/html")
+			io.WriteString(w, shell)
+		case lazy, "/startup-theme.js":
+			codeRequests.Add(1)
+			w.Header().Set("Content-Type", "text/javascript")
+			io.WriteString(w, "export const ready = true;")
+		case "/trpc/read":
+			dataRequests.Add(1)
+			io.WriteString(w, "live")
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer upstream.Close()
+	target, _ := url.Parse(upstream.URL)
+	token, secret := strings.Repeat("d", 64), strings.Repeat("e", 64)
+	gateway, err := Open(token, secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer gateway.Close()
+	gateway.AttachRelease(target, &http.Transport{}, version)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	get := func(path string) string {
+		t.Helper()
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, gateway.Origin()+path, nil)
+		req.AddCookie(&http.Cookie{Name: "weq_remote_local", Value: secret})
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		body, err := io.ReadAll(res.Body)
+		if err != nil || res.StatusCode != 200 {
+			t.Fatalf("%s: %d %q %v", path, res.StatusCode, body, err)
+		}
+		return string(body)
+	}
+	if got := get(updatePath + "?workspace=1&notice=1&since="); got != version {
+		t.Fatalf("candidate = %q", got)
+	}
+	for range 3 {
+		gateway.AttachRelease(target, &http.Transport{}, version)
+		gateway.SetUpstreamRelease(version)
+		gateway.checkRelease(false)
+		get(updatePath + "?notice=1")
+		get(lazy + "?query=1")
+		if got := get("/trpc/read"); got != "live" {
+			t.Fatalf("business data = %q", got)
+		}
+	}
+	if codeRequests.Load() != 3 || dataRequests.Load() != 3 {
+		t.Fatalf("upstream code/data requests: %d/%d", codeRequests.Load(), dataRequests.Load())
 	}
 }
 

@@ -30,7 +30,13 @@ const offlineMarker = `<meta name="weq-remote-offline" content="1">`
 
 var startupManifest = regexp.MustCompile(`<meta name="weq-startup-resources" content=(?:"([^"]+)"|'([^']+)')`)
 var offlineManifest = regexp.MustCompile(`<meta name="weq-offline-bundle" content=(?:"([^"]+)"|'([^']+)')`)
-var assetPath = regexp.MustCompile(`^/assets/[a-zA-Z0-9_.-]+\.(?:js|css)$`)
+var completeManifest = regexp.MustCompile(`<meta name="weq-offline-code" content=(?:"([^"]+)"|'([^']+)')`)
+var assetPath = regexp.MustCompile(`^/assets/[a-zA-Z0-9_.-]+\.(?:js|css|png|svg)$`)
+var hashedReleaseImage = regexp.MustCompile(`^/assets/[a-zA-Z0-9_.-]+-[a-zA-Z0-9_-]{8,}\.(?:png|svg)$`)
+
+func hashedReleaseAsset(path string) bool {
+	return hashedWebCode.MatchString(path) || hashedReleaseImage.MatchString(path)
+}
 
 func releaseAsset(path string) bool {
 	return assetPath.MatchString(path) || path == "/startup-theme.js" ||
@@ -65,11 +71,17 @@ func (g *Gateway) release() string { return g.currentRelease.Load().(string) }
 
 func (g *Gateway) HasRelease() bool { return g.release() != "" }
 
+func (g *Gateway) ActivateLatest() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.activeRelease.Store(g.release())
+}
+
 func (g *Gateway) serveRelease(w http.ResponseWriter, r *http.Request) bool {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		return false
 	}
-	version := g.release()
+	version := g.activeRelease.Load().(string)
 	path := r.URL.Path
 	switch {
 	case path == updatePath:
@@ -82,14 +94,14 @@ func (g *Gateway) serveRelease(w http.ResponseWriter, r *http.Request) bool {
 	case !releaseAsset(path):
 		return false
 	}
-	if path != "/index.html" && !hashedWebCode.MatchString(path) {
+	if path != "/index.html" && !hashedReleaseAsset(path) {
 		// 打包开发版的入口和运行时有固定 URL，按文档版本读取，避免切换时混用。
 		if cookie, err := r.Cookie(releaseCookie); err == nil && Credential(cookie.Value) {
 			version = cookie.Value
 		}
 	}
 	file, err := os.Open(filepath.Join(g.releases, version, path))
-	if err != nil && hashedWebCode.MatchString(path) {
+	if err != nil && hashedReleaseAsset(path) {
 		// 切换期间仍在运行的旧页面可以继续读取原来的哈希分包。
 		entries, _ := os.ReadDir(g.releases)
 		for _, candidate := range entries {
@@ -116,7 +128,7 @@ func (g *Gateway) serveRelease(w http.ResponseWriter, r *http.Request) bool {
 	if scriptResource(path) {
 		media = "text/javascript; charset=utf-8"
 	}
-	if !hashedWebCode.MatchString(path) {
+	if !hashedReleaseAsset(path) {
 		w.Header().Set("Cache-Control", "no-store")
 	}
 	if media != "" {
@@ -153,11 +165,19 @@ func (g *Gateway) serveReleaseVersion(w http.ResponseWriter, r *http.Request) {
 
 	query := r.URL.Query()
 	entered := query.Get("workspace") == "1" && g.workspaceSeen.CompareAndSwap(false, true)
-	go g.checkRelease(entered)
+	if entered || g.needsLegacyReleaseCheck() {
+		go g.checkRelease(entered)
+	}
+
+	// 旧网页会对版本变化直接重载，只向新版监听器报告已备好的候选。
+	latest := g.release
+	if query.Get("notice") != "1" {
+		latest = func() string { return g.activeRelease.Load().(string) }
+	}
 
 	since := query.Get("since")
 	g.mu.Lock()
-	version, changed := g.release(), g.releaseChanged
+	version, changed := latest(), g.releaseChanged
 	g.mu.Unlock()
 	if query.Has("since") && since == version {
 		// 首次还没有离线包时也可以等待，从空版本等到第一次完整发布。
@@ -169,21 +189,27 @@ func (g *Gateway) serveReleaseVersion(w http.ResponseWriter, r *http.Request) {
 		case <-changed:
 		case <-timeout.C:
 		}
-		version = g.release()
+		version = latest()
 	}
 	_, _ = io.WriteString(w, version)
 }
 
+func (g *Gateway) needsLegacyReleaseCheck() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.target != nil && g.upstreamRelease == ""
+}
+
 func (g *Gateway) checkRelease(entered bool) {
 	g.mu.Lock()
-	target, transport, code, done := g.target, g.assets, g.code, g.routeDone
+	target, transport, code, done, expected := g.target, g.assets, g.code, g.routeDone, g.upstreamRelease
 	g.mu.Unlock()
 	if target != nil {
-		g.refreshRelease(target, transport, code, done, entered)
+		g.refreshRelease(target, transport, code, done, expected, entered)
 	}
 }
 
-func (g *Gateway) refreshRelease(target *url.URL, transport *http.Transport, code *webAssetTransport, routeDone chan struct{}, wait bool) {
+func (g *Gateway) refreshRelease(target *url.URL, transport *http.Transport, code *webAssetTransport, routeDone chan struct{}, expected string, wait bool) {
 	if g.releases == "" || transport == nil {
 		return
 	}
@@ -198,7 +224,13 @@ func (g *Gateway) refreshRelease(target *url.URL, transport *http.Transport, cod
 		return
 	default:
 	}
-	if g.lastReleaseRoute == routeDone {
+	g.mu.Lock()
+	stale := g.routeDone != routeDone || g.upstreamRelease != expected
+	g.mu.Unlock()
+	if stale || (expected != "" && expected == g.release()) {
+		return
+	}
+	if g.lastReleaseRoute == routeDone && g.lastUpstreamRelease == expected {
 		if g.waitingWorkspace {
 			if !g.workspaceSeen.Load() {
 				return
@@ -207,7 +239,7 @@ func (g *Gateway) refreshRelease(target *url.URL, transport *http.Transport, cod
 			return
 		}
 	}
-	g.lastReleaseRoute, g.lastReleaseCheck = routeDone, time.Now()
+	g.lastReleaseRoute, g.lastUpstreamRelease, g.lastReleaseCheck = routeDone, expected, time.Now()
 	g.waitingWorkspace = false
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
@@ -233,13 +265,18 @@ func (g *Gateway) refreshRelease(target *url.URL, transport *http.Transport, cod
 		resourceClient := client
 		if path == "/" {
 			req.Header.Set("Accept", "text/html")
-			if previous != "" {
+			if expected != "" {
+				// The authenticated build digest describes the identity HTML variant.
+				req.Header.Set("Accept-Encoding", "identity")
+			} else if previous != "" {
 				req.Header.Set("If-None-Match", `"weq-release-`+previous+`"`)
 			}
 		} else if hashedWebCode.MatchString(path) {
 			// 与 WebView 共用 gzip 分包，落盘的完整网页版本仍使用解压后的代码。
 			req.Header.Set("Accept-Encoding", "gzip")
 			resourceClient = codeClient
+		} else if strings.HasSuffix(path, ".svg") {
+			req.Header.Set("Accept-Encoding", "gzip")
 		}
 		response, err := resourceClient.Do(req)
 		if err != nil {
@@ -277,17 +314,25 @@ func (g *Gateway) refreshRelease(target *url.URL, transport *http.Transport, cod
 		WaitForWorkspace bool
 		Resources        []struct{ Path string }
 	}
-	match := offlineManifest.FindSubmatch(shell)
+	var match [][]byte
+	if expected != "" {
+		match = completeManifest.FindSubmatch(shell)
+		if match == nil {
+			return
+		}
+	} else {
+		match = offlineManifest.FindSubmatch(shell)
+	}
 	if match == nil {
 		match = startupManifest.FindSubmatch(shell)
 	}
 	if match == nil || json.Unmarshal([]byte(html.UnescapeString(string(match[1])+string(match[2]))), &manifest) != nil ||
-		manifest.Version != 1 || len(manifest.Resources) == 0 || len(manifest.Resources) > 1024 {
+		manifest.Version != 1 || len(manifest.Resources) == 0 || len(manifest.Resources) > 2048 {
 		return
 	}
 	digest := sha256.Sum256(shell)
 	version := hex.EncodeToString(digest[:])
-	if version == previous {
+	if version == previous || (expected != "" && version != expected) {
 		return
 	}
 	if previous == "" && manifest.WaitForWorkspace && !g.workspaceSeen.Load() {
@@ -335,7 +380,7 @@ func (g *Gateway) refreshRelease(target *url.URL, transport *http.Transport, cod
 				}
 				size := 0
 				// 文件名带内容哈希的分包从上一套完整资源直接复用。
-				if previous != "" && hashedWebCode.MatchString(path) {
+				if previous != "" && hashedReleaseAsset(path) {
 					source := filepath.Join(g.releases, previous, path)
 					if stat, err := os.Stat(source); err == nil && os.Link(source, destination) == nil {
 						size = int(stat.Size())
@@ -344,7 +389,9 @@ func (g *Gateway) refreshRelease(target *url.URL, transport *http.Transport, cod
 				if size == 0 {
 					body, media, err := get(path, resourceLimit)
 					valid := strings.HasSuffix(path, ".css") && strings.HasPrefix(media, "text/css") ||
-						scriptResource(path) && (strings.HasPrefix(media, "text/javascript") || strings.HasPrefix(media, "application/javascript"))
+						scriptResource(path) && (strings.HasPrefix(media, "text/javascript") || strings.HasPrefix(media, "application/javascript")) ||
+						strings.HasSuffix(path, ".png") && strings.HasPrefix(media, "image/png") ||
+						strings.HasSuffix(path, ".svg") && strings.HasPrefix(media, "image/svg+xml")
 					if err != nil || !valid || os.WriteFile(destination, body, 0600) != nil {
 						cancel()
 						return
@@ -366,13 +413,14 @@ func (g *Gateway) refreshRelease(target *url.URL, transport *http.Transport, cod
 	// 发布与撤销互斥。任一资源失败时继续使用上一套完整页面。
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if ctx.Err() != nil || g.routeDone != routeDone {
+	if ctx.Err() != nil || g.routeDone != routeDone || g.upstreamRelease != expected {
 		return
 	}
 	destination := filepath.Join(g.releases, version)
-	_ = os.RemoveAll(destination)
-	if os.Rename(staging, destination) != nil {
-		return
+	if _, err := os.Stat(filepath.Join(destination, "index.html")); err != nil {
+		if os.Rename(staging, destination) != nil {
+			return
+		}
 	}
 	pointer := filepath.Join(g.releases, ".current")
 	if os.WriteFile(pointer, []byte(version), 0600) != nil ||
@@ -380,11 +428,14 @@ func (g *Gateway) refreshRelease(target *url.URL, transport *http.Transport, cod
 		return
 	}
 	g.currentRelease.Store(version)
+	if g.activeRelease.Load().(string) == "" {
+		g.activeRelease.Store(version)
+	}
 	close(g.releaseChanged)
 	g.releaseChanged = make(chan struct{})
 	entries, _ := os.ReadDir(g.releases)
 	for _, entry := range entries {
-		if entry.IsDir() && entry.Name() != version && entry.Name() != previous {
+		if entry.IsDir() && entry.Name() != version && entry.Name() != previous && entry.Name() != g.activeRelease.Load().(string) {
 			_ = os.RemoveAll(filepath.Join(g.releases, entry.Name()))
 		}
 	}

@@ -15,7 +15,7 @@ class AndroidStartupTests(unittest.TestCase):
         failure = source.split('private void recordWebResourceFailure(', 1)[1].split('private void showWebPage()', 1)[0]
         self.assertIn('window.weqRemoteStartupRecovery === true', failure)
         self.assertIn('webStartupRevision != revision', failure)
-        self.assertIn('if (!"true".equals(managed)) failWebLoad(problem);', failure)
+        self.assertIn('if (!"true".equals(managed)) failWebLoad(FailureKind.WEB_LOAD, problem);', failure)
         started = source.split('@Override public void onPageStarted', 1)[1].split('@Override', 1)[0]
         self.assertIn('webStartupRevision++;', started)
 
@@ -24,13 +24,13 @@ class AndroidStartupTests(unittest.TestCase):
         committed = source.split('@Override public void onPageCommitVisible', 1)[1].split('@Override', 1)[0]
         self.assertIn('webFeatures.observeStartup()', committed)
         # 前台核验不能用“尚未就绪”代替“本地代理丢失”。
-        verify = source.split('private void verify()', 1)[1].split('private void openWeb()', 1)[0]
+        verify = source.split('private void verify()', 1)[1].split('private void openWeb(', 1)[0]
         self.assertIn('WebStartup.shouldOpenWeb(restoring, webView != null, webReady)', verify)
 
     def test_multi_route_updates_network_label(self):
         source = (SOURCE / 'MainActivity.java').read_text()
         start = source.split('private void startMulti(', 1)[1].split('private void updateConnection(', 1)[0]
-        self.assertIn('stopNetwork(true); busy = true;', start)
+        self.assertIn('beginRoute(); busy = true;', start)
         self.assertIn('boolean embedded = client.usesEmbeddedNetwork();', start)
         self.assertIn('connectionRoute = embedded ? "内嵌 Tailscale" : "系统网络（HTTPS）"', start)
         self.assertIn('networkState.setText(embedded ? "Tailscale：已连接" : "Tailscale：未使用（系统网络）")', start)

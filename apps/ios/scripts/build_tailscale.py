@@ -157,7 +157,7 @@ def build_framework(simulator=False):
              '-configuration', 'Release', '-destination', destination, '-derivedDataPath', derived,
              'ARCHS=arm64', 'IPHONEOS_DEPLOYMENT_TARGET=17.0', 'BUILD_LIBRARY_FOR_DISTRIBUTION=YES',
              'CODE_SIGNING_ALLOWED=NO', 'CODE_SIGNING_REQUIRED=NO', 'CODE_SIGN_IDENTITY=', 'DEVELOPMENT_TEAM=',
-             'OTHER_LDFLAGS=$(inherited) -Wl,-u,_WeQOpenGateway -Wl,-u,_WeQGatewayOrigin -Wl,-u,_WeQGatewayHasRelease -Wl,-u,_WeQAttachGateway -Wl,-u,_WeQStoreGatewayImage -Wl,-u,_WeQCloseGateway -Wl,-u,_WeQClearGatewayCache', 'build'])
+             'OTHER_LDFLAGS=$(inherited) -Wl,-u,_WeQOpenGateway -Wl,-u,_WeQGatewayOrigin -Wl,-u,_WeQGatewayHasRelease -Wl,-u,_WeQAttachGateway -Wl,-u,_WeQSetGatewayRelease -Wl,-u,_WeQActivateGatewayRelease -Wl,-u,_WeQStoreGatewayImage -Wl,-u,_WeQCloseGateway -Wl,-u,_WeQClearGatewayCache', 'build'])
         staging = temporary / 'product'
         staging.mkdir()
         framework = staging / 'TailscaleKit.xcframework'

@@ -41,6 +41,7 @@ final class RemoteModel: ObservableObject {
     var error: String? { failure?.detail }
     @Published private(set) var webSession: RemoteWebSession?
     @Published private(set) var webReady = false
+    @Published private(set) var openingCachedWeb = false
     @Published private(set) var webLoadingStage = WebDownloadProgress.loadingMessage
     @Published private(set) var webDownload: WebDownloadProgress?
     @Published private(set) var webDevelopmentProgress: WebDevelopmentProgress?
@@ -284,7 +285,11 @@ final class RemoteModel: ObservableObject {
         busy = true
         defer { if generation == revision { busy = false } }
         do {
-            guard let saved = try SavedConnection.load() else { rememberedComputer = false; return }
+            guard let saved = try SavedConnection.load() else {
+                rememberedComputer = false
+                openingCachedWeb = false
+                return
+            }
             rememberedComputer = true
             if webSession == nil, !testMode,
                let cached = try? await network.webSession(token: saved.token) {
@@ -293,8 +298,9 @@ final class RemoteModel: ObservableObject {
                     network.closeWeb()
                     return
                 }
-                adoptWebSession(cached)
+                adoptWebSession(cached, cached: true)
             }
+            if webSession == nil { openingCachedWeb = false }
             message = "正在连接电脑"
             let selection = try await selectConnection(saved.endpoints ?? [saved.endpoint], pin: saved.routeFingerprint ?? saved.fingerprint, probe: restoreProbe(for: saved.endpoints), token: saved.token)
             guard generation == revision else { selection.api.session.invalidateAndCancel(); return }
@@ -308,9 +314,11 @@ final class RemoteModel: ObservableObject {
             if !connected { api?.session.invalidateAndCancel(); api = nil }
         } catch {
             if generation == revision, !Task.isCancelled {
+                if webSession == nil { openingCachedWeb = false }
                 if case RemoteError.unauthorized = error { fail(error) }
                 else {
                     api?.session.invalidateAndCancel(); api = nil
+                    connectionFailed()
                     if failure?.kind.retriesWeb != true { showConnectionFailure(error) }
                 }
             }
@@ -379,9 +387,9 @@ final class RemoteModel: ObservableObject {
         return selected
     }
 
-    // 页面加载完成后才切到全屏网页；失败时留在连接页，保留手动重连入口。
-    func adoptWebSession(_ session: RemoteWebSession) {
+    func adoptWebSession(_ session: RemoteWebSession, cached: Bool = false) {
         session.onNetworkPreference = { [weak self] mode in self?.network.dataSaverMode = mode }
+        openingCachedWeb = cached
         webReady = false
         webLoadingStage = WebDownloadProgress.loadingMessage
         webDownload = nil
@@ -402,7 +410,9 @@ final class RemoteModel: ObservableObject {
         session.onReady = { [weak self, weak session] in
             guard let self, self.webSession === session else { return }
             self.webReady = true
+            self.openingCachedWeb = false
             self.health.resume()
+            if self.failure != nil && !self.connected { self.health.failed() }
             self.scheduleConnectionWarning()
             self.publishConnectionHealth()
             self.webDownload = nil
@@ -432,6 +442,14 @@ final class RemoteModel: ObservableObject {
         webSession = session
     }
 
+    func reloadWeb() {
+        guard let session = webSession, webReady else { return }
+        network.activateLatestWebRelease()
+        webLoadingStage = WebDownloadProgress.loadingMessage
+        webReady = false
+        session.reload()
+    }
+
     private func failWebLoad(_ error: Error) {
         let recovery = checkedAt != nil
             ? "本次已连到电脑，无需重新扫码。"
@@ -458,6 +476,7 @@ final class RemoteModel: ObservableObject {
         network.closeWeb()
         webSession = nil
         webReady = false
+        openingCachedWeb = false
         connected = false
         message = failure?.kind.title ?? "网页加载失败"
     }
@@ -482,6 +501,8 @@ final class RemoteModel: ObservableObject {
     init(network: EmbeddedNetwork) {
         self.network = network
         rememberedComputer = (try? SavedConnection.load()) != nil
+        openingCachedWeb = rememberedComputer && !testMode && EmbeddedNetwork.integrationControl == nil &&
+            !ProcessInfo.processInfo.arguments.contains("--remote-web-smoke-test")
     }
 
     // 仅模拟器 Debug 构建接受回环测试配置；真机/Release 无系统网络绕行入口。
@@ -639,12 +660,15 @@ final class RemoteModel: ObservableObject {
         await refresh(verified: nil)
     }
 
-    private func prepareWeb(api: RemoteAPI, token: String, pin: String?, generation: Int) async throws {
+    private func prepareWeb(api: RemoteAPI, token: String, pin: String?, release: String, generation: Int) async throws {
         guard !testMode, failure?.kind.retriesWeb != true else { return }
+        if webSession != nil {
+            // A route failure must not discard a locally usable document.
+            try await network.attachWeb(endpoint: api.endpoint, token: token, fingerprint: pin, release: release)
+            return
+        }
         do {
-            if webSession != nil {
-                try await network.attachWeb(endpoint: api.endpoint, token: token, fingerprint: pin)
-            } else if let session = try await network.webSession(token: token, endpoint: api.endpoint, fingerprint: pin) {
+            if let session = try await network.webSession(token: token, endpoint: api.endpoint, fingerprint: pin, release: release) {
                 guard generation == revision, !Task.isCancelled else {
                     session.close()
                     network.closeWeb()
@@ -666,17 +690,20 @@ final class RemoteModel: ObservableObject {
         do {
             if api.endpoint.scheme == "http" { await network.refresh() }
             let requestMillis: Int
-            if let verified, verified.api.endpoint == api.endpoint, verified.status != nil, let probed = verified.latencyMillis {
+            let status: ComputerStatus
+            if let verified, verified.api.endpoint == api.endpoint, let value = verified.status, let probed = verified.latencyMillis {
+                status = value
                 requestMillis = probed
             } else {
                 let start = ContinuousClock.now
                 let value: ComputerStatus = try await api.request("v1/status", token: credential.token)
                 try value.validate()
+                status = value
                 requestMillis = elapsedMillis(ContinuousClock.now - start)
             }
             guard generation == revision, !Task.isCancelled else { return }
             checkedAt = Date()
-            try await prepareWeb(api: api, token: credential.token, pin: fingerprint, generation: generation)
+            try await prepareWeb(api: api, token: credential.token, pin: fingerprint, release: status.webRelease ?? "", generation: generation)
             guard generation == revision, failure?.kind.retriesWeb != true else { return }
             latency = requestMillis
             health.succeeded(at: Date(), latency: requestMillis)
@@ -697,7 +724,7 @@ final class RemoteModel: ObservableObject {
                         guard generation == revision else { replacement.api.session.invalidateAndCancel(); return }
                         let pin = replacement.api.endpoint.scheme == "https" ? routeFingerprint : nil
                         checkedAt = Date()
-                        try await prepareWeb(api: replacement.api, token: credential.token, pin: pin, generation: generation)
+                        try await prepareWeb(api: replacement.api, token: credential.token, pin: pin, release: replacement.status?.webRelease ?? "", generation: generation)
                         guard generation == revision, failure?.kind.retriesWeb != true else { return }
                         api.session.invalidateAndCancel(); self.api = replacement.api
                         adopted = true
@@ -740,11 +767,11 @@ final class RemoteModel: ObservableObject {
                 if selection.api.session !== api.session { selection.api.session.invalidateAndCancel() }
                 return
             }
+            let pin = selection.api.endpoint.scheme == "https" ? routeFingerprint ?? fingerprint : nil
+            if !testMode {
+                try await network.attachWeb(endpoint: selection.api.endpoint, token: credential.token, fingerprint: pin, release: selection.status?.webRelease ?? "")
+            }
             if selection.api.session !== api.session {
-                let pin = selection.api.endpoint.scheme == "https" ? routeFingerprint ?? fingerprint : nil
-                if !testMode {
-                    try await network.attachWeb(endpoint: selection.api.endpoint, token: credential.token, fingerprint: pin)
-                }
                 api.session.invalidateAndCancel()
                 self.api = selection.api
                 adopted = true
@@ -810,6 +837,7 @@ final class RemoteModel: ObservableObject {
         for session in probingSessions.values { session.invalidateAndCancel() }
         probingSessions.removeAll()
         webReady = false
+        openingCachedWeb = false
         webSession?.close()
         network.closeWeb()
         webSession = nil

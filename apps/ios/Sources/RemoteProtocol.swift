@@ -340,6 +340,7 @@ struct ComputerStatus: Decodable {
     let `protocol`: Int
     let scope: String
     let online: Bool
+    let webRelease: String?
 
     func validate() throws {
         guard product == "WeQ Remote", self.protocol == 1, scope == "status:read", online else { throw RemoteError.response }

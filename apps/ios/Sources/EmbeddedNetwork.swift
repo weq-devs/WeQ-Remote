@@ -184,36 +184,39 @@ final class EmbeddedNetwork: ObservableObject {
         return handle
     }
 
-    private func attachGateway(_ handle: Int32, endpoint: URL, fingerprint: String?) async throws {
+    private func attachGateway(_ handle: Int32, endpoint: URL, fingerprint: String?, release: String) async throws {
         let generation = revision
         let nodeHandle = fingerprint == nil ? await node?.tailscale ?? 0 : 0
         guard generation == revision, !Task.isCancelled,
               fingerprint != nil ? PairingInvitation.isDirectEndpoint(endpoint) :
                 PairingInvitation.isTailnetEndpoint(endpoint),
-              WeQAttachGateway(handle, nodeHandle, endpoint.absoluteString, fingerprint ?? "") == 1
+              WeQAttachGateway(handle, nodeHandle, endpoint.absoluteString, fingerprint ?? "", release) == 1
         else { throw RemoteError.network }
     }
 
     private var webRouteRevision = 0
 
-    func attachWeb(endpoint: URL, token: String, fingerprint: String?) async throws {
+    func attachWeb(endpoint: URL, token: String, fingerprint: String?, release: String = "") async throws {
         let handle = gateway
         guard handle != 0, gatewayToken == token else { throw RemoteError.credential }
-        guard webRoute != endpoint || webRouteRevision != revision else { return }
-        try await attachGateway(handle, endpoint: endpoint, fingerprint: fingerprint)
+        guard webRoute != endpoint || webRouteRevision != revision else {
+            WeQSetGatewayRelease(handle, release)
+            return
+        }
+        try await attachGateway(handle, endpoint: endpoint, fingerprint: fingerprint, release: release)
         guard gateway == handle else { throw CancellationError() }
         webRoute = endpoint
         webRouteRevision = revision
     }
 
-    func webSession(token: String, endpoint: URL? = nil, fingerprint: String? = nil) async throws -> RemoteWebSession? {
+    func webSession(token: String, endpoint: URL? = nil, fingerprint: String? = nil, release: String = "") async throws -> RemoteWebSession? {
         let generation = revision
         let localSecret = try DeviceCredential().token
         let handle = try localGateway(token: token, localSecret: localSecret)
         var adopted = false
         defer { if !adopted { WeQCloseGateway(handle) } }
         if let endpoint {
-            try await attachGateway(handle, endpoint: endpoint, fingerprint: fingerprint)
+            try await attachGateway(handle, endpoint: endpoint, fingerprint: fingerprint, release: release)
         } else if WeQGatewayHasRelease(handle) == 0 { return nil }
 
         guard let raw = WeQGatewayOrigin(handle) else { throw RemoteError.network }
@@ -246,6 +249,8 @@ final class EmbeddedNetwork: ObservableObject {
         gatewayToken = nil
         webRoute = nil
     }
+
+    func activateLatestWebRelease() { WeQActivateGatewayRelease(gateway) }
 
     func clearWebCache() {
         closeWeb()

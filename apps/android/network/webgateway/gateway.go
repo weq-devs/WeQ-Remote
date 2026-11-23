@@ -15,30 +15,33 @@ import (
 )
 
 type Gateway struct {
-	server           *http.Server
-	listener         net.Listener
-	origin           string
-	secret           string
-	token            string
-	mu               sync.Mutex
-	connections      map[net.Conn]struct{}
-	images           map[string]*localImage
-	imageReads       int
-	closed           bool
-	base             *http.Transport
-	proxy            *httputil.ReverseProxy
-	target           *url.URL
-	assets           *http.Transport
-	code             *webAssetTransport
-	releases         string
-	currentRelease   atomic.Value
-	releaseChanged   chan struct{} // protected by mu
-	routeDone        chan struct{}
-	releaseMu        sync.Mutex
-	lastReleaseRoute chan struct{}
-	lastReleaseCheck time.Time
-	workspaceSeen    atomic.Bool
-	waitingWorkspace bool // protected by releaseMu
+	server              *http.Server
+	listener            net.Listener
+	origin              string
+	secret              string
+	token               string
+	mu                  sync.Mutex
+	connections         map[net.Conn]struct{}
+	images              map[string]*localImage
+	imageReads          int
+	closed              bool
+	base                *http.Transport
+	proxy               *httputil.ReverseProxy
+	target              *url.URL
+	assets              *http.Transport
+	code                *webAssetTransport
+	releases            string
+	currentRelease      atomic.Value
+	activeRelease       atomic.Value
+	upstreamRelease     string        // protected by mu; empty for development and older computers
+	releaseChanged      chan struct{} // protected by mu
+	routeDone           chan struct{}
+	releaseMu           sync.Mutex
+	lastReleaseRoute    chan struct{}
+	lastUpstreamRelease string
+	lastReleaseCheck    time.Time
+	workspaceSeen       atomic.Bool
+	waitingWorkspace    bool // protected by releaseMu
 }
 
 func Open(token, secret string) (*Gateway, error) {
@@ -52,7 +55,9 @@ func Open(token, secret string) (*Gateway, error) {
 	g := &Gateway{listener: listener, origin: "http://" + listener.Addr().String(), secret: secret,
 		token: token, connections: make(map[net.Conn]struct{}), releases: releaseDirectory(token),
 		releaseChanged: make(chan struct{})}
-	g.currentRelease.Store(readRelease(g.releases))
+	version := readRelease(g.releases)
+	g.currentRelease.Store(version)
+	g.activeRelease.Store(version)
 	g.server = &http.Server{ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second,
 		ConnState: func(conn net.Conn, state http.ConnState) {
 			g.mu.Lock()
@@ -98,6 +103,7 @@ func (g *Gateway) detachLocked() {
 	g.routeDone = nil
 	g.proxy = nil
 	g.target = nil
+	g.upstreamRelease = ""
 	if g.code != nil {
 		g.code.transfers.cancel()
 		g.code = nil
@@ -112,10 +118,18 @@ func (g *Gateway) detachLocked() {
 }
 
 func (g *Gateway) Attach(target *url.URL, transport http.RoundTripper) {
+	g.AttachRelease(target, transport, "")
+}
+
+func (g *Gateway) AttachRelease(target *url.URL, transport http.RoundTripper, version string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	base, _ := transport.(*http.Transport)
-	if g.closed || (base != nil && base == g.base && g.target != nil && target.String() == g.target.String()) {
+	if g.closed {
+		return
+	}
+	if base != nil && base == g.base && g.target != nil && target.String() == g.target.String() {
+		g.setUpstreamRelease(version, false)
 		return
 	}
 	g.detachLocked()
@@ -153,7 +167,26 @@ func (g *Gateway) Attach(target *url.URL, transport http.RoundTripper) {
 	}
 	g.proxy = proxy
 	g.target = target
-	go g.refreshRelease(target, g.assets, g.code, g.routeDone, true)
+	g.setUpstreamRelease(version, true)
+}
+
+func (g *Gateway) SetUpstreamRelease(version string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.setUpstreamRelease(version, false)
+}
+
+// 使用现有鉴权响应得知正式构建号；同一构建无需请求网页。
+func (g *Gateway) setUpstreamRelease(version string, attached bool) {
+	if !Credential(version) {
+		version = ""
+	}
+	changed := version != g.upstreamRelease
+	g.upstreamRelease = version
+	if g.target != nil && (attached || changed || (version != "" && version != g.release())) &&
+		(version == "" || version != g.release()) {
+		go g.refreshRelease(g.target, g.assets, g.code, g.routeDone, version, attached || changed)
+	}
 }
 
 func (g *Gateway) secure(header http.Header) {
@@ -173,9 +206,10 @@ func (g *Gateway) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	g.mu.Lock()
 	proxy := g.proxy
+	stable := g.upstreamRelease != ""
 	g.mu.Unlock()
 	// Dev HMR query variants must reach the running Vite server.
-	if (proxy == nil || r.URL.RawQuery == "" || r.URL.Path == "/" || r.URL.Path == updatePath) && g.serveRelease(w, r) {
+	if (proxy == nil || stable || r.URL.RawQuery == "" || r.URL.Path == "/" || r.URL.Path == updatePath) && g.serveRelease(w, r) {
 		return
 	}
 	if proxy != nil {

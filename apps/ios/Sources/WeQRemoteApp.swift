@@ -60,7 +60,6 @@ struct RemoteView: View {
         Color(uiColor: UIColor { $0.userInterfaceStyle == .dark ? UIColor(red: 0.36, green: 0.83, blue: 0.75, alpha: 1) : UIColor(red: 0.02, green: 0.48, blue: 0.43, alpha: 1) })
     }
 
-    // 网页加载出来之前留在连接页，用原生进度替代空白的全屏网页。
     private var loadingStage: String? {
         if model.failure?.kind.retriesWeb == true { return nil }
         if model.webSession != nil, !model.webReady { return model.webLoadingStage }
@@ -77,16 +76,17 @@ struct RemoteView: View {
                 WebContainer(session: session)
                     .id(ObjectIdentifier(session))
                     .ignoresSafeArea()
-                    .toolbar(.hidden, for: .navigationBar)
                     .opacity(model.webReady ? 1 : 0)
                     .allowsHitTesting(model.webReady)
                     .accessibilityHidden(!model.webReady)
             }
-            if !model.webReady {
+            if !model.webReady && !model.openingCachedWeb {
                 connectionPage
                     .transition(.opacity)
             }
             }
+            .background((colorScheme == .dark ? Color(red: 0.07, green: 0.08, blue: 0.09) : Color(red: 0.96, green: 0.97, blue: 0.97)).ignoresSafeArea())
+            .toolbar(model.webReady || model.openingCachedWeb ? .hidden : .automatic, for: .navigationBar)
         }
         .animation(.easeOut(duration: reduceMotion ? 0.1 : 0.18), value: model.webReady)
         .tint(accent)
@@ -103,8 +103,8 @@ struct RemoteView: View {
                             Task { await model.reconnect(manually: true) }
                         }.disabled(model.busy)
                     }
-                    if let session = model.webSession, model.webReady {
-                        Button("重新加载") { model.showingDetails = false; session.reload() }
+                    if model.webSession != nil, model.webReady {
+                        Button("重新加载") { model.showingDetails = false; model.reloadWeb() }
                         Button("断开连接") {
                             model.showingDetails = false
                             model.disconnect()

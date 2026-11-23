@@ -28,12 +28,17 @@ func NewWebGateway(token, secret string) (*WebGateway, error) {
 func (g *WebGateway) Origin() string   { return g.gateway.Origin() }
 func (g *WebGateway) HasRelease() bool { return g.gateway.HasRelease() }
 func (g *WebGateway) Close()           { g.gateway.Close() }
+func (g *WebGateway) ActivateLatest()  { g.gateway.ActivateLatest() }
 
 func (g *WebGateway) StoreImage(id, media string, body []byte) bool {
 	return g.gateway.StoreImage(id, media, body)
 }
 
 func (c *Client) AttachWeb(g *WebGateway, endpoint string) error {
+	return c.AttachWebRelease(g, endpoint, "")
+}
+
+func (c *Client) AttachWebRelease(g *WebGateway, endpoint, version string) error {
 	if g == nil {
 		return errors.New("missing gateway")
 	}
@@ -44,7 +49,7 @@ func (c *Client) AttachWeb(g *WebGateway, endpoint string) error {
 		if r.closed || endpoint != r.endpoints[0] || r.active == nil {
 			return errors.New("invalid connection")
 		}
-		return r.active.AttachWeb(g, r.endpoint)
+		return r.active.AttachWebRelease(g, r.endpoint, version)
 	}
 	if !c.accepts(endpoint) {
 		return errors.New("invalid web destination")
@@ -55,7 +60,7 @@ func (c *Client) AttachWeb(g *WebGateway, endpoint string) error {
 		return errors.New("network closed")
 	}
 	target, _ := url.Parse(endpoint)
-	g.gateway.Attach(target, c.http.Transport)
+	g.gateway.AttachRelease(target, c.http.Transport, version)
 	return nil
 }
 

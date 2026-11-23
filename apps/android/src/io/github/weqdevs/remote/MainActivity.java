@@ -246,6 +246,7 @@ public final class MainActivity extends Activity {
         }
         if (getIntent().getData() != null) invitation.setText(getIntent().getData().toString());
         if (testControl != null) { invitation.setText(getIntent().getStringExtra("test_invitation")); enabled = true; }
+        if (!rememberedComputer || invitation.length() > 0) setContentView(setupView);
     }
 
     @Override protected void onResume() {
@@ -330,7 +331,6 @@ public final class MainActivity extends Activity {
             return insets;
         });
         page.requestApplyInsets();
-        setContentView(page);
 
         LinearLayout topBar = new LinearLayout(this);
         topBar.setOrientation(LinearLayout.HORIZONTAL);
@@ -811,6 +811,7 @@ public final class MainActivity extends Activity {
 
     private void reloadWeb() {
         if (webView == null) return;
+        if (webGateway != null) webGateway.activateLatest();
         webLoaded = false;
         webStartupProblem = null;
         webDownload = null;
@@ -1059,6 +1060,7 @@ public final class MainActivity extends Activity {
                     else cached.close();
                 } catch (Exception unavailable) { /* 普通连接仍可继续。 */ }
             }
+            if (!showCached && webGateway == null && setupView.getParent() == null) setContentView(setupView);
             restoring = true;
             Runnable resume = () -> { endpoint = address; token = credential; paired = true; restoring = true; computerState.setText("正在连接电脑"); verify(); };
             org.json.JSONArray routes = saved.optJSONArray("endpoints");
@@ -1068,9 +1070,13 @@ public final class MainActivity extends Activity {
             }
             else if (!pin.isEmpty()) startDirect(address, pin, resume);
             else { endpoint = address; token = credential; paired = true; restoring = true; enabled = true; startNetwork(); }
-            if (showCached) showWeb(webGateway.origin(), localSecret, generation);
+            if (showCached) showWeb(webGateway.origin(), localSecret, generation, false);
             return true;
-        } catch (Exception e) { showFailure(FailureKind.VERIFICATION, "无法读取已保存的电脑凭据。"); return false; }
+        } catch (Exception e) {
+            if (webView == null) closeWeb();
+            showFailure(FailureKind.VERIFICATION, "无法读取已保存的电脑凭据。");
+            return false;
+        }
     }
     private void claim(Invitation link) {
         if (!online || node == null) { showFailure(FailureKind.PAIRING, "此邀请不含入网密钥，请先连接电脑所在的网络。"); return; }
@@ -1104,7 +1110,7 @@ public final class MainActivity extends Activity {
                 JSONObject approval = response(client.request(address, "/v1/pair/" + id, "GET", credential, ""));
                 if (!id.equals(approval.getString("id")) || !"web:access".equals(approval.getString("scope"))) throw new Exception("电脑返回了不兼容的数据，请升级电脑端");
                 main.post(() -> { if (revision != generation || !id.equals(claimID)) return; if (approval.optBoolean("approved")) {
-                    try { if (!BuildConfig.TESTING || fingerprint != null) { ConnectionStore.save(this, endpoint, token, fingerprint, connectionRoutes); rememberedComputer = true; } claimID = null; paired = true; computerVerified = true; openWeb(); }
+                    try { if (!BuildConfig.TESTING || fingerprint != null) { ConnectionStore.save(this, endpoint, token, fingerprint, connectionRoutes); rememberedComputer = true; } claimID = null; paired = true; computerVerified = true; restoring = true; verify(); }
                     catch (Exception e) { fail(revision, "无法保存电脑凭据，请重试"); }
                 } else main.postDelayed(approvalPoll, 1500); });
             } catch (Exception e) { fail(revision, e.getMessage()); }
@@ -1131,13 +1137,9 @@ public final class MainActivity extends Activity {
                 JSONObject status = response(raw);
                 long milliseconds = SystemClock.elapsedRealtime() - started;
                 if (!"WeQ Remote".equals(status.getString("product")) || status.getInt("protocol") != 1 || !"status:read".equals(status.getString("scope")) || !status.getBoolean("online")) throw new Exception("电脑返回了不兼容的数据");
+                String webRelease = status.optString("webRelease", "");
                 if (gateway != null) {
-                    try { client.attachWeb(gateway, address); }
-                    catch (Exception e) {
-                        if (liveCheck) throw e;
-                        failWebGateway(revision);
-                        return;
-                    }
+                    client.attachWebRelease(gateway, address, webRelease);
                 }
                 boolean webReady = gateway != null;
                 boolean embedded = client.usesEmbeddedNetwork();
@@ -1165,7 +1167,7 @@ public final class MainActivity extends Activity {
                     }
                     boolean open = WebStartup.shouldOpenWeb(restoring, webView != null, webReady);
                     restoring = false;
-                    if (open && visible && webGateway == null) openWeb();
+                    if (open && visible && webGateway == null) openWeb(webRelease);
                 });
             } catch (Exception e) {
                 final FailureKind kind = failureKind;
@@ -1178,7 +1180,7 @@ public final class MainActivity extends Activity {
             }
         });
     }
-    private void openWeb() {
+    private void openWeb(String webRelease) {
         final Client client = node; final int revision = generation;
         final String address = endpoint, credential = token, localSecret = Invitation.credential();
         busy = true; webLoadingStage = "正在准备网页连接"; render();
@@ -1186,13 +1188,13 @@ public final class MainActivity extends Activity {
             WebGateway candidate = null;
             try {
                 candidate = Androidnet.newWebGateway(credential, localSecret);
-                client.attachWeb(candidate, address);
+                client.attachWebRelease(candidate, address, webRelease);
                 final WebGateway gateway = candidate;
                 main.post(() -> {
                     if (revision != generation || !visible) { gateway.close(); return; }
                     webGateway = gateway;
                     busy = false;
-                    showWeb(gateway.origin(), localSecret, revision);
+                    showWeb(gateway.origin(), localSecret, revision, true);
                 });
             } catch (Exception e) {
                 if (candidate != null) candidate.close();
@@ -1201,7 +1203,7 @@ public final class MainActivity extends Activity {
         });
     }
 
-    private void showWeb(String origin, String localSecret, int revision) {
+    private void showWeb(String origin, String localSecret, int revision, boolean showProgress) {
         webLoaded = false;
         webStartupProblem = null;
         android.webkit.CookieManager cookies = android.webkit.CookieManager.getInstance();
@@ -1255,7 +1257,7 @@ public final class MainActivity extends Activity {
                         return new android.webkit.WebResourceResponse("text/plain", "UTF-8", 403, "Forbidden", java.util.Collections.emptyMap(), new java.io.ByteArrayInputStream(new byte[0]));
                     }
                 });
-                // 网页铺满整屏，不再显示任何原生栏或按钮；未加载完时用连接页盖在上面显示进度。
+                // 只有在线启动和手动重载才显示连接进度，缓存启动不挂载连接页。
                 LinearLayout shell = new LinearLayout(this); shell.setOrientation(LinearLayout.VERTICAL); shell.setBackgroundColor(webBackgroundColor());
                 final boolean manualInsets = android.os.Build.VERSION.SDK_INT >= 30 && !webViewHandlesSafeArea();
                 shell.addView(webView, new LinearLayout.LayoutParams(-1, 0, 1f));
@@ -1264,7 +1266,7 @@ public final class MainActivity extends Activity {
                 android.view.ViewGroup parent = (android.view.ViewGroup) setupView.getParent();
                 if (parent != null) parent.removeView(setupView);
                 root.addView(shell, new android.widget.FrameLayout.LayoutParams(-1, -1));
-                root.addView(setupView, new android.widget.FrameLayout.LayoutParams(-1, -1));
+                if (showProgress) root.addView(setupView, new android.widget.FrameLayout.LayoutParams(-1, -1));
                 setContentView(root); render();
                 webView.loadUrl(origin + "/");
             });
@@ -1398,9 +1400,11 @@ public final class MainActivity extends Activity {
         WebGateway gateway = webGateway;
         webGateway = null;
         if (gateway != null) gateway.close();
-        if (webView == null) return;
-        webView.stopLoading(); webView.loadUrl("about:blank"); webView.clearHistory(); webView.destroy(); webView = null;
-        android.webkit.CookieManager.getInstance().removeAllCookies(null);
+        if (webView == null && setupView.getParent() != null) return;
+        if (webView != null) {
+            webView.stopLoading(); webView.loadUrl("about:blank"); webView.clearHistory(); webView.destroy(); webView = null;
+            android.webkit.CookieManager.getInstance().removeAllCookies(null);
+        }
         android.view.ViewGroup parent = (android.view.ViewGroup) setupView.getParent();
         if (parent != null) parent.removeView(setupView);
         setContentView(setupView);
