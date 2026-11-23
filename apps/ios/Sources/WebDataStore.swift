@@ -155,14 +155,19 @@ final class RemoteBusinessCache {
         return generation.valid ? result : .unavailable
     }
 
-    func clear() {
-        guard generation.valid else { return }
+    func clear(completion: (@Sendable () -> Void)? = nil) {
+        guard generation.valid else {
+            completion?()
+            return
+        }
         generation.valid = false
         Self.generations.removeValue(forKey: directoryPath)
+        let group = DispatchGroup()
         for lane in generation.lanes.values {
             // 同类型的旧读写、清理、新授权首次写入按提交顺序执行。
-            lane.queue.async { lane.clear() }
+            lane.queue.async(group: group) { lane.clear() }
         }
+        if let completion { group.notify(queue: .main, execute: completion) }
     }
 }
 

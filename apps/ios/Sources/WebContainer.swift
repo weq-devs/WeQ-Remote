@@ -68,7 +68,19 @@ private final class RemoteBusinessCacheHandler: NSObject, WKScriptMessageHandler
                                replyHandler: @escaping (Any?, String?) -> Void) {
         guard active < 4, message.frameInfo.isMainFrame, let owner, message.webView === owner.view,
               let url = message.frameInfo.request.url, RemoteWebPolicy.sameOrigin(url, endpoint: owner.endpoint),
-              let body = message.body as? [String: Any], let scope = body["scope"] as? String,
+              let body = message.body as? [String: Any] else {
+            replyHandler(nil, "Cache unavailable"); return
+        }
+        if body["action"] as? String == "clear" {
+            Task {
+                await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                    cache.clear { continuation.resume() }
+                }
+                replyHandler(true, nil)
+            }
+            return
+        }
+        guard let scope = body["scope"] as? String,
               let name = body["kind"] as? String, let kind = RemoteBusinessCache.Kind(rawValue: name) else {
             replyHandler(nil, "Cache unavailable"); return
         }

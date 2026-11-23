@@ -32,6 +32,7 @@ type Gateway struct {
 	assets              *http.Transport
 	code                *webAssetTransport
 	releases            string
+	cache               *dataCache
 	currentRelease      atomic.Value
 	activeRelease       atomic.Value
 	upstreamRelease     string        // protected by mu; empty for development and older computers
@@ -58,6 +59,7 @@ func Open(token, secret string) (*Gateway, error) {
 	g := &Gateway{listener: listener, origin: "http://" + listener.Addr().String(), secret: secret,
 		token: token, connections: make(map[net.Conn]struct{}), releases: releaseDirectory(token),
 		releaseChanged: make(chan struct{})}
+	g.cache = newDataCache(g.releases)
 	version := readRelease(g.releases)
 	g.currentRelease.Store(version)
 	g.activeRelease.Store(version)
@@ -85,6 +87,9 @@ func (g *Gateway) Origin() string { return g.origin }
 func (g *Gateway) Close() {
 	g.mu.Lock()
 	g.closed = true
+	if g.cache != nil {
+		g.cache.invalidate()
+	}
 	for _, image := range g.images {
 		image.timer.Stop()
 	}
@@ -146,6 +151,9 @@ func (g *Gateway) AttachRelease(target *url.URL, transport http.RoundTripper, ve
 	g.code.transfers = newWebAssetTransfers(g.code)
 	proxy.Transport = g.code
 	proxy.ModifyResponse = func(response *http.Response) error {
+		if g.cache != nil {
+			g.cache.captureMedia(response)
+		}
 		g.secure(response.Header)
 		return nil
 	}
@@ -165,7 +173,10 @@ func (g *Gateway) AttachRelease(target *url.URL, transport http.RoundTripper, ve
 		}
 		r.Header.Set("Cookie", strings.Join(cookies, "; "))
 	}
-	proxy.ErrorHandler = func(w http.ResponseWriter, _ *http.Request, _ error) {
+	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, _ error) {
+		if g.serveCachedMedia(w, r, 0) {
+			return
+		}
 		http.Error(w, "WeQ connection unavailable", http.StatusBadGateway)
 	}
 	g.proxy = proxy
@@ -203,6 +214,11 @@ func (g *Gateway) serve(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
+	if g.cache != nil && (r.URL.Path == dataCachePath || strings.HasPrefix(r.URL.Path, dataCachePath+"/")) {
+		g.secure(w.Header())
+		g.cache.serve(w, r)
+		return
+	}
 	if id, found := strings.CutPrefix(r.URL.Path, imagePath); found {
 		g.serveImage(w, r, id)
 		return
@@ -215,7 +231,16 @@ func (g *Gateway) serve(w http.ResponseWriter, r *http.Request) {
 	if (proxy == nil || stable || r.URL.RawQuery == "" || r.URL.Path == "/" || r.URL.Path == updatePath) && g.serveRelease(w, r) {
 		return
 	}
+	if proxy == nil && g.serveCachedMedia(w, r, 0) {
+		return
+	}
+	if proxy != nil && g.serveCachedMedia(w, r, mediaFreshness) {
+		return
+	}
 	if proxy != nil {
+		if g.cache != nil {
+			r = g.cache.mediaRequest(r)
+		}
 		proxy.ServeHTTP(w, r)
 		return
 	}

@@ -783,6 +783,19 @@ public final class MainActivity extends Activity {
         scroll.addView(content);
         android.app.AlertDialog menu = new android.app.AlertDialog.Builder(this).setTitle("连接详情")
             .setView(scroll).setNegativeButton("完成", null).create();
+        if (webLoaded && webView != null) {
+            content.addView(button("本机缓存", () -> {
+                menu.dismiss();
+                android.webkit.WebView page = webView;
+                if (page == null) return;
+                page.evaluateJavascript(
+                    "(function(){if(!window.weqOpenLocalCache)return false;window.weqOpenLocalCache();return true;})()",
+                    result -> {
+                        if (page == webView && !"true".equals(result))
+                            android.widget.Toast.makeText(this, "打开新版 WeQ 网页后即可管理本机缓存。", android.widget.Toast.LENGTH_SHORT).show();
+                    });
+            }), new LinearLayout.LayoutParams(-1, -2));
+        }
         for (String action : actions) {
             if (checkingWebReload && ("重新加载".equals(action) || "重试打开".equals(action))) continue;
             content.addView(button(action, () -> {
