@@ -71,12 +71,13 @@
 
 ## 首屏资源进度
 
-- 电脑识别 `WeQRemote` User-Agent，在 HTML 的 `meta[name="weq-startup-resources"]` 中附带 JSON：`{version:1,resources:[{path:"/assets/name-hash.js",size:1234}]}`。新构建覆盖入口、主工作区及默认首页的同源静态 JS/CSS 依赖，去重后逐项给出本次压缩协商下的响应体大小，不含 HTTP 头、HTML、媒体及后续按需业务模块；旧构建继续只统计 HTML 引用或 modulepreload 的资源。
+- 电脑识别 `WeQRemote` User-Agent，在 HTML 的 `meta[name="weq-startup-resources"]` 中附带 JSON `{version:1,resources:[{path:"/assets/name-hash.js",size:1234}]}`。正式构建覆盖入口、主工作区及默认首页的同源静态 JS/CSS 依赖，去重后逐项给出本次压缩协商下的响应体大小。旧正式构建继续只统计 HTML 引用或 modulepreload 的资源。
 - 新版电脑在构建时生成 `weq-startup.json`，保存首屏依赖及原始／gzip 大小；匹配当前 HTML 后复用，不在连接时重复压缩计算。缺少、过期或无效清单时兼容原有现场计算路径。同一份构建在电脑内存复用，HTML 更新后重新读取；手机不为清单增加请求，普通浏览器不附加清单。
 - 新版电脑为主工作区 JS 注入 `modulepreload`，为其 CSS 注入 `preload as=style`；在恢复检查前准备必需资源，预载本身不提前执行工作区或应用其样式。手机沿用已有资源完成回执和缓存，不重复下载。实际账号和恢复检查仍由现有接口完成，不把资源加载当作账号已就绪。
 - 电脑在资源标签之前记录真实 `load/error`，通过 `window.weqRemoteResourceLoads` 保存每个资源的完成／失败结果，并发送 `weq-remote-resource-load`；手机结合该回执与 Resource Timing 补读早到资源，避免 WebKit 内存缓存 timing 尺寸为零或 Android 桥接稍晚造成漏记。
 - 手机圆环继续采用已完成资源的清单字节数／清单总字节数，明确标为「资源加载」，保留字节数、百分比和资源项数。缓存命中计入加载权重，不称为下载量；每个资源完成后累计，100 毫秒内合并更新，不虚构在途字节数。失败不计完成，重复回执不重复累计。
-- 热更新网页没有固定资源总量。识别到新版手机壳时，使用独立本地桥发送 `{completed, downloadedBytes, cached, unknown}`，其中 `cached` 和 `unknown` 是项数。iOS 使用 `weqDevelopmentResources.postMessage`，Android 使用 `weqRemoteLinks.developmentResources`（JSON 字符串）；主文档保留 `window.weqRemoteDevelopmentResources` 供提交时补读。圆环不显示百分比，只显示已完成项数；标题由启动状态独立更新，不拼接资源统计。旧手机壳仍接收原有字符串提示，正式静态页的百分比协议不变。
+- 打包热更新页通过同一个清单提供首批资源百分比。每次开发构建把入口及静态 JS/CSS 依赖的原始字节数写入同一份 HTML，后续动态分包继续按需加载。圆环复用现有资源桥，确认下载量仍取实际编码字节。首批资源加载完成后继续显示安装包现有的初始化阶段。
+- 逐模块热更新及缺少清单时，支持开发进度桥的手机壳通过 `{completed, downloadedBytes, cached, unknown}` 显示已完成项数，其中 `cached` 和 `unknown` 也是项数。iOS 使用 `weqDevelopmentResources.postMessage`，Android 使用 `weqRemoteLinks.developmentResources`（JSON 字符串）；主文档保留 `window.weqRemoteDevelopmentResources` 供提交时补读。旧手机壳继续接收原有字符串提示。
 - 只有 `completed=total`、`downloadedBytes=0`、`cachedBytes=totalBytes`、`unknownBytes=0` 同时满足才认定全缓存，界面折叠为「已复用网页缓存」，不展示下载字节／百分比／项数明细；不根据 Web 版本未变化或历史缓存记录提前假定全缓存。
 - 本地资源桥在原 `{completed,total,loadedBytes,totalBytes}` 外增加可选的 `{downloadedBytes,cachedBytes,unknownBytes}`。`downloadedBytes` 累计已确认网络来源的已完成资源响应的 `encodedBodySize`，同一 timing 对象的补读不重复累计；`cachedBytes`、`unknownBytes` 是已加载资源中缓存复用／来源待确认部分的清单字节权重，不要求它们与实际下载字节数相加等于加载量。旧回执没有来源字段时保留原进度，并把已加载部分列为来源待确认，不猜下载量。
 - 浏览器来源以同源 Resource Timing 的 `deliveryType`、传输／响应体字段及 304 校验结果核对。Android 的回环代理读取不等于上游下载：原生缓存传输在本次响应增加 `Server-Timing: weq-remote-source;desc="cache"` 或 `desc="network"`，标识不进入缓存副本；浏览器自身缓存命中优先于保留在缓存响应中的旧标识。缺少原生标识的旧代理正字节响应列为来源待确认。
