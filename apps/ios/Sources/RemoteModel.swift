@@ -41,6 +41,7 @@ final class RemoteModel: ObservableObject {
     var error: String? { failure?.detail }
     @Published private(set) var webSession: RemoteWebSession?
     @Published private(set) var webReady = false
+    @Published private(set) var webMenuReady = false
     @Published private(set) var openingCachedWeb = false
     @Published private(set) var webLoadingStage = WebDownloadProgress.loadingMessage
     @Published private(set) var webDownload: WebDownloadProgress?
@@ -391,6 +392,7 @@ final class RemoteModel: ObservableObject {
         session.onNetworkPreference = { [weak self] mode in self?.network.dataSaverMode = mode }
         openingCachedWeb = cached
         webReady = false
+        webMenuReady = false
         webLoadingStage = WebDownloadProgress.loadingMessage
         webDownload = nil
         webDevelopmentProgress = nil
@@ -421,8 +423,8 @@ final class RemoteModel: ObservableObject {
         }
         session.onFailure = { [weak self, weak session] error in
             guard let self, self.webSession === session else { return }
+            if (error as? URLError)?.code == .cancelled { return }
             if self.webReady {
-                if (error as? URLError)?.code == .cancelled { return }
                 self.connectionFailed()
                 self.requestConnectionCheck()
             } else { self.failWebLoad(error) }
@@ -433,21 +435,35 @@ final class RemoteModel: ObservableObject {
             self.requestConnectionCheck()
         }
         session.onLoading = { [weak self, weak session] in
-            guard let self, self.webSession === session, !self.webReady else { return }
+            guard let self, self.webSession === session else { return }
+            self.webReady = false
+            self.webMenuReady = false
             self.webDownload = nil
             self.webDevelopmentProgress = nil
             self.failure = nil
         }
         session.onMenu = { [weak self] in self?.showingDetails = true }
+        session.onMenuReady = { [weak self, weak session] ready in
+            guard let self, self.webSession === session, self.webMenuReady != ready else { return }
+            self.webMenuReady = ready
+        }
         webSession = session
     }
 
     func reloadWeb() {
-        guard let session = webSession, webReady else { return }
+        guard let session = webSession else { return }
         network.activateLatestWebRelease()
         webLoadingStage = WebDownloadProgress.loadingMessage
         webReady = false
         session.reload()
+    }
+
+    func retryWebFromMenu() async {
+        if webSession != nil { reloadWeb(); return }
+        disconnect()
+        await network.stop()
+        resumeReconnect()
+        await reconnect(manually: true)
     }
 
     private func failWebLoad(_ error: Error) {
@@ -476,6 +492,7 @@ final class RemoteModel: ObservableObject {
         network.closeWeb()
         webSession = nil
         webReady = false
+        webMenuReady = false
         openingCachedWeb = false
         connected = false
         message = failure?.kind.title ?? "网页加载失败"
@@ -837,6 +854,7 @@ final class RemoteModel: ObservableObject {
         for session in probingSessions.values { session.invalidateAndCancel() }
         probingSessions.removeAll()
         webReady = false
+        webMenuReady = false
         openingCachedWeb = false
         webSession?.close()
         network.closeWeb()

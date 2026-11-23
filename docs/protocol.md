@@ -43,7 +43,7 @@
 
 - iOS 壳提供可选 `window.weqRemoteWindowLayout = {width,height,topLeft:{width,height},topRight:{width,height}}`，坐标为与全屏 WebView 对齐的容器点坐标；iPadOS 26 起取自公开 `GeometryProxy.containerCornerInsets`，按当前布局方向转换为物理左右，旧系统和全屏无角部占位时为零。角部也可能包含系统圆角，不把非零值当作某一种窗口模式。主文档开始时请求当前快照，几何变化后发送 `weq-remote-window-layout`；存在角部占位时，首屏准备好后再同步并等待两帧绘制才显示，无占位时不新增等待。网页根据布局视口换算、只调整相交操作区，普通安全区不重复累加。仅本地布局桥接，无新增网络请求、持久设置或版本协议要求；旧网页忽略该值，旧壳和 Android 不提供时维持原布局。
 
-- 壳向当前电脑网页注入 `window.weqRemoteShell.openMenu()`，网页仅在接口存在时显示连接菜单。iOS 在主文档开始加载时注入；Android 在页面加载完成时注入，并发送本地事件 `weq-remote-shell-ready`，不新增网络请求。
+- 壳向当前电脑网页注入 `window.weqRemoteShell.openMenu()`，网页仅在接口存在时显示连接菜单。iOS 在主文档开始加载时注入；Android 在主文档可见提交时注入，并发送本地事件 `weq-remote-shell-ready`，加载完成时补注入。原生通过本地脚本确认顶栏菜单实际可点，并核对当前 WebView 和导航轮次，才将入口交给网页。仅收到 `ready` 或 `action-required` 不移除原生入口；重载、渲染进程失效、退出工作区且网页没有菜单时恢复入口。菜单仍打开时不因交接关闭，不增加网络请求。
 - 两端提供 `window.weqRemoteLinks.open(absoluteURL)` 将外链交给手机系统，并包装主文档的跨源 `window.open`，让异步业务回调拿到链接后仍可打开，不依赖浏览器瞬时用户激活。iOS 本地消息核对当前 WebView、主框架及电脑来源，沿用 `RemoteWebPolicy.external` 的地址规则；空白窗口、同源链接、Blob 及原有鉴权下载不经外链桥，不把主聊天页改成外部站点。
 - 网页通过 `window.weqRemoteStartup` 保存 `{state, message?}`，变化时发送本地事件 `weq-remote-startup`。`loading` 期间手机留在首页，并显示 `message` 对应的实际阶段；恢复检查、账号探测、必要配置及真实界面绘制完成后以 `ready` 放行。会话、好友、昵称、在线状态等业务数据在正式界面内异步加载，不属于启动等待条件。`error` 将错误交回首页重试；需要用户操作的恢复回执或组件诊断用 `action-required` 展示可操作页面。HTML 加载或查询结束不再视为界面已渲染；两端加载后补读当前状态，避免遗漏早到事件，不轮询、不额外请求。45 秒未完成则在首页报告超时；此能力需同时更新电脑网页与手机安装包，旧网页不会因 HTML 完成而被误判就绪。
 - 新版电脑在入口模块前提供 `window.weqRemoteStartupRecovery = true`，负责首屏资源的一次自动重试：清单内脚本／样式失败、动态模块预载失败，或资源／界面模块连续 15 秒无进展时触发。优先以 `fetch` 的 `cache: reload` 重新取得已失败资源，无明确失败项时重取尚未完成项，最多 10 秒；成功后重载尚未就绪的页面，避免 WebKit 跨页面沿用失败预载。重取失败或重载后仍失败则发布 `error`，不继续循环。当前文档 URL 的 `__weqStartupRetry=1` 标记限制本轮次数，成功或 `action-required` 后移除，不改授权、账号或浏览器来源。`ready`、`action-required`、`error`、页面离开均结束观察；恢复／账号检查不算资源停滞，渲染异常直接上报，不自动重跑业务子树。Android 资源错误回调异步核对此标志，新页面负责重试及最终错误，旧页面维持原生提示；异步结果不跨网页轮次处理。iOS 使用原有导航和启动桥即可，Android 需更新安装包，不修改协议版本。
@@ -65,7 +65,7 @@
 
 ## 手机本机 Web 启动
 
-- 两端为已配对授权提供带本机 Cookie 的固定环回来源。已缓存可用网页时，第一张 App 页面是缓存 Web，授权验证及选路同时进行，不显示原生连接页。核验成功后原来源转发业务 HTTP／WebSocket，换路保留原来源、WebView 和 IndexedDB。明确撤销时按原连接流程退出并清理代码缓存。
+- 两端为已配对授权提供带本机 Cookie 的固定环回来源。已缓存可用网页时，第一张 App 页面是缓存 Web，授权验证及选路同时进行，不显示整张原生连接页，网页顶栏最后一位的连接菜单就绪前保留同位置的原生入口。核验成功后原来源转发业务 HTTP／WebSocket，换路保留原来源、WebView 和 IndexedDB。明确撤销时按原连接流程退出并清理代码缓存。
 - 有 `webRelease` 时按 `weq-offline-code` 准备整套正式网页资源，含按需模块和打包静态图；下载前核对 HTML 摘要。相同已缓存构建不查 HTML 或拉取分包。开发版和旧电脑继续用 `weq-offline-bundle` 或 `weq-startup-resources` 兼容。首次无完整离线包且清单给出 `waitForWorkspace: true` 时，网关等网页进入账号后通过本机 `workspace=1` 启动后台准备。复用已有的同名哈希资源，只在资源齐备后原子发布候选；失败继续使用上一套。
 - 在同一授权和选路下，前台浏览和后台离线包共用可缓存的同编码哈希分包。WebView 边接收边读取，离线包取得完整且有效的正文后才发布。打包开发版的 private immutable 分包只在当前选路的内存中共享传输，完整离线包仍按原规则发布。
 - 缺少正式构建摘要时，网关沿用 `If-None-Match: "weq-release-<HTML SHA-256>"` 检查，支持此约定的电脑在版本相同时返回 304。不额外增加鉴权心跳。

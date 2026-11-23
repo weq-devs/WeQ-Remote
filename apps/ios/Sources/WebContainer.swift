@@ -38,6 +38,9 @@ private final class RemoteShellHandler: NSObject, WKScriptMessageHandler {
               let url = message.frameInfo.request.url,
               RemoteWebPolicy.sameOrigin(url, endpoint: owner.endpoint) else { return }
         if message.body as? String == "menu" { owner.openMenu() }
+        else if let value = message.body as? [String: Any], let revision = value["menuRevision"] as? Int, let ready = value["menuReady"] as? Bool {
+            owner.receiveMenuReady(revision: revision, ready: ready)
+        }
         else if let value = message.body as? [String: String], let mode = value["dataSaverMode"], ["auto", "always", "never"].contains(mode) { owner.onNetworkPreference?(mode) }
     }
 }
@@ -256,6 +259,8 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
     private var startupTimeout: Task<Void, Never>?
     private var startupFinished = false
     private var navigationGeneration = 0
+    private static let menuObserver: String? = Bundle.main.url(forResource: "web-menu-handoff", withExtension: "js")
+        .flatMap { try? String(contentsOf: $0, encoding: .utf8) }
     private var windowLayout = RemoteWindowLayout()
     private var nativeMedia: RemoteNativeMedia?
     private var qqImages: RemoteQqImageHandler?
@@ -269,6 +274,7 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
     var onDownload: ((WebDownloadProgress?) -> Void)?
     var onDevelopmentProgress: ((WebDevelopmentProgress) -> Void)?
     var onMenu: (() -> Void)?
+    var onMenuReady: ((Bool) -> Void)?
     var onConnectionFailure: (() -> Void)?
 
     func updateConnectionHealth(warning: ConnectionHealth.Warning?, recovery: Int = 0) {
@@ -383,7 +389,11 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
     }
 
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
-        guard !closed, !startupFinished else { return }
+        guard !closed else { return }
+        if let source = Self.menuObserver, let url = webView.url, RemoteWebPolicy.sameOrigin(url, endpoint: endpoint) {
+            webView.evaluateJavaScript("\(source)\n(function(ready){window.webkit.messageHandlers.weqShell.postMessage({menuRevision:\(navigationGeneration),menuReady:ready});});", completionHandler: nil)
+        }
+        guard !startupFinished else { return }
         webView.evaluateJavaScript("if(window.weqRemoteDevelopmentResources)window.webkit.messageHandlers.weqDevelopmentResources.postMessage(window.weqRemoteDevelopmentResources)", completionHandler: nil)
     }
 
@@ -449,10 +459,16 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
         onMenu?()
     }
 
+    func receiveMenuReady(revision: Int, ready: Bool) {
+        guard !closed, revision == navigationGeneration else { return }
+        onMenuReady?(ready)
+    }
+
     func reload() {
         guard !closed else { return }
+        navigationGeneration += 1
         onLoading?()
-        view.reload()
+        if view.reload() == nil { view.load(URLRequest(url: endpoint)) }
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
@@ -721,12 +737,13 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
         onProgress = nil
         onDownload = nil
         onMenu = nil
+        onMenuReady = nil
         onConnectionFailure = nil
         view.loadHTMLString("", baseURL: nil)
     }
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
-        webView.reload()
+        reload()
     }
 }
 

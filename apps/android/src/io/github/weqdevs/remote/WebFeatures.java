@@ -42,6 +42,7 @@ final class WebFeatures extends WebChromeClient {
     private volatile boolean saving;
     private final String resourceObserver;
     private final String connectionObserver;
+    private final String menuObserver;
     private android.view.View fullscreen;
     private CustomViewCallback fullscreenCallback;
     private int fullscreenSystemUi;
@@ -54,20 +55,9 @@ final class WebFeatures extends WebChromeClient {
     WebFeatures(Activity activity, WebView view, String origin, androidnet.WebGateway imageGateway) {
         this.imageGateway = imageGateway;
         this.activity = activity; this.view = view; this.origin = origin;
-        String script = "";
-        try (InputStream input = activity.getAssets().open("web-startup-progress.js"); java.io.ByteArrayOutputStream output = new java.io.ByteArrayOutputStream()) {
-            byte[] buffer = new byte[4096]; int count;
-            while ((count = input.read(buffer)) != -1) output.write(buffer, 0, count);
-            script = new String(output.toByteArray(), java.nio.charset.StandardCharsets.UTF_8);
-        } catch (java.io.IOException ignored) { }
-        resourceObserver = script;
-        String healthScript = "";
-        try (InputStream input = activity.getAssets().open("web-connection-health.js"); java.io.ByteArrayOutputStream output = new java.io.ByteArrayOutputStream()) {
-            byte[] buffer = new byte[4096]; int count;
-            while ((count = input.read(buffer)) != -1) output.write(buffer, 0, count);
-            healthScript = new String(output.toByteArray(), java.nio.charset.StandardCharsets.UTF_8);
-        } catch (java.io.IOException ignored) { }
-        connectionObserver = healthScript;
+        resourceObserver = scriptAsset("web-startup-progress.js");
+        connectionObserver = scriptAsset("web-connection-health.js");
+        menuObserver = scriptAsset("web-menu-handoff.js");
         view.setWebChromeClient(this);
         view.addJavascriptInterface(new ExternalLinks(), "weqRemoteLinks");
         view.setDownloadListener((url, agent, disposition, mime, size) -> {
@@ -80,6 +70,14 @@ final class WebFeatures extends WebChromeClient {
             downloadCookie = CookieManager.getInstance().getCookie(url);
             selectDestination(mime, android.webkit.URLUtil.guessFileName(url, disposition, mime));
         });
+    }
+
+    private String scriptAsset(String name) {
+        try (InputStream input = activity.getAssets().open(name); java.io.ByteArrayOutputStream output = new java.io.ByteArrayOutputStream()) {
+            byte[] buffer = new byte[4096]; int count;
+            while ((count = input.read(buffer)) != -1) output.write(buffer, 0, count);
+            return new String(output.toByteArray(), java.nio.charset.StandardCharsets.UTF_8);
+        } catch (java.io.IOException ignored) { return ""; }
     }
     private void selectDestination(String mime, String name) {
         Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE)
@@ -198,6 +196,12 @@ final class WebFeatures extends WebChromeClient {
                     ((MainActivity) activity).showConnectionMenu();
             });
         }
+        @android.webkit.JavascriptInterface public void menuReady(int revision, boolean ready) {
+            activity.runOnUiThread(() -> {
+                if (!closed && WebAccess.sameOrigin(origin, view.getUrl()) && activity instanceof MainActivity)
+                    ((MainActivity) activity).receiveWebMenuReady(view, revision, ready);
+            });
+        }
         @android.webkit.JavascriptInterface public void connectionFailed() {
             activity.runOnUiThread(() -> {
                 if (!closed && WebAccess.sameOrigin(origin, view.getUrl()) && activity instanceof MainActivity)
@@ -291,8 +295,18 @@ final class WebFeatures extends WebChromeClient {
     void pageReady() {
         if (closed) return;
         observeStartup();
-        view.evaluateJavascript("window.weqRemoteConnection=window.weqRemoteConnection||{state:'connected'};window.weqRemoteShell={openMenu:function(){weqRemoteLinks.openMenu()},connectionFailed:function(){weqRemoteLinks.connectionFailed()}};window.dispatchEvent(new Event('weq-remote-shell-ready'));", null);
+        injectShell();
         view.evaluateJavascript("(function(){if(window.__weqRemoteLinks)return;window.__weqRemoteLinks=true;document.addEventListener('click',function(e){var a=e.target.closest&&e.target.closest('a[download]');if(a&&a.href.indexOf('blob:')===0){e.preventDefault();weqRemoteLinks.downloadBlob(a.href,a.download||'download');}},true);var original=window.open;window.open=function(url,target,features){if(url&&url!=='about:blank'){try{var parsed=new URL(url,location.href);if(parsed.origin!==location.origin){weqRemoteLinks.open(parsed.href);return null;}}catch(e){return null;}}return original.call(window,url,target,features);};})()", null);
+    }
+
+    private void injectShell() {
+        view.evaluateJavascript("if(!window.weqRemoteShell){window.weqRemoteConnection=window.weqRemoteConnection||{state:'connected'};window.weqRemoteShell={openMenu:function(){weqRemoteLinks.openMenu()},connectionFailed:function(){weqRemoteLinks.connectionFailed()}};window.dispatchEvent(new Event('weq-remote-shell-ready'));}", null);
+    }
+
+    void observeMenu(int revision) {
+        if (closed) return;
+        injectShell();
+        if (!menuObserver.isEmpty()) view.evaluateJavascript(menuObserver + "\n(function(ready){weqRemoteLinks.menuReady(" + revision + ",ready);});", null);
     }
     void connectionState(String state, int recovery) {
         if (closed) return;
@@ -328,7 +342,8 @@ final class WebFeatures extends WebChromeClient {
         content.requestFocus();
     }
     @Override public void onHideCustomView() { exitFullscreen(); }
-    @SuppressWarnings("deprecation") boolean exitFullscreen() {
+    boolean exitFullscreen() { return exitFullscreen(true); }
+    @SuppressWarnings("deprecation") private boolean exitFullscreen(boolean restorePage) {
         android.view.View content = fullscreen;
         if (content == null) return false;
         CustomViewCallback callback = fullscreenCallback;
@@ -340,8 +355,10 @@ final class WebFeatures extends WebChromeClient {
             android.view.WindowInsetsController controller = decor.getWindowInsetsController();
             if (controller != null && fullscreenVisibleBars != 0) controller.show(fullscreenVisibleBars);
         } else decor.setSystemUiVisibility(fullscreenSystemUi);
-        if (callback != null) callback.onCustomViewHidden();
-        view.requestFocus(); view.requestApplyInsets();
+        if (restorePage) {
+            if (callback != null) callback.onCustomViewHidden();
+            view.requestFocus(); view.requestApplyInsets();
+        }
         return true;
     }
     @Override public void onPermissionRequest(PermissionRequest request) {
@@ -438,16 +455,24 @@ final class WebFeatures extends WebChromeClient {
     }
     private void message(String text) { Toast.makeText(activity, text, Toast.LENGTH_LONG).show(); }
     private void cancelChooser() { if (chooser != null) { chooser.onReceiveValue(null); chooser = null; } }
-    void close() {
-        closed = true; exitFullscreen(); cancelChooser();
-        if (permission != null) { permission.deny(); permission = null; }
+    void close() { close(false); }
+    void close(boolean rendererGone) {
+        closed = true;
+        exitFullscreen(!rendererGone);
+        if (!rendererGone) {
+            cancelChooser();
+            if (permission != null) permission.deny();
+        }
+        chooser = null; permission = null;
         downloadURL = null; downloadCookie = null;
         clearPendingBlob();
         HttpURLConnection request = connection;
         if (request != null) request.disconnect();
         downloads.shutdown();
         images.shutdownNow();
-        view.setDownloadListener(null); view.setWebChromeClient(null);
-        view.removeJavascriptInterface("weqRemoteLinks");
+        if (!rendererGone) {
+            view.setDownloadListener(null); view.setWebChromeClient(null);
+            view.removeJavascriptInterface("weqRemoteLinks");
+        }
     }
 }

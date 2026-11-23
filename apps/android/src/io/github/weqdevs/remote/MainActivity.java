@@ -65,6 +65,9 @@ public final class MainActivity extends Activity {
     private Invitation enrolling;
     private long enrollmentDeadline;
     private View setupView;
+    private android.widget.FrameLayout surface;
+    private View webShell, setupMenu, fallbackMenu;
+    private boolean openingSavedWeb, webMenuReady, insetWebView;
     private boolean setupProgressFramePending;
     android.webkit.WebView webView;
     private WebFeatures webFeatures;
@@ -114,8 +117,10 @@ public final class MainActivity extends Activity {
     private String webLoadingStage = "正在准备网页连接";
     private String webStartupProblem;
     private final Runnable webStartupTimeout = () -> {
-        if (webView != null && !webLoaded) failWebLoad(FailureKind.WEB_TIMEOUT,
-            "最后进度：" + webLoadingStage + "。" + (webStartupProblem == null ? webRecovery() : webStartupProblem));
+        if (webLoaded || webGateway == null) return;
+        String detail = "最后进度：" + webLoadingStage + "。" + (webStartupProblem == null ? webRecovery() : webStartupProblem);
+        if (webView == null) finishWebFailure(FailureKind.WEB_TIMEOUT, detail);
+        else failWebLoad(FailureKind.WEB_TIMEOUT, detail);
     };
     private boolean reconnectPaused;
     private final Runnable networkPoll = new Runnable() { public void run() { refreshNetwork(); } };
@@ -246,7 +251,11 @@ public final class MainActivity extends Activity {
         }
         if (getIntent().getData() != null) invitation.setText(getIntent().getData().toString());
         if (testControl != null) { invitation.setText(getIntent().getStringExtra("test_invitation")); enabled = true; }
-        if (!rememberedComputer || invitation.length() > 0) setContentView(setupView);
+        openingSavedWeb = rememberedComputer && invitation.length() == 0 && testControl == null;
+        insetWebView = android.os.Build.VERSION.SDK_INT >= 30 && !webViewHandlesSafeArea();
+        mountSurface();
+        if (!openingSavedWeb) showSetup();
+        renderConnectionMenu();
     }
 
     @Override protected void onResume() {
@@ -362,13 +371,8 @@ public final class MainActivity extends Activity {
         statusPill.setPadding(dp(6), 0, 0, 0);
         statusChip.addView(statusPill);
         topBar.addView(statusChip);
-        android.widget.ImageButton more = new android.widget.ImageButton(this);
-        more.setImageResource(getResources().getIdentifier("ic_more", "drawable", getPackageName()));
-        more.setColorFilter(accent);
-        more.setBackgroundColor(Color.TRANSPARENT);
-        more.setContentDescription("更多");
-        more.setOnClickListener(view -> showDetailsMenu());
-        topBar.addView(more, new LinearLayout.LayoutParams(dp(44), dp(44)));
+        setupMenu = connectionMenuButton("更多", accent);
+        topBar.addView(setupMenu, new LinearLayout.LayoutParams(dp(44), dp(44)));
         content.addView(topBar);
 
         android.widget.FrameLayout hero = new android.widget.FrameLayout(this);
@@ -573,6 +577,58 @@ public final class MainActivity extends Activity {
     }
     private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
 
+    private android.widget.ImageButton connectionMenuButton(String label, int tint) {
+        android.widget.ImageButton button = new android.widget.ImageButton(this);
+        button.setImageResource(getResources().getIdentifier("ic_more", "drawable", getPackageName()));
+        button.setColorFilter(tint);
+        android.util.TypedValue ripple = new android.util.TypedValue();
+        if (getTheme().resolveAttribute(android.R.attr.selectableItemBackground, ripple, true))
+            button.setBackgroundResource(ripple.resourceId);
+        button.setContentDescription(label);
+        button.setOnClickListener(view -> showDetailsMenu());
+        return button;
+    }
+
+    private void mountSurface() {
+        surface = new android.widget.FrameLayout(this);
+        surface.setBackgroundColor(webBackgroundColor());
+        boolean dark = (getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES;
+        fallbackMenu = connectionMenuButton("连接菜单", dark ? Color.WHITE : Color.BLACK);
+        surface.addView(fallbackMenu, new android.widget.FrameLayout.LayoutParams(dp(44), dp(44), android.view.Gravity.TOP | android.view.Gravity.RIGHT));
+        surface.setOnApplyWindowInsetsListener((view, insets) -> { layoutFallbackMenu(insets); return insets; });
+        surface.addOnLayoutChangeListener((view, l, t, r, b, oldL, oldT, oldR, oldB) -> layoutFallbackMenu(view.getRootWindowInsets()));
+        setContentView(surface);
+        surface.requestApplyInsets();
+    }
+
+    private void layoutFallbackMenu(WindowInsets insets) {
+        android.graphics.Rect bars = new android.graphics.Rect();
+        if (insets != null && android.os.Build.VERSION.SDK_INT >= 30)
+            bars = WindowInsetsHelper.webInsets(insets);
+        int width = surface.getWidth() - (insetWebView ? bars.left + bars.right : 0);
+        boolean single = width <= dp(760) && getResources().getConfiguration().orientation != Configuration.ORIENTATION_LANDSCAPE;
+        android.widget.FrameLayout.LayoutParams params = (android.widget.FrameLayout.LayoutParams) fallbackMenu.getLayoutParams();
+        int top = bars.top + dp(single ? 6 : 0), right = bars.right + dp(12);
+        if (top != params.topMargin || right != params.rightMargin) {
+            params.topMargin = top;
+            params.rightMargin = right;
+            fallbackMenu.setLayoutParams(params);
+        }
+    }
+
+    private void showSetup() {
+        if (setupView.getParent() == null)
+            surface.addView(setupView, webShell == null ? 0 : 1, new android.widget.FrameLayout.LayoutParams(-1, -1));
+    }
+
+    private boolean hasWebRecovery() { return openingSavedWeb || webGateway != null || webView != null || hasWebFailure(); }
+
+    private void renderConnectionMenu() {
+        boolean fallback = hasWebRecovery() && !(webLoaded && webMenuReady);
+        fallbackMenu.setVisibility(fallback ? View.VISIBLE : View.GONE);
+        setupMenu.setVisibility(fallback ? View.INVISIBLE : View.VISIBLE);
+    }
+
     private static void setTextIfChanged(TextView view, String text) {
         if (!android.text.TextUtils.equals(view.getText(), text)) view.setText(text);
     }
@@ -588,6 +644,7 @@ public final class MainActivity extends Activity {
     }
 
     private void render() {
+        if (fallbackMenu != null) renderConnectionMenu();
         boolean loading = isConnecting();
         boolean canPair = claimID == null && !rememberedComputer && !paired;
         pairSection.setVisibility(canPair ? View.VISIBLE : View.GONE);
@@ -705,8 +762,7 @@ public final class MainActivity extends Activity {
     }
     private void showDetailsMenu() {
         if (!visible || isFinishing() || isDestroyed() || !getWindow().getDecorView().isAttachedToWindow()) return;
-        boolean inWeb = webView != null && webLoaded;
-        String[] actions = inWeb ? new String[]{"立即检查", "检查更新", "重新加载", "断开连接"}
+        String[] actions = hasWebRecovery() ? new String[]{"立即检查", "检查更新", webLoaded ? "重新加载" : "重试打开", "断开连接"}
             : paired ? new String[]{"立即检查", "检查更新"} : new String[]{"检查更新"};
         LinearLayout content = new LinearLayout(this);
         content.setOrientation(LinearLayout.VERTICAL);
@@ -730,7 +786,10 @@ public final class MainActivity extends Activity {
                 menu.dismiss();
                 if ("立即检查".equals(action)) { if (node != null && paired) verify(); else retryComputer(); }
                 else if ("检查更新".equals(action)) checkUpdates();
-                else if ("重新加载".equals(action)) reloadWeb();
+                else if ("重新加载".equals(action) || "重试打开".equals(action)) {
+                    if (webView != null) reloadWeb();
+                    else { stopNetwork(true); retryComputer(); }
+                }
                 else {
                     reconnectPaused = true;
                     stopNetwork(true);
@@ -813,14 +872,17 @@ public final class MainActivity extends Activity {
         if (webView == null) return;
         if (webGateway != null) webGateway.activateLatest();
         webLoaded = false;
+        webMenuReady = false;
+        webStartupRevision++;
         webStartupProblem = null;
         webDownload = null;
         webDevelopmentProgress = null;
         webLoadingStage = WebDownloadProgress.LOADING_MESSAGE;
         failure = null;
-        android.view.ViewGroup root = (android.view.ViewGroup) webView.getParent().getParent();
-        if (setupView.getParent() == null) root.addView(setupView, new android.view.ViewGroup.LayoutParams(-1, -1));
-        setupView.setAlpha(1); render(); webView.reload();
+        showSetup();
+        render();
+        startWebStartupTimeout();
+        webView.reload();
     }
 
     private void startNetwork() {
@@ -1045,7 +1107,11 @@ public final class MainActivity extends Activity {
         if (reconnectPaused || busy || testControl != null || invitation.length() > 0) return false;
         try {
             JSONObject saved = ConnectionStore.load(this);
-            if (saved == null) return false;
+            if (saved == null) {
+                openingSavedWeb = false;
+                showSetup(); render();
+                return false;
+            }
             rememberedComputer = true;
             failure = null;
             computerVerified = false;
@@ -1060,7 +1126,8 @@ public final class MainActivity extends Activity {
                     else cached.close();
                 } catch (Exception unavailable) { /* 普通连接仍可继续。 */ }
             }
-            if (!showCached && webGateway == null && setupView.getParent() == null) setContentView(setupView);
+            openingSavedWeb = false;
+            if (!showCached && webGateway == null) { showSetup(); renderConnectionMenu(); }
             restoring = true;
             Runnable resume = () -> { endpoint = address; token = credential; paired = true; restoring = true; computerState.setText("正在连接电脑"); verify(); };
             org.json.JSONArray routes = saved.optJSONArray("endpoints");
@@ -1205,14 +1272,17 @@ public final class MainActivity extends Activity {
 
     private void showWeb(String origin, String localSecret, int revision, boolean showProgress) {
         webLoaded = false;
+        webMenuReady = false;
         webStartupProblem = null;
+        renderConnectionMenu();
+        startWebStartupTimeout();
         android.webkit.CookieManager cookies = android.webkit.CookieManager.getInstance();
         cookies.removeAllCookies(ignored -> {
-            if (revision != generation || !visible) return;
+            if (revision != generation || !visible || webGateway == null || hasWebFailure()) return;
             cookies.setCookie(origin, "weq_remote_local=" + localSecret + "; HttpOnly; SameSite=Strict; Path=/", accepted -> {
-                if (revision != generation || !visible) return;
-                if (webFeatures != null) { webFeatures.close(); webFeatures = null; }
-                if (webView != null) { webView.stopLoading(); webView.destroy(); }
+                if (revision != generation || !visible || webGateway == null || hasWebFailure()) return;
+                if (!accepted) { finishWebFailure(FailureKind.WEB_LOAD, webRecovery()); return; }
+                disposeWebPage(false);
                 webView = new android.webkit.WebView(this);
                 final android.webkit.WebView page = webView;
                 android.webkit.WebSettings settings = webView.getSettings();
@@ -1227,15 +1297,20 @@ public final class MainActivity extends Activity {
                     @Override public void onPageStarted(android.webkit.WebView view, String url, android.graphics.Bitmap icon) {
                         if (webView != page) return;
                         webStartupRevision++;
+                        webLoaded = false;
+                        webMenuReady = false;
                         webStartupProblem = null;
                         webDownload = null; webDevelopmentProgress = null;
-                        if (!webLoaded) { webLoadingStage = WebDownloadProgress.LOADING_MESSAGE; render(); }
-                        main.removeCallbacks(webStartupTimeout);
-                        main.postDelayed(webStartupTimeout, 45000);
+                        webLoadingStage = WebDownloadProgress.LOADING_MESSAGE;
+                        render();
+                        startWebStartupTimeout();
                     }
                     @Override public void onPageCommitVisible(android.webkit.WebView view, String url) {
                         // 不等待图片等尾部资源完成，尽早订阅并补读网页已经发出的启动状态。
-                        if (webView == page && allowed(Uri.parse(url)) && webFeatures != null) webFeatures.observeStartup();
+                        if (webView == page && allowed(Uri.parse(url)) && webFeatures != null) {
+                            webFeatures.observeMenu(webStartupRevision);
+                            webFeatures.observeStartup();
+                        }
                     }
                     @Override public void onPageFinished(android.webkit.WebView view, String url) {
                         if (view != page || webView != page || !allowed(Uri.parse(url))) return;
@@ -1251,26 +1326,43 @@ public final class MainActivity extends Activity {
                         else if (webView == page && allowed(request.getUrl()) && !webLoaded && response.getStatusCode() >= 400)
                             recordWebResourceFailure(page, request.getUrl().getPath(), response.getStatusCode());
                     }
+                    @Override public boolean onRenderProcessGone(android.webkit.WebView view, android.webkit.RenderProcessGoneDetail detail) {
+                        if (webView == page) {
+                            disposeWebPage(true);
+                            android.webkit.CookieManager.getInstance().removeAllCookies(null);
+                            finishWebFailure(FailureKind.WEB_LOAD, webRecovery());
+                        }
+                        return true;
+                    }
                     @Override public boolean shouldOverrideUrlLoading(android.webkit.WebView view, android.webkit.WebResourceRequest request) { return request.isForMainFrame() ? webFeatures == null || webFeatures.navigate(request.getUrl()) : !allowed(request.getUrl()); }
                     @Override public android.webkit.WebResourceResponse shouldInterceptRequest(android.webkit.WebView view, android.webkit.WebResourceRequest request) {
                         if (allowed(request.getUrl())) return null;
                         return new android.webkit.WebResourceResponse("text/plain", "UTF-8", 403, "Forbidden", java.util.Collections.emptyMap(), new java.io.ByteArrayInputStream(new byte[0]));
                     }
                 });
-                // 只有在线启动和手动重载才显示连接进度，缓存启动不挂载连接页。
+                // 缓存启动只显示网页和临时菜单，不挂载整张连接页。
                 LinearLayout shell = new LinearLayout(this); shell.setOrientation(LinearLayout.VERTICAL); shell.setBackgroundColor(webBackgroundColor());
-                final boolean manualInsets = android.os.Build.VERSION.SDK_INT >= 30 && !webViewHandlesSafeArea();
                 shell.addView(webView, new LinearLayout.LayoutParams(-1, 0, 1f));
-                if (manualInsets) applyWebInsets(shell);
-                android.widget.FrameLayout root = new android.widget.FrameLayout(this);
-                android.view.ViewGroup parent = (android.view.ViewGroup) setupView.getParent();
-                if (parent != null) parent.removeView(setupView);
-                root.addView(shell, new android.widget.FrameLayout.LayoutParams(-1, -1));
-                if (showProgress) root.addView(setupView, new android.widget.FrameLayout.LayoutParams(-1, -1));
-                setContentView(root); render();
+                if (insetWebView) applyWebInsets(shell);
+                webShell = shell;
+                surface.addView(shell, 0, new android.widget.FrameLayout.LayoutParams(-1, -1));
+                if (showProgress) showSetup();
+                else surface.removeView(setupView);
+                render();
                 webView.loadUrl(origin + "/");
             });
         });
+    }
+
+    private void startWebStartupTimeout() {
+        main.removeCallbacks(webStartupTimeout);
+        main.postDelayed(webStartupTimeout, 45000);
+    }
+
+    void receiveWebMenuReady(android.webkit.WebView page, int revision, boolean ready) {
+        if (webView != page || webStartupRevision != revision || webMenuReady == ready) return;
+        webMenuReady = ready;
+        renderConnectionMenu();
     }
     private String tailnetState(Client client, boolean embedded) {
         if (!embedded) return "Stopped";
@@ -1330,12 +1422,7 @@ public final class MainActivity extends Activity {
         scheduleConnectionWarning();
         main.removeCallbacks(reconnectPoll);
         if (visible) main.post(reconnectPoll);
-        android.view.ViewGroup parent = (android.view.ViewGroup) setupView.getParent();
-        if (parent != null) {
-            if (android.animation.ValueAnimator.areAnimatorsEnabled())
-                setupView.animate().alpha(0).setDuration(180).withEndAction(() -> { if (setupView.getParent() == parent && webLoaded) parent.removeView(setupView); setupView.setAlpha(1); }).start();
-            else parent.removeView(setupView);
-        }
+        surface.removeView(setupView);
         render();
     }
     private String webRecovery() {
@@ -1384,7 +1471,7 @@ public final class MainActivity extends Activity {
     }
     private void applyWebInsets(LinearLayout shell) {
         shell.setOnApplyWindowInsetsListener((view, insets) -> {
-            android.graphics.Rect bars = WindowInsetsHelper.contentInsets(insets);
+            android.graphics.Rect bars = WindowInsetsHelper.webInsets(insets);
             view.setPadding(bars.left, bars.top, bars.right, bars.bottom);
             return insets;
         });
@@ -1394,21 +1481,31 @@ public final class MainActivity extends Activity {
         main.removeCallbacks(healthDeadline);
         main.removeCallbacks(webStartupTimeout);
         webLoaded = false;
+        webMenuReady = false;
+        openingSavedWeb = false;
         webDownload = null;
         webDevelopmentProgress = null;
-        if (webFeatures != null) { webFeatures.close(); webFeatures = null; }
+        if (webView != null) {
+            disposeWebPage(false);
+            android.webkit.CookieManager.getInstance().removeAllCookies(null);
+        }
         WebGateway gateway = webGateway;
         webGateway = null;
         if (gateway != null) gateway.close();
-        if (webView == null && setupView.getParent() != null) return;
-        if (webView != null) {
-            webView.stopLoading(); webView.loadUrl("about:blank"); webView.clearHistory(); webView.destroy(); webView = null;
-            android.webkit.CookieManager.getInstance().removeAllCookies(null);
-        }
-        android.view.ViewGroup parent = (android.view.ViewGroup) setupView.getParent();
-        if (parent != null) parent.removeView(setupView);
-        setContentView(setupView);
+        showSetup();
         render();
+    }
+
+    private void disposeWebPage(boolean rendererGone) {
+        if (webFeatures != null) { webFeatures.close(rendererGone); webFeatures = null; }
+        if (webView != null) {
+            android.webkit.WebView page = webView;
+            webView = null;
+            if (page.getParent() instanceof android.view.ViewGroup) ((android.view.ViewGroup) page.getParent()).removeView(page);
+            if (!rendererGone) page.stopLoading();
+            page.destroy();
+        }
+        if (webShell != null) { surface.removeView(webShell); webShell = null; }
     }
     @Override public void onBackPressed() {
         if (webFeatures != null && webFeatures.exitFullscreen()) return;

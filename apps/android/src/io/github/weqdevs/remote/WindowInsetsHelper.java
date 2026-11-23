@@ -16,6 +16,12 @@ final class WindowInsetsHelper {
     }
 
     @android.annotation.TargetApi(30)
+    static Rect webInsets(WindowInsets insets) {
+        android.graphics.Insets bars = insets.getInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout() | WindowInsets.Type.ime());
+        return new Rect(bars.left, bars.top, bars.right, bars.bottom);
+    }
+
+    @android.annotation.TargetApi(30)
     private static final class Api30 {
         static Rect contentInsets(WindowInsets insets) {
             android.graphics.Insets bars = insets.getInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.ime());

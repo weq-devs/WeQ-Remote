@@ -182,6 +182,31 @@ final class WebContainerTests: XCTestCase {
     }
 
     @MainActor
+    func testMenuHandoffRejectsAReceiptFromBeforeNavigationAndKeepsTheOpenSheet() {
+        let model = RemoteModel(network: EmbeddedNetwork())
+        let session = RemoteWebSession(configuration: WKWebViewConfiguration(),
+                                       endpoint: URL(string: "http://127.0.0.1:7691")!)
+        model.adoptWebSession(session, cached: true)
+        defer { model.disconnect() }
+
+        session.receiveStartup("action-required", message: nil)
+        XCTAssertTrue(model.webReady)
+        XCTAssertFalse(model.webMenuReady)
+        model.showingDetails = true
+        session.receiveMenuReady(revision: 0, ready: true)
+        XCTAssertTrue(model.webMenuReady)
+        XCTAssertTrue(model.showingDetails)
+
+        session.webView(session.view, didStartProvisionalNavigation: nil)
+        session.receiveMenuReady(revision: 0, ready: true)
+        XCTAssertFalse(model.webMenuReady)
+        session.receiveMenuReady(revision: 1, ready: true)
+        XCTAssertTrue(model.webMenuReady)
+        session.receiveMenuReady(revision: 1, ready: false)
+        XCTAssertFalse(model.webMenuReady)
+    }
+
+    @MainActor
     func testReloadKeepsWebViewAndDisconnectReturnsHomeWithoutResuming() async {
         let model = RemoteModel(network: EmbeddedNetwork())
         let remembered = model.rememberedComputer

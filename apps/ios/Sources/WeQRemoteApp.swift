@@ -68,27 +68,29 @@ struct RemoteView: View {
         return nil
     }
 
+    private var hasWebRecovery: Bool {
+        model.openingCachedWeb || model.webSession != nil || model.failure?.kind.retriesWeb == true
+    }
+
+    private var showsNativeMenu: Bool { hasWebRecovery && !(model.webReady && model.webMenuReady) }
+
     var body: some View {
         NavigationStack {
             ZStack {
-            if let session = model.webSession {
-                // 页面加载完成后才进入全屏网页；不显示任何原生栏或按钮。
-                WebContainer(session: session)
-                    .id(ObjectIdentifier(session))
-                    .ignoresSafeArea()
-                    .opacity(model.webReady ? 1 : 0)
-                    .allowsHitTesting(model.webReady)
-                    .accessibilityHidden(!model.webReady)
-            }
-            if !model.webReady && !model.openingCachedWeb {
-                connectionPage
-                    .transition(.opacity)
-            }
+                if let session = model.webSession {
+                    WebContainer(session: session)
+                        .id(ObjectIdentifier(session))
+                        .ignoresSafeArea()
+                        .opacity(model.webReady ? 1 : 0)
+                        .allowsHitTesting(model.webReady)
+                        .accessibilityHidden(!model.webReady)
+                }
+                if !model.webReady && !model.openingCachedWeb { connectionPage }
+                if showsNativeMenu { startupMenu }
             }
             .background((colorScheme == .dark ? Color(red: 0.07, green: 0.08, blue: 0.09) : Color(red: 0.96, green: 0.97, blue: 0.97)).ignoresSafeArea())
             .toolbar(model.webReady || model.openingCachedWeb ? .hidden : .automatic, for: .navigationBar)
         }
-        .animation(.easeOut(duration: reduceMotion ? 0.1 : 0.18), value: model.webReady)
         .tint(accent)
         .sheet(isPresented: $model.showingDetails) { detailsSheet }
     }
@@ -98,13 +100,16 @@ struct RemoteView: View {
             List {
                 Section("连接详情") {
                     Text(model.connectionDetails).font(.subheadline).textSelection(.enabled)
-                    if model.paired {
-                        Button(model.failure?.kind.retriesWeb == true ? "重试打开" : "立即检查") {
+                    if model.paired && model.failure?.kind.retriesWeb != true {
+                        Button("立即检查") {
                             Task { await model.reconnect(manually: true) }
                         }.disabled(model.busy)
                     }
-                    if model.webSession != nil, model.webReady {
-                        Button("重新加载") { model.showingDetails = false; model.reloadWeb() }
+                    if hasWebRecovery {
+                        Button(model.webReady ? "重新加载" : "重试打开") {
+                            model.showingDetails = false
+                            Task { await model.retryWebFromMenu() }
+                        }
                         Button("断开连接") {
                             model.showingDetails = false
                             model.disconnect()
@@ -128,6 +133,37 @@ struct RemoteView: View {
             .navigationTitle("更多").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { model.showingDetails = false } } }
         }.tint(accent)
+    }
+
+    private var startupMenu: some View {
+        GeometryReader { geometry in
+            let safe = geometry.safeAreaInsets
+            let width = geometry.size.width + safe.leading + safe.trailing
+            let height = geometry.size.height + safe.top + safe.bottom
+            let layout = menuInsets(geometry, width: width)
+            connectionMenu(label: "连接菜单")
+                .buttonStyle(.plain)
+                .foregroundStyle(Color(uiColor: .label))
+                .padding(.top, layout.top + (width <= 760 && width <= height ? 6 : 0))
+                .padding(.trailing, layout.trailing)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+        }
+        .ignoresSafeArea(.keyboard)
+    }
+
+    private func menuInsets(_ geometry: GeometryProxy, width: CGFloat) -> (top: CGFloat, trailing: CGFloat) {
+        if #available(iOS 26.0, *) {
+            let safe = geometry.safeAreaInsets
+            let left = geometry.containerCornerInsets.topLeading
+            let right = geometry.containerCornerInsets.topTrailing
+            let leftInset = left.height > safe.top && left.width > safe.leading ? left.width - safe.leading + 8 : 0
+            let rightInset = right.height > safe.top && right.width > safe.trailing ? right.width - safe.trailing + 8 : 0
+            if leftInset + rightInset > 0, width - safe.leading - safe.trailing - leftInset - rightInset < 240 {
+                return (ceil(max(left.height, right.height) - safe.top), 12)
+            }
+            return (0, max(12, ceil(rightInset)))
+        }
+        return (0, 12)
     }
 
     // 首页是三段式：顶部状态条、居中状态区、底部操作坞。内容不再全挤在顶部。
@@ -184,12 +220,17 @@ struct RemoteView: View {
                 .minimumScaleFactor(0.7)
             Spacer(minLength: 8)
             statusPill
-            Button { model.showingDetails = true } label: {
-                Image(systemName: "ellipsis").frame(width: 44, height: 44)
-            }
-            .accessibilityLabel("更多")
-            .accessibilityIdentifier("connectionMenu")
+            if showsNativeMenu { Color.clear.frame(width: 44, height: 44) }
+            else { connectionMenu(label: "更多") }
         }
+    }
+
+    private func connectionMenu(label: String) -> some View {
+        Button { model.showingDetails = true } label: {
+            Image(systemName: "ellipsis").frame(width: 44, height: 44).contentShape(Rectangle())
+        }
+        .accessibilityLabel(label)
+        .accessibilityIdentifier("connectionMenu")
     }
 
     private var statusPill: some View {
