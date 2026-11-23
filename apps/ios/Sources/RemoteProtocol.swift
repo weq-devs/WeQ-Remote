@@ -383,6 +383,8 @@ enum RemoteWebPolicy {
            field("s")?.range(of: "^[0-9]{1,4}$", options: .regularExpression) != nil { return url }
         if host == "p.qlogo.cn", query.isEmpty,
            value.percentEncodedPath.range(of: "^/gh/[0-9]{1,20}/[0-9]{1,20}/[0-9]{1,4}$", options: .regularExpression) != nil { return url }
+        if host == "tianquan.gtimg.cn", value.percentEncodedQuery == nil,
+           value.percentEncodedPath.range(of: "^/(?:card|faceAddon)/item/(?!0+/)[0-9a-fA-F]{1,32}/[a-zA-Z0-9_-]+\\.(?:png|apng|jpe?g|gif|webp)$", options: .regularExpression) != nil { return url }
         if host == "multimedia.nt.qq.com.cn", value.percentEncodedPath == "/download", query.count == 4,
            ["1406", "1407"].contains(field("appid") ?? ""), ["198", "720"].contains(field("spec") ?? ""),
            let token = field("fileid"), !token.isEmpty, let rkey = field("rkey"), !rkey.isEmpty { return url }

@@ -18,7 +18,7 @@ import java.util.function.BooleanSupplier;
 final class QqImageRequest {
     private static final int LIMIT = 2 * 1024 * 1024;
     private static final List<String> USER_HOSTS = Arrays.asList("thirdqq.qlogo.cn", "q.qlogo.cn", "q1.qlogo.cn", "q2.qlogo.cn");
-    private static final List<String> TYPES = Arrays.asList("image/jpeg", "image/png", "image/gif", "image/webp", "image/avif");
+    private static final List<String> TYPES = Arrays.asList("image/jpeg", "image/png", "image/apng", "image/gif", "image/webp", "image/avif");
 
     static URI allowed(String raw) {
         if (raw == null || raw.length() > 8192) return null;
@@ -28,6 +28,8 @@ final class QqImageRequest {
             if (!"https".equals(url.getScheme()) || url.getPort() != -1 || url.getRawFragment() != null ||
                 url.getRawUserInfo() != null || host == null) return null;
             String path = url.getRawPath();
+            if (host.equals("tianquan.gtimg.cn") && url.getRawQuery() == null &&
+                path.matches("/(?:card|faceAddon)/item/(?!0+/)[0-9a-fA-F]{1,32}/[a-zA-Z0-9_-]+\\.(?:png|apng|jpe?g|gif|webp)")) return url;
             if (host.equals("p.qlogo.cn") && url.getRawQuery() == null &&
                 path.matches("/gh/[0-9]{1,20}/[0-9]{1,20}/[0-9]{1,4}")) return url;
             if (url.getRawQuery() == null) return null;

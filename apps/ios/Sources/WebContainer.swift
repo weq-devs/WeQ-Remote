@@ -113,7 +113,7 @@ private final class RemoteQqImageHandler: NSObject, WKScriptMessageHandlerWithRe
         let limit = 2 * 1024 * 1024
         let (bytes, response) = try await session.bytes(from: url)
         guard let http = response as? HTTPURLResponse, http.statusCode == 200,
-              let type = http.mimeType, ["image/jpeg", "image/png", "image/gif", "image/webp", "image/avif"].contains(type),
+              let type = http.mimeType, ["image/jpeg", "image/png", "image/apng", "image/gif", "image/webp", "image/avif"].contains(type),
               http.expectedContentLength <= limit else {
             bytes.task.cancel()
             throw URLError(.badServerResponse)
@@ -286,6 +286,8 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
         images.owner = self
         qqImages = images
         configuration.userContentController.addScriptMessageHandler(images, contentWorld: .page, name: "weqQqImage")
+        configuration.userContentController.addUserScript(WKUserScript(
+            source: "window.weqRemoteDressImages=true;", injectionTime: .atDocumentStart, forMainFrameOnly: true))
         configuration.userContentController.addUserScript(WKUserScript(
             source: Self.externalLinksScript, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         let startup = RemoteStartupHandler()

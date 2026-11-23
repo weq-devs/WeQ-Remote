@@ -16,6 +16,16 @@ final class RemoteProtocolTests: XCTestCase {
         }
     }
 
+    func testQqImageRequestAcceptsOnlyKnownPublicDressImageRoutes() {
+        let host = "https://tianquan.gtimg.cn"
+        XCTAssertNotNil(RemoteWebPolicy.qqImage(host + "/card/item/123/new1.jpg"))
+        XCTAssertNotNil(RemoteWebPolicy.qqImage(host + "/faceAddon/item/b845ebfaa6ee06ca/newPreview2.png"))
+        for path in ["/card/item/0/new1.png", "/card/item/123/new1.mp4", "/card/item/123/new1.png?token=fixture",
+                     "/card/item/123/new1.svg", "/faceAddon/item/123/other.zip", "/screen/item/123/new1.png"] {
+            XCTAssertNil(RemoteWebPolicy.qqImage(host + path))
+        }
+    }
+
     func testDeviceInfoTravelsOnExistingRequestsWithoutChangingBody() async throws {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [DeviceInfoURLProtocol.self]

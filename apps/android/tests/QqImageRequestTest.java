@@ -13,6 +13,13 @@ public final class QqImageRequestTest {
         allowed(false, thumb.replace("https:", "http:"));
         allowed(false, "https://x@p.qlogo.cn/gh/123/123/100");
         allowed(false, "https://q.qlogo.cn/g?b=qq&s=100&ek=123");
+        String dress = "https://tianquan.gtimg.cn";
+        allowed(true, dress + "/card/item/123/new1.jpg");
+        allowed(true, dress + "/faceAddon/item/b845ebfaa6ee06ca/newPreview2.png");
+        for (String path : new String[]{"/card/item/0/new1.png", "/card/item/123/new1.mp4", "/card/item/123/new1.png?token=fixture",
+                    "/card/item/123/new1.svg", "/faceAddon/item/123/other.zip", "/screen/item/123/new1.png"}) {
+            allowed(false, dress + path);
+        }
     }
 
     private static void allowed(boolean expected, String url) {

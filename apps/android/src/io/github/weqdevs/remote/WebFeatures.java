@@ -100,6 +100,8 @@ final class WebFeatures extends WebChromeClient {
         blobToken = null; blobOffset = 0;
     }
     public final class ExternalLinks {
+        @android.webkit.JavascriptInterface public boolean supportsDressImages() { return true; }
+
         @android.webkit.JavascriptInterface public void loadQqImage(String id, String address) {
             if (closed || id == null || !id.matches("[a-zA-Z0-9-]{1,64}")) return;
             java.net.URI target = QqImageRequest.allowed(address);
