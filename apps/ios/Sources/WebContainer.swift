@@ -52,9 +52,13 @@ private final class RemoteResourceHandler: NSObject, WKScriptMessageHandler {
     weak var owner: RemoteWebSession?
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
         guard message.frameInfo.isMainFrame, let owner, let url = message.frameInfo.request.url,
-              RemoteWebPolicy.sameOrigin(url, endpoint: owner.endpoint),
-              let progress = WebDownloadProgress(message: message.body) else { return }
-        owner.receiveDownload(progress)
+              message.webView === owner.view,
+              RemoteWebPolicy.sameOrigin(url, endpoint: owner.endpoint) else { return }
+        if message.name == "weqDevelopmentResources" {
+            if let progress = WebDevelopmentProgress(message: message.body) { owner.receiveDevelopmentProgress(progress) }
+        } else if let progress = WebDownloadProgress(message: message.body) {
+            owner.receiveDownload(progress)
+        }
     }
 }
 
@@ -115,8 +119,6 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
     private var closed = false
     private var startupTimeout: Task<Void, Never>?
     private var startupFinished = false
-    private var startupReported = false
-    private var resourceReported = false
     private var navigationGeneration = 0
     private var windowLayout = RemoteWindowLayout()
     private var nativeMedia: RemoteNativeMedia?
@@ -128,6 +130,7 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
     var onLoading: (() -> Void)?
     var onProgress: ((String) -> Void)?
     var onDownload: ((WebDownloadProgress?) -> Void)?
+    var onDevelopmentProgress: ((WebDevelopmentProgress) -> Void)?
     var onMenu: (() -> Void)?
     var onConnectionFailure: (() -> Void)?
 
@@ -186,6 +189,7 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
         let resources = RemoteResourceHandler()
         resources.owner = self
         configuration.userContentController.add(resources, name: "weqResources")
+        configuration.userContentController.add(resources, name: "weqDevelopmentResources")
         let connection = RemoteConnectionHandler()
         connection.owner = self
         configuration.userContentController.add(connection, name: "weqConnection")
@@ -228,8 +232,8 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
     }
 
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
-        guard !closed, !startupFinished, !startupReported, !resourceReported else { return }
-        onProgress?(WebDownloadProgress.loadingMessage)
+        guard !closed, !startupFinished else { return }
+        webView.evaluateJavaScript("if(window.weqRemoteDevelopmentResources)window.webkit.messageHandlers.weqDevelopmentResources.postMessage(window.weqRemoteDevelopmentResources)", completionHandler: nil)
     }
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
@@ -237,8 +241,6 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
         cancelWebDialogs()
         nativeMedia?.stopAll()
         startupFinished = false
-        startupReported = false
-        resourceReported = false
         onDownload?(nil)
         onLoading?()
         onProgress?(WebDownloadProgress.loadingMessage)
@@ -251,9 +253,8 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
 
     func receiveStartup(_ state: String, message: String?) {
         guard !closed, !startupFinished else { return }
-        startupReported = true
         if state == "loading" {
-            onProgress?(String((message ?? "正在初始化 WeQ 页面").prefix(100)))
+            if let message, !message.isEmpty { onProgress?(String(message.prefix(100))) }
         } else if state == "ready" || state == "action-required" {
             startupFinished = true
             startupTimeout?.cancel()
@@ -280,11 +281,12 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
 
     func receiveDownload(_ progress: WebDownloadProgress) {
         guard !closed, !startupFinished else { return }
-        resourceReported = true
         onDownload?(progress)
-        if !startupReported {
-            onProgress?(progress.stage)
-        }
+    }
+
+    func receiveDevelopmentProgress(_ progress: WebDevelopmentProgress) {
+        guard !closed, !startupFinished else { return }
+        onDevelopmentProgress?(progress)
     }
 
     fileprivate func openMenu() {
@@ -549,12 +551,14 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
         view.configuration.userContentController.removeScriptMessageHandler(forName: "weqLinks")
         view.configuration.userContentController.removeScriptMessageHandler(forName: "weqStartup")
         view.configuration.userContentController.removeScriptMessageHandler(forName: "weqResources")
+        view.configuration.userContentController.removeScriptMessageHandler(forName: "weqDevelopmentResources")
         view.configuration.userContentController.removeScriptMessageHandler(forName: "weqConnection")
         view.configuration.userContentController.removeScriptMessageHandler(forName: "weqWindowLayout")
         view.configuration.userContentController.removeScriptMessageHandler(forName: "weqMedia")
         onReady = nil
         onFailure = nil
         onLoading = nil
+        onDevelopmentProgress = nil
         onProgress = nil
         onDownload = nil
         onMenu = nil

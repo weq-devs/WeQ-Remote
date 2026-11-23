@@ -33,7 +33,6 @@ final class WebDownloadProgressTests: XCTestCase {
         XCTAssertTrue(value.detail.contains("已确认下载"))
         XCTAssertTrue(value.detail.contains("缓存复用"))
         XCTAssertFalse(value.detail.contains("来源待确认"))
-        XCTAssertEqual(value.stage, "正在初始化网页")
         let cached = try XCTUnwrap(WebDownloadProgress(completed: 2, total: 2, loadedBytes: 10000, totalBytes: 10000,
             downloadedBytes: 0, cachedBytes: 10000, unknownBytes: 0))
         XCTAssertTrue(cached.fullyCached)
@@ -46,5 +45,19 @@ final class WebDownloadProgressTests: XCTestCase {
         XCTAssertNil(WebDownloadProgress(message: ["completed": 1, "total": 2, "loadedBytes": 1, "totalBytes": 2, "downloadedBytes": 0]))
         XCTAssertNil(WebDownloadProgress(completed: 1, total: 2, loadedBytes: 1, totalBytes: 2,
             downloadedBytes: 0, cachedBytes: 1, unknownBytes: 1))
+    }
+
+    func testDevelopmentProgressHasNoDenominatorAndValidatesSources() throws {
+        let payload = ["completed": 700, "downloadedBytes": 2_000_000, "cached": 698, "unknown": 1]
+        let progress = try XCTUnwrap(WebDevelopmentProgress(message: payload))
+        XCTAssertEqual(progress.completed, 700)
+        XCTAssertEqual(progress.downloadedBytes, 2_000_000)
+        for invalid: Any in [-1, 0.5, true, Double.infinity] {
+            var value: [String: Any] = payload
+            value["completed"] = invalid
+            XCTAssertNil(WebDevelopmentProgress(message: value))
+        }
+        XCTAssertNil(WebDevelopmentProgress(message: payload.merging(["unknown": 2]) { _, new in new }))
+        XCTAssertNil(WebDownloadProgress(message: payload))
     }
 }

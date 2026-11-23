@@ -70,12 +70,16 @@ final class WebContainerTests: XCTestCase {
         session.receiveDownload(partial)
         XCTAssertEqual(model.webDownload, partial)
         XCTAssertFalse(model.webReady)
+        let complete = try XCTUnwrap(WebDownloadProgress(completed: 2, total: 2, loadedBytes: 10000, totalBytes: 10000))
+        session.receiveDownload(complete)
+        XCTAssertEqual(model.webLoadingStage, WebDownloadProgress.loadingMessage)
         session.webView(session.view, didCommit: nil)
         XCTAssertEqual(model.webLoadingStage, WebDownloadProgress.loadingMessage)
         session.receiveStartup("loading", message: "正在检查恢复状态")
         session.webView(session.view, didCommit: nil)
         session.receiveDownload(partial)
-        session.receiveDownload(try XCTUnwrap(WebDownloadProgress(completed: 2, total: 2, loadedBytes: 10000, totalBytes: 10000)))
+        session.receiveDownload(complete)
+        session.receiveStartup("loading", message: nil)
         XCTAssertEqual(model.webLoadingStage, "正在检查恢复状态")
         session.webView(session.view, didStartProvisionalNavigation: nil)
         XCTAssertNil(model.webDownload)
@@ -86,6 +90,24 @@ final class WebContainerTests: XCTestCase {
         XCTAssertNil(model.webDownload)
         model.disconnect()
         XCTAssertNil(session.onDownload)
+    }
+
+    @MainActor
+    func testDevelopmentProgressDoesNotReplaceStageOrCrossNavigation() throws {
+        let model = RemoteModel(network: EmbeddedNetwork())
+        let session = RemoteWebSession(configuration: WKWebViewConfiguration(), endpoint: URL(string: "https://192.168.1.8:7691")!)
+        model.adoptWebSession(session)
+        defer { model.disconnect() }
+        let progress = try XCTUnwrap(WebDevelopmentProgress(message: ["completed": 700, "downloadedBytes": 2000, "cached": 699, "unknown": 0]))
+        session.receiveStartup("loading", message: "正在检查恢复状态")
+        session.receiveDevelopmentProgress(progress)
+        XCTAssertEqual(model.webDevelopmentProgress, progress)
+        XCTAssertEqual(model.webLoadingStage, "正在检查恢复状态")
+        session.webView(session.view, didStartProvisionalNavigation: nil)
+        XCTAssertNil(model.webDevelopmentProgress)
+        session.receiveStartup("ready", message: nil)
+        session.receiveDevelopmentProgress(progress)
+        XCTAssertNil(model.webDevelopmentProgress)
     }
     @MainActor
     func testWebKeyboardDoesNotAddAFormNavigationToolbar() {

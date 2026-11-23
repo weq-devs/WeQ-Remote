@@ -225,6 +225,7 @@ struct RemoteView: View {
         if model.code != nil { return "在电脑上核对校验码，并允许这台手机访问" }
         if model.webSession != nil, !model.webReady {
             if let progress = model.webDownload { return progress.detail }
+            if let progress = model.webDevelopmentProgress { return progress.detail }
             return model.computerAddress ?? "页面准备好后自动进入"
         }
         if model.busy { return model.computerAddress ?? "正在准备与电脑的连接" }
@@ -304,6 +305,26 @@ struct RemoteView: View {
                     .frame(width: 104, height: 60)
                     .minimumScaleFactor(0.6)
                     .lineLimit(1)
+            } else if loadingStage != nil, let resources = model.webDevelopmentProgress {
+                TimelineView(.animation(paused: reduceMotion)) { context in
+                    let angle = reduceMotion ? 0 : context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.4) / 1.4 * 360
+                    Circle()
+                        .trim(from: 0, to: 0.22)
+                        .stroke(accent, style: StrokeStyle(lineWidth: 4, lineCap: .round))
+                        .rotationEffect(.degrees(angle - 90))
+                        .frame(width: 138, height: 138)
+                }
+                .accessibilityHidden(true)
+                VStack(spacing: 4) {
+                    Text("资源加载").font(.caption)
+                    Text("\(resources.completed) 项").font(.title2.monospacedDigit().weight(.medium))
+                }
+                .foregroundStyle(accent)
+                .frame(width: 104, height: 60)
+                .minimumScaleFactor(0.6)
+                .lineLimit(1)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("已完成 \(resources.completed) 项资源")
             } else if loadingStage != nil {
                 ProgressView().controlSize(.large).tint(accent)
             } else {
@@ -313,7 +334,7 @@ struct RemoteView: View {
             }
         }
         .frame(height: 150)
-        .accessibilityHidden(true)
+        .accessibilityHidden(loadingStage == nil || model.webDevelopmentProgress == nil)
     }
 
     // 主操作贴近拇指：底部操作坞随状态切换扫码、链接或已保存电脑的入口。

@@ -79,9 +79,11 @@ public final class MainActivity extends Activity {
     android.view.View scanButton;
     private LinearLayout pairSection;
     private android.widget.ProgressBar progress;
+    private android.widget.ProgressBar developmentRing;
+    private TextView developmentCount;
     private DownloadRing downloadRing;
     private WebDownloadProgress webDownload;
-    private boolean webStartupReported;
+    private WebDownloadProgress.Development webDevelopmentProgress;
     private int webStartupRevision;
     private android.widget.ImageView markIcon;
     private android.view.View statusDot;
@@ -362,6 +364,19 @@ public final class MainActivity extends Activity {
         progress.setIndeterminateTintList(android.content.res.ColorStateList.valueOf(accent));
         progress.setVisibility(View.GONE);
         markFrame.addView(progress, new android.widget.FrameLayout.LayoutParams(dp(44), dp(44), android.view.Gravity.CENTER));
+        developmentRing = new android.widget.ProgressBar(this);
+        developmentRing.setIndeterminate(true);
+        developmentRing.setIndeterminateTintList(android.content.res.ColorStateList.valueOf(accent));
+        developmentRing.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        developmentRing.setVisibility(View.GONE);
+        markFrame.addView(developmentRing, new android.widget.FrameLayout.LayoutParams(dp(138), dp(138), android.view.Gravity.CENTER));
+        developmentCount = text("", 18);
+        developmentCount.setTextColor(accent);
+        developmentCount.setGravity(android.view.Gravity.CENTER);
+        developmentCount.setMaxLines(2);
+        developmentCount.setAutoSizeTextTypeUniformWithConfiguration(11, 18, 1, android.util.TypedValue.COMPLEX_UNIT_SP);
+        developmentCount.setVisibility(View.GONE);
+        markFrame.addView(developmentCount, new android.widget.FrameLayout.LayoutParams(dp(104), dp(60), android.view.Gravity.CENTER));
         computerState = text("连接电脑", 22);
         computerState.setTypeface(null, android.graphics.Typeface.BOLD);
         computerState.setTextColor(ink);
@@ -552,8 +567,12 @@ public final class MainActivity extends Activity {
         verifyButton.setVisibility(paired && BuildConfig.TESTING ? View.VISIBLE : View.GONE);
         verifyButton.setEnabled(!busy);
         boolean measured = loading && webView != null && !webLoaded && webDownload != null && webDownload.downloading();
+        boolean development = loading && !webLoaded && webDevelopmentProgress != null && webDownload == null;
         downloadRing.update(measured ? webDownload : null);
-        progress.setVisibility(loading && !measured ? View.VISIBLE : View.GONE);
+        progress.setVisibility(loading && !measured && !development ? View.VISIBLE : View.GONE);
+        developmentRing.setVisibility(development ? View.VISIBLE : View.GONE);
+        developmentCount.setVisibility(development ? View.VISIBLE : View.GONE);
+        if (development) setTextIfChanged(developmentCount, "资源加载\n" + webDevelopmentProgress.completed + " 项");
         markIcon.setVisibility(loading ? View.INVISIBLE : View.VISIBLE);
         connectionActions.setVisibility(paired || rememberedComputer || loading ? View.VISIBLE : View.GONE);
         updateButton.setVisibility(rememberedComputer ? View.VISIBLE : View.GONE);
@@ -591,7 +610,11 @@ public final class MainActivity extends Activity {
 
     private String heroDetail() {
         if (claimID != null) return "在电脑上核对校验码，并允许这台手机访问";
-        if (!webLoaded && (paired || webView != null)) return webDownload != null ? webDownload.detail() : computerHost("页面准备好后自动进入");
+        if (!webLoaded && (paired || webView != null)) {
+            if (webDownload != null) return webDownload.detail();
+            if (webDevelopmentProgress != null) return webDevelopmentProgress.detail();
+            return computerHost("页面准备好后自动进入");
+        }
         if (busy) return computerHost("正在准备与电脑的连接");
         if (error.length() > 0) return rememberedComputer ? computerHost("电脑暂时不可用") : "请确认电脑在线后重试";
         if (rememberedComputer) return computerHost("打开后会自动连接上次的电脑");
@@ -744,6 +767,8 @@ public final class MainActivity extends Activity {
         if (webView == null) return;
         webLoaded = false;
         webStartupProblem = null;
+        webDownload = null;
+        webDevelopmentProgress = null;
         webLoadingStage = WebDownloadProgress.LOADING_MESSAGE;
         error.setText("");
         android.view.ViewGroup root = (android.view.ViewGroup) webView.getParent().getParent();
@@ -1088,13 +1113,12 @@ public final class MainActivity extends Activity {
                                 @Override public void onPageStarted(android.webkit.WebView view, String url, android.graphics.Bitmap icon) {
                                     if (webView != page) return;
                                     webStartupRevision++;
-                                    webDownload = null; webStartupReported = false;
+                                    webDownload = null; webDevelopmentProgress = null;
                                     if (!webLoaded) { webLoadingStage = WebDownloadProgress.LOADING_MESSAGE; render(); }
                                     main.removeCallbacks(webStartupTimeout);
                                     main.postDelayed(webStartupTimeout, 45000);
                                 }
                                 @Override public void onPageCommitVisible(android.webkit.WebView view, String url) {
-                                    if (webView == page && !webLoaded && !webStartupReported && webDownload == null) { webLoadingStage = WebDownloadProgress.LOADING_MESSAGE; render(); }
                                     // 不等待图片等尾部资源完成，尽早订阅并补读网页已经发出的启动状态。
                                     if (webView == page && allowed(Uri.parse(url)) && webFeatures != null) webFeatures.observeStartup();
                                 }
@@ -1143,9 +1167,9 @@ public final class MainActivity extends Activity {
     }
     void receiveWebStartup(android.webkit.WebView page, String state, String message) {
         if (webView != page || webLoaded) return;
-        webStartupReported = true;
         if ("loading".equals(state)) {
-            webLoadingStage = message == null || message.isEmpty() ? "正在初始化 WeQ 页面" : message.substring(0, Math.min(message.length(), 100));
+            if (message == null || message.isEmpty()) return;
+            webLoadingStage = message.substring(0, Math.min(message.length(), 100));
             renderSetupProgress();
         } else if ("ready".equals(state) || "action-required".equals(state)) showWebPage();
         else if ("error".equals(state)) failWebLoad(message == null || message.isEmpty() ? "WeQ 页面启动失败，请重试。" : message.substring(0, Math.min(message.length(), 500)));
@@ -1153,7 +1177,11 @@ public final class MainActivity extends Activity {
     void receiveWebDownload(android.webkit.WebView page, WebDownloadProgress value) {
         if (webView != page || webLoaded) return;
         webDownload = value;
-        if (!webStartupReported) webLoadingStage = value.stage();
+        renderSetupProgress();
+    }
+    void receiveWebDevelopmentProgress(android.webkit.WebView page, WebDownloadProgress.Development value) {
+        if (webView != page || webLoaded || (webDevelopmentProgress != null && value.completed <= webDevelopmentProgress.completed)) return;
+        webDevelopmentProgress = value;
         renderSetupProgress();
     }
     void recordWebConsoleFailure(android.webkit.WebView page, String message) {
@@ -1176,6 +1204,7 @@ public final class MainActivity extends Activity {
         if (webLoaded) return;
         main.removeCallbacks(webStartupTimeout);
         webLoaded = true;
+        webDevelopmentProgress = null;
         health.resume(SystemClock.elapsedRealtime());
         publishConnectionHealth();
         scheduleConnectionWarning();
@@ -1223,6 +1252,7 @@ public final class MainActivity extends Activity {
         main.removeCallbacks(webStartupTimeout);
         webLoaded = false;
         webDownload = null;
+        webDevelopmentProgress = null;
         if (webFeatures != null) { webFeatures.close(); webFeatures = null; }
         Client active = node;
         if (active != null) worker.execute(active::closeWeb);

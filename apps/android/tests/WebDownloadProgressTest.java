@@ -10,7 +10,6 @@ public final class WebDownloadProgressTest {
         WebDownloadProgress mixed = new WebDownloadProgress(2, 2, 10000, 10000, 800L, 9000, 0);
         check(mixed.fraction() == 1 && mixed.downloadedBytes == 800 && mixed.cachedBytes == 9000);
         check(mixed.detail().contains("已确认下载") && mixed.detail().contains("缓存复用") && !mixed.detail().contains("来源待确认"));
-        check(mixed.stage().equals("正在初始化网页"));
         WebDownloadProgress cached = new WebDownloadProgress(2, 2, 10000, 10000, 0L, 10000, 0);
         check(cached.downloadedBytes == 0 && cached.cachedBytes == 10000);
         check(cached.fullyCached() && cached.detail().equals("已复用网页缓存"));
@@ -24,6 +23,12 @@ public final class WebDownloadProgressTest {
         check(!new WebDownloadProgress(2, 2, 10000, 10000).downloading());
         for (long[] bad : new long[][] {{3,2,1,2}, {2,2,1,2}, {1,2,2,2}, {0,0,0,0}, {1,2,-1,2}, {1,2,1,Long.MAX_VALUE}}) {
             try { new WebDownloadProgress((int)bad[0], (int)bad[1], bad[2], bad[3]); throw new AssertionError("accepted invalid progress"); }
+            catch (IllegalArgumentException expected) { }
+        }
+        WebDownloadProgress.Development development = new WebDownloadProgress.Development(700, 2000000, 698, 1);
+        check(development.completed == 700 && development.downloadedBytes == 2000000);
+        for (long[] bad : new long[][] {{0,1,0,0}, {3,0,2,2}, {3,100,2,1}, {3,-1,0,0}, {Long.MAX_VALUE,0,0,0}}) {
+            try { new WebDownloadProgress.Development(bad[0], bad[1], bad[2], bad[3]); throw new AssertionError("accepted invalid development progress"); }
             catch (IllegalArgumentException expected) { }
         }
         System.out.println("WebDownloadProgress tests passed");

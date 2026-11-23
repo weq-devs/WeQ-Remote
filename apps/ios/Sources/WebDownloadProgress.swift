@@ -14,11 +14,7 @@ struct WebDownloadProgress: Equatable {
     init?(message: Any) {
         guard let fields = message as? [String: Any] else { return nil }
         func number(_ key: String) -> Int64? {
-            guard let number = fields[key] as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
-            let value = number.doubleValue
-            guard value.isFinite, value >= 0, value <= Double(Int64(1) << 40),
-                  value.rounded(.towardZero) == value else { return nil }
-            return number.int64Value
+            progressNumber(fields[key])
         }
         guard let completed = number("completed"), let total = number("total"),
               let loaded = number("loadedBytes"), let size = number("totalBytes") else { return nil }
@@ -52,14 +48,48 @@ struct WebDownloadProgress: Equatable {
     var fraction: Double { Double(loadedBytes) / Double(totalBytes) }
     var downloading: Bool { completed < total }
     var fullyCached: Bool { completed == total && downloadedBytes == 0 && cachedBytes == totalBytes && unknownBytes == 0 }
-    var stage: String { downloading ? Self.loadingMessage : "正在初始化网页" }
     var detail: String {
         if fullyCached { return "已复用网页缓存" }
-        func bytes(_ value: Int64) -> String { value == 0 ? "0 B" : ByteCountFormatter.string(fromByteCount: value, countStyle: .file) }
-        var lines = ["资源加载 \(bytes(loadedBytes)) / \(bytes(totalBytes))"]
-        if let downloadedBytes { lines.append("已确认下载 \(bytes(downloadedBytes)) · 缓存复用 \(bytes(cachedBytes))") }
-        if unknownBytes > 0 { lines.append("来源待确认 \(bytes(unknownBytes))") }
+        var lines = ["资源加载 \(progressBytes(loadedBytes)) / \(progressBytes(totalBytes))"]
+        if let downloadedBytes { lines.append("已确认下载 \(progressBytes(downloadedBytes)) · 缓存复用 \(progressBytes(cachedBytes))") }
+        if unknownBytes > 0 { lines.append("来源待确认 \(progressBytes(unknownBytes))") }
         lines.append("资源 \(completed) / \(total) 项")
         return lines.joined(separator: "\n")
     }
+}
+
+struct WebDevelopmentProgress: Equatable {
+    let completed: Int64
+    let downloadedBytes: Int64
+    let cached: Int64
+    let unknown: Int64
+
+    init?(message: Any) {
+        guard let fields = message as? [String: Any],
+              let completed = progressNumber(fields["completed"]), completed <= Int64(Int32.max),
+              let downloadedBytes = progressNumber(fields["downloadedBytes"]),
+              let cached = progressNumber(fields["cached"]), cached <= completed,
+              let unknown = progressNumber(fields["unknown"]), unknown <= completed - cached,
+              (downloadedBytes == 0 || cached + unknown < completed) else { return nil }
+        self.completed = completed
+        self.downloadedBytes = downloadedBytes
+        self.cached = cached
+        self.unknown = unknown
+    }
+
+    var detail: String {
+        "已确认下载 \(progressBytes(downloadedBytes))\n缓存复用 \(cached) 项 · 来源待确认 \(unknown) 项"
+    }
+}
+
+private func progressNumber(_ field: Any?) -> Int64? {
+    guard let number = field as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
+    let value = number.doubleValue
+    guard value.isFinite, value >= 0, value <= Double(Int64(1) << 40),
+          value.rounded(.towardZero) == value else { return nil }
+    return number.int64Value
+}
+
+private func progressBytes(_ value: Int64) -> String {
+    value == 0 ? "0 B" : ByteCountFormatter.string(fromByteCount: value, countStyle: .file)
 }

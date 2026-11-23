@@ -19,6 +19,7 @@ final class RemoteModel: ObservableObject {
     @Published private(set) var webReady = false
     @Published private(set) var webLoadingStage = WebDownloadProgress.loadingMessage
     @Published private(set) var webDownload: WebDownloadProgress?
+    @Published private(set) var webDevelopmentProgress: WebDevelopmentProgress?
     @Published private(set) var rememberedComputer = false
     @Published private(set) var health = ConnectionHealth()
     @Published private(set) var checkingUpdates = false
@@ -342,12 +343,18 @@ final class RemoteModel: ObservableObject {
         webReady = false
         webLoadingStage = WebDownloadProgress.loadingMessage
         webDownload = nil
+        webDevelopmentProgress = nil
         session.onDownload = { [weak self, weak session] progress in
             guard let self, self.webSession === session else { return }
             self.webDownload = progress
         }
+        session.onDevelopmentProgress = { [weak self, weak session] progress in
+            guard let self, self.webSession === session,
+                  progress.completed > (self.webDevelopmentProgress?.completed ?? -1) else { return }
+            self.webDevelopmentProgress = progress
+        }
         session.onProgress = { [weak self, weak session] stage in
-            guard let self, self.webSession === session else { return }
+            guard let self, self.webSession === session, self.webLoadingStage != stage else { return }
             self.webLoadingStage = stage
         }
         session.onReady = { [weak self, weak session] in
@@ -357,6 +364,7 @@ final class RemoteModel: ObservableObject {
             self.scheduleConnectionWarning()
             self.publishConnectionHealth()
             self.webDownload = nil
+            self.webDevelopmentProgress = nil
             self.error = nil
         }
         session.onFailure = { [weak self, weak session] error in
@@ -376,6 +384,7 @@ final class RemoteModel: ObservableObject {
             guard let self, self.webSession === session else { return }
             self.webReady = false
             self.webDownload = nil
+            self.webDevelopmentProgress = nil
             self.error = nil
         }
         session.onMenu = { [weak self] in self?.showingDetails = true }
@@ -384,6 +393,7 @@ final class RemoteModel: ObservableObject {
 
     private func failWebLoad(_ error: Error) {
         webDownload = nil
+        webDevelopmentProgress = nil
         webSession?.close()
         webSession = nil
         webReady = false
@@ -699,6 +709,7 @@ final class RemoteModel: ObservableObject {
         healthDeadline = nil
         health = ConnectionHealth()
         webDownload = nil
+        webDevelopmentProgress = nil
         reconnectPaused = true
         for session in probingSessions.values { session.invalidateAndCancel() }
         probingSessions.removeAll()

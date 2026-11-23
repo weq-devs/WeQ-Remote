@@ -31,7 +31,6 @@ final class WebDownloadProgress {
     }
     boolean downloading() { return completed < total; }
     boolean fullyCached() { return completed == total && downloadedBytes != null && downloadedBytes == 0 && cachedBytes == totalBytes && unknownBytes == 0; }
-    String stage() { return downloading() ? LOADING_MESSAGE : "正在初始化网页"; }
     String detail() {
         if (fullyCached()) return "已复用网页缓存";
         String result = "资源加载 " + bytes(loadedBytes) + " / " + bytes(totalBytes);
@@ -43,5 +42,22 @@ final class WebDownloadProgress {
         if (value < 1000) return value + " B";
         if (value < 1000000) return String.format(Locale.ROOT, "%.1f KB", value / 1000.0);
         return String.format(Locale.ROOT, "%.2f MB", value / 1000000.0);
+    }
+
+    static final class Development {
+        final int completed, cached, unknown;
+        final long downloadedBytes;
+
+        Development(long completed, long downloadedBytes, long cached, long unknown) {
+            if (completed < 0 || completed > Integer.MAX_VALUE || cached < 0 || cached > completed
+                || unknown < 0 || unknown > completed - cached || downloadedBytes < 0 || downloadedBytes > (1L << 40)
+                || (downloadedBytes > 0 && cached + unknown == completed))
+                throw new IllegalArgumentException("invalid development resource progress");
+            this.completed = (int) completed; this.downloadedBytes = downloadedBytes; this.cached = (int) cached; this.unknown = (int) unknown;
+        }
+
+        String detail() {
+            return "已确认下载 " + bytes(downloadedBytes) + "\n缓存复用 " + cached + " 项 · 来源待确认 " + unknown + " 项";
+        }
     }
 }

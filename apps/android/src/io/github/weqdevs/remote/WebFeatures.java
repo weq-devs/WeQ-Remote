@@ -130,6 +130,19 @@ final class WebFeatures extends WebChromeClient {
                     ((MainActivity) activity).receiveWebStartup(view, state, message);
             });
         }
+        @android.webkit.JavascriptInterface public void developmentResources(String payload) {
+            if (payload == null || payload.length() > 512) return;
+            try {
+                org.json.JSONObject value = new org.json.JSONObject(payload);
+                WebDownloadProgress.Development progress = new WebDownloadProgress.Development(
+                    WebDownloadProgress.number(value.get("completed")), WebDownloadProgress.number(value.get("downloadedBytes")),
+                    WebDownloadProgress.number(value.get("cached")), WebDownloadProgress.number(value.get("unknown")));
+                activity.runOnUiThread(() -> {
+                    if (!closed && WebAccess.sameOrigin(origin, view.getUrl()) && activity instanceof MainActivity)
+                        ((MainActivity) activity).receiveWebDevelopmentProgress(view, progress);
+                });
+            } catch (org.json.JSONException | IllegalArgumentException ignored) { }
+        }
         @android.webkit.JavascriptInterface public void openMenu() {
             activity.runOnUiThread(() -> {
                 if (!closed && WebAccess.sameOrigin(origin, view.getUrl()) && activity instanceof MainActivity)
@@ -213,7 +226,7 @@ final class WebFeatures extends WebChromeClient {
         if (!connectionObserver.isEmpty()) view.evaluateJavascript(connectionObserver, null);
         if (!resourceObserver.isEmpty()) view.evaluateJavascript(resourceObserver, null);
         if (closed) return;
-        view.evaluateJavascript("(function(){function report(){var s=window.weqRemoteStartup;if(s)weqRemoteLinks.startup(s.state,s.message||'');}if(!window.__weqStartupListener){window.__weqStartupListener=true;window.addEventListener('weq-remote-startup',report);}report();})()", null);
+        view.evaluateJavascript("(function(){function report(){var s=window.weqRemoteStartup;if(s)weqRemoteLinks.startup(s.state,s.message||'');}if(!window.__weqStartupListener){window.__weqStartupListener=true;window.addEventListener('weq-remote-startup',report);}report();var d=window.weqRemoteDevelopmentResources;if(d)weqRemoteLinks.developmentResources(JSON.stringify(d));})()", null);
     }
     @Override public boolean onConsoleMessage(android.webkit.ConsoleMessage message) {
         if (!closed && message.messageLevel() == android.webkit.ConsoleMessage.MessageLevel.ERROR && activity instanceof MainActivity)
