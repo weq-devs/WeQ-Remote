@@ -82,14 +82,7 @@ private final class RemoteBusinessCacheHandler: NSObject, WKScriptMessageHandler
 private final class RemoteQqImageHandler: NSObject, WKScriptMessageHandlerWithReply {
     weak var owner: RemoteWebSession?
     private var active = 0
-    private let session: URLSession = {
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.httpShouldSetCookies = false
-        configuration.httpCookieStorage = nil
-        configuration.urlCredentialStorage = nil
-        configuration.timeoutIntervalForResource = 5
-        return URLSession(configuration: configuration, delegate: NoRedirectDelegate(), delegateQueue: nil)
-    }()
+    private let images = RemoteQqImageDownload()
 
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage,
                                replyHandler: @escaping (Any?, String?) -> Void) {
@@ -102,35 +95,19 @@ private final class RemoteQqImageHandler: NSObject, WKScriptMessageHandlerWithRe
         Task {
             defer { active -= 1 }
             do {
-                replyHandler(try await Self.load(url, session: session), nil)
+                replyHandler(try await Self.legacyReply(images, url: url), nil)
             } catch {
                 replyHandler(nil, "Image unavailable")
             }
         }
     }
 
-    private nonisolated static func load(_ url: URL, session: URLSession) async throws -> [String: String] {
-        let limit = 2 * 1024 * 1024
-        let (bytes, response) = try await session.bytes(from: url)
-        guard let http = response as? HTTPURLResponse, http.statusCode == 200,
-              let type = http.mimeType, ["image/jpeg", "image/png", "image/apng", "image/gif", "image/webp", "image/avif"].contains(type),
-              http.expectedContentLength <= limit else {
-            bytes.task.cancel()
-            throw URLError(.badServerResponse)
-        }
-        var image = Data()
-        for try await byte in bytes {
-            guard image.count < limit else {
-                bytes.task.cancel()
-                throw URLError(.dataLengthExceedsMaximum)
-            }
-            image.append(byte)
-        }
-        guard !image.isEmpty else { throw URLError(.zeroByteResource) }
-        return ["type": type, "base64": image.base64EncodedString()]
+    private nonisolated static func legacyReply(_ images: RemoteQqImageDownload, url: URL) async throws -> [String: String] {
+        let image = try await images.load(url)
+        return ["type": image.type, "base64": image.bytes.base64EncodedString()]
     }
 
-    func close() { session.invalidateAndCancel() }
+    func close() { images.close() }
 }
 
 private final class RemoteStartupHandler: NSObject, WKScriptMessageHandler {
