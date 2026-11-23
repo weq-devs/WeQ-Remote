@@ -1,12 +1,12 @@
 # WeQ Remote for Android
 
-当前源码为 1.0.1（versionCode 11），已于 2026-11-18（北京时间）发布 GitHub APK。Android 8.0 / API 26 起，当前仅构建 arm64-v8a。见 [1.0.1 版本说明](../../docs/releases/1.0.1.md)，实际发布状态以 GitHub Releases 为准。
+当前源码为 1.1.0（versionCode 12），尚未发布。支持 Android 8.0／API 26 及以上，当前构建目标为 arm64-v8a。详见 [1.1.0 版本说明](../../docs/releases/1.1.0.md)。
 
 手机端仅封装电脑提供的 WeQ Web 和内嵌 TS，首页只保留扫码和链接输入。支持局域网 HTTPS 指纹配对或一次性 Auth Key 扫码入网，不占用系统 VPN。手机壳已独立仓库，协议见[协议约定](../../docs/protocol.md)，本机电脑侧用法见 [Web 与手机连接](https://weq-devs.github.io/WeqDocs/guide/remote-web)。
 
 ## APK 与使用
 
-开发 APK 构建输出：`/path/to/WeQ-Remote/apps/android/.build/weq-remote-1.0.1-arm64.apk`。
+开发 APK 构建输出为 `apps/android/.build/weq-remote-1.1.0-arm64.apk`。
 这是本机测试签名，不是商店正式发布。`-test.apk` 是独立包名的自动化测试版本，不作为普通客户端交付。
 
 1. 安装普通 APK；新版电脑并列显示局域网与 WeQ 专用 Tailscale 地址，统一点击「生成配对码」。跨网络时启动并登录专用 Tailscale，勾选「嵌入 Tailscale Key」，点击生成后在弹窗填写 Key。
