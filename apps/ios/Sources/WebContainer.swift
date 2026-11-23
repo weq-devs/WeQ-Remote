@@ -2,6 +2,20 @@ import SwiftUI
 import TailscaleKit
 import WebKit
 
+enum RemoteWebStartupError: LocalizedError {
+    case load(Error), reported(String?), timeout
+
+    var errorDescription: String? {
+        if case .reported(let detail) = self { return detail }
+        return nil
+    }
+
+    var loadCause: Error? {
+        if case .load(let cause) = self { return cause }
+        return nil
+    }
+}
+
 final class RemoteWebView: WKWebView {
     // WebKit 将编辑响应者的附加栏转交给 WebView；聊天操作由网页输入区提供。
     override var inputAccessoryView: UIView? { nil }
@@ -348,8 +362,15 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
         startupTimeout?.cancel()
         startupTimeout = Task { [weak self] in
             do { try await Task.sleep(for: .seconds(45)) } catch { return }
-            self?.receiveStartup("error", message: "WeQ 页面准备超时，请重试并确认电脑已更新到支持页面就绪通知的版本。")
+            self?.failStartup(.timeout)
         }
+    }
+
+    private func failStartup(_ error: RemoteWebStartupError) {
+        guard !closed, !startupFinished else { return }
+        startupFinished = true
+        startupTimeout?.cancel()
+        onFailure?(error)
     }
 
     func receiveStartup(_ state: String, message: String?) {
@@ -373,10 +394,7 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
                 }
             }
         } else if state == "error" {
-            startupFinished = true
-            startupTimeout?.cancel()
-            onFailure?(NSError(domain: "WeQRemoteStartup", code: 1,
-                userInfo: [NSLocalizedDescriptionKey: String((message ?? "WeQ 页面启动失败，请重试。").prefix(500))]))
+            failStartup(.reported(message.flatMap { $0.isEmpty ? nil : String($0.prefix(500)) }))
         }
     }
 

@@ -27,6 +27,23 @@ import androidnet.Client;
 import androidnet.WebGateway;
 
 public final class MainActivity extends Activity {
+    private static final String AUTHORIZATION_REJECTED = "设备未授权或授权已被撤销，请重新配对";
+    private enum FailureKind {
+        PAIRING("配对未完成"), CONNECTION("暂时连不上电脑"), VERIFICATION("无法验证电脑连接"),
+        AUTHORIZATION("电脑未授权这台手机"), WEB_LOAD("WeQ 页面加载失败"),
+        WEB_STARTUP("WeQ 界面启动失败"), WEB_TIMEOUT("WeQ 页面加载超时");
+
+        final String title;
+        FailureKind(String title) { this.title = title; }
+        boolean retriesWeb() { return this == WEB_LOAD || this == WEB_STARTUP || this == WEB_TIMEOUT; }
+    }
+
+    private static final class HomeFailure {
+        final FailureKind kind;
+        final String detail;
+        HomeFailure(FailureKind kind, String detail) { this.kind = kind; this.detail = detail; }
+    }
+
     final Handler main = new Handler(Looper.getMainLooper());
     final ExecutorService worker = Executors.newSingleThreadExecutor();
     private final ExecutorService closer = Executors.newSingleThreadExecutor();
@@ -39,6 +56,7 @@ public final class MainActivity extends Activity {
     private String connectionRoutes;
     private boolean restoring;
     private boolean updatingConnection;
+    private boolean computerVerified;
     private Runnable enrollmentAction;
     private boolean rememberedComputer;
     private long expiresAt;
@@ -51,6 +69,8 @@ public final class MainActivity extends Activity {
     android.webkit.WebView webView;
     private WebFeatures webFeatures;
     TextView networkState, computerState, detail, error, codeView, statusPill;
+    private TextView scanLabel;
+    private HomeFailure failure;
     private String appVersion = "";
     private ConnectionHealth health = new ConnectionHealth();
     private String connectionRoute = "未选择";
@@ -94,7 +114,8 @@ public final class MainActivity extends Activity {
     private String webLoadingStage = "正在准备网页连接";
     private String webStartupProblem;
     private final Runnable webStartupTimeout = () -> {
-        if (webView != null && !webLoaded) failWebLoad(webStartupProblem != null ? webStartupProblem : "WeQ 页面准备超时（" + webLoadingStage + "），请重试并确认电脑已更新到支持页面就绪通知的版本。");
+        if (webView != null && !webLoaded) failWebLoad(FailureKind.WEB_TIMEOUT,
+            "最后进度：" + webLoadingStage + "。" + (webStartupProblem == null ? webRecovery() : webStartupProblem));
     };
     private boolean reconnectPaused;
     private final Runnable networkPoll = new Runnable() { public void run() { refreshNetwork(); } };
@@ -246,7 +267,14 @@ public final class MainActivity extends Activity {
         if (connectivity != null && pathMonitor != null) { connectivity.unregisterNetworkCallback(pathMonitor); unregisterReceiver(dataSaverReceiver); }
         pathMonitor = null;
         main.removeCallbacks(reconnectPoll);
-        if (webView == null) stopNetwork(false);
+        if (webView == null) {
+            HomeFailure previousFailure = failure;
+            stopNetwork(false);
+            if (previousFailure != null && (previousFailure.kind.retriesWeb() || previousFailure.kind == FailureKind.AUTHORIZATION)) {
+                failure = previousFailure;
+                render();
+            }
+        }
         super.onStop();
     }
     @Override protected void onPause() {
@@ -329,7 +357,7 @@ public final class MainActivity extends Activity {
         statusDot = new android.view.View(this);
         statusDot.setBackground(oval(idleDotColor));
         statusChip.addView(statusDot, new LinearLayout.LayoutParams(dp(6), dp(6)));
-        statusPill = text("未连接", 12);
+        statusPill = text("未配对", 12);
         statusPill.setTextColor(muted);
         statusPill.setPadding(dp(6), 0, 0, 0);
         statusChip.addView(statusPill);
@@ -431,7 +459,7 @@ public final class MainActivity extends Activity {
         scanIcon.setColorFilter(actionText);
         scanIcon.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
         scan.addView(scanIcon, new LinearLayout.LayoutParams(dp(22), dp(22)));
-        TextView scanLabel = text("扫码连接", 17);
+        scanLabel = text("扫码连接", 17);
         scanLabel.setTypeface(null, android.graphics.Typeface.BOLD);
         scanLabel.setTextColor(actionText);
         scanLabel.setPadding(dp(12), 0, 0, 0);
@@ -502,7 +530,7 @@ public final class MainActivity extends Activity {
         retryButton.setVisibility(View.GONE);
         retryButton.setOnClickListener(view -> {
             if (isConnecting()) { reconnectPaused = true; stopNetwork(true); }
-            else { reconnectPaused = false; restoreComputer(); }
+            else retryComputer();
         });
         LinearLayout.LayoutParams retryParams = new LinearLayout.LayoutParams(0, dp(52), 1f);
         retryParams.setMargins(dp(12), 0, dp(12), 0);
@@ -560,10 +588,13 @@ public final class MainActivity extends Activity {
     }
 
     private void render() {
-        boolean loading = busy || claimID != null || (paired && !webLoaded);
+        boolean loading = isConnecting();
         boolean canPair = claimID == null && !rememberedComputer && !paired;
         pairSection.setVisibility(canPair ? View.VISIBLE : View.GONE);
         scanButton.setEnabled(!busy);
+        boolean needsAuthorization = failure != null && failure.kind == FailureKind.AUTHORIZATION;
+        setTextIfChanged(scanLabel, needsAuthorization ? "重新配对" : "扫码连接");
+        scanButton.setContentDescription(needsAuthorization ? "重新配对" : "扫码");
         pairButton.setEnabled(!busy && claimID == null && invitation.length() > 0);
         pairButton.setVisibility(invitation.length() > 0 ? View.VISIBLE : View.GONE);
         verifyButton.setVisibility(paired && BuildConfig.TESTING ? View.VISIBLE : View.GONE);
@@ -579,21 +610,35 @@ public final class MainActivity extends Activity {
         connectionActions.setVisibility(paired || rememberedComputer || loading ? View.VISIBLE : View.GONE);
         updateButton.setVisibility(rememberedComputer ? View.VISIBLE : View.GONE);
         retryButton.setVisibility(rememberedComputer || loading ? View.VISIBLE : View.GONE);
-        setTextIfChanged(retryButton, isConnecting() ? "停止" : "连接");
+        setTextIfChanged(retryButton, loading ? "停止" : failure == null ? "连接" : failure.kind.retriesWeb() ? "重试打开" : "重新连接");
         retryButton.setEnabled(true);
         disconnectButton.setVisibility(paired || claimID != null || rememberedComputer ? View.VISIBLE : View.GONE);
         codeView.setVisibility(claimID != null ? View.VISIBLE : View.GONE);
         String status = statusText();
         if (!android.text.TextUtils.equals(statusPill.getText(), status)) {
             statusPill.setText(status);
-            ((GradientDrawable) statusDot.getBackground()).setColor(status.equals("未连接") ? idleDotColor : accentColor);
+            ((GradientDrawable) statusDot.getBackground()).setColor(status.equals("连接中") || claimID != null ? accentColor : idleDotColor);
         }
         setTextIfChanged(computerState, heroTitle());
         setTextIfChanged(detail, heroDetail());
         detail.setVisibility(detail.length() > 0 ? View.VISIBLE : View.GONE);
+        setTextIfChanged(error, failure == null ? "" : failure.detail);
+        error.setVisibility(failure == null ? View.GONE : View.VISIBLE);
     }
 
-    private boolean isConnecting() { return busy || claimID != null || (paired && !webLoaded); }
+    private boolean isConnecting() { return busy || claimID != null || ((paired || webView != null) && !webLoaded); }
+
+    private boolean hasWebFailure() { return failure != null && failure.kind.retriesWeb(); }
+
+    private void retryComputer() {
+        reconnectPaused = false;
+        restoreComputer();
+    }
+
+    private void showFailure(FailureKind kind, String detail) {
+        failure = new HomeFailure(kind, detail);
+        render();
+    }
 
     private void scanConnection() {
         reconnectPaused = true;
@@ -605,7 +650,7 @@ public final class MainActivity extends Activity {
         if (claimID != null) return "等待电脑确认";
         if (!webLoaded && (paired || webView != null)) return webLoadingStage;
         if (busy) return paired ? "正在验证电脑授权" : "正在连接电脑";
-        if (error.length() > 0) return "连接未通过";
+        if (failure != null) return failure.kind.title;
         if (rememberedComputer) return "我的电脑";
         return "连接电脑";
     }
@@ -618,7 +663,7 @@ public final class MainActivity extends Activity {
             return computerHost("页面准备好后自动进入");
         }
         if (busy) return computerHost("正在准备与电脑的连接");
-        if (error.length() > 0) return rememberedComputer ? computerHost("电脑暂时不可用") : "请确认电脑在线后重试";
+        if (failure != null) return computerHost("");
         if (rememberedComputer) return computerHost("打开后会自动连接上次的电脑");
         return "在电脑上的 WeQ 生成配对码，扫码或粘贴链接即可连接";
     }
@@ -630,9 +675,8 @@ public final class MainActivity extends Activity {
 
     private String statusText() {
         if (claimID != null) return "等待批准";
-        if (busy || (paired && !webLoaded)) return paired ? "正在进入" : "连接中";
-        if (paired) return "已连接";
-        return "未连接";
+        if (rememberedComputer || paired) return "已配对";
+        return isConnecting() ? "连接中" : "未配对";
     }
 
     private void forgetComputer() {
@@ -684,7 +728,7 @@ public final class MainActivity extends Activity {
         for (String action : actions) {
             content.addView(button(action, () -> {
                 menu.dismiss();
-                if ("立即检查".equals(action)) { if (node != null && paired) verify(); else restoreComputer(); }
+                if ("立即检查".equals(action)) { if (node != null && paired) verify(); else retryComputer(); }
                 else if ("检查更新".equals(action)) checkUpdates();
                 else if ("重新加载".equals(action)) reloadWeb();
                 else {
@@ -772,7 +816,7 @@ public final class MainActivity extends Activity {
         webDownload = null;
         webDevelopmentProgress = null;
         webLoadingStage = WebDownloadProgress.LOADING_MESSAGE;
-        error.setText("");
+        failure = null;
         android.view.ViewGroup root = (android.view.ViewGroup) webView.getParent().getParent();
         if (setupView.getParent() == null) root.addView(setupView, new android.view.ViewGroup.LayoutParams(-1, -1));
         setupView.setAlpha(1); render(); webView.reload();
@@ -783,7 +827,7 @@ public final class MainActivity extends Activity {
     }
     private void startNetwork(String authKey) {
         if (busy || node != null || !visible) return;
-        busy = true; error.setText(""); networkState.setText("Tailscale：正在连接"); render();
+        busy = true; failure = null; networkState.setText("Tailscale：正在连接"); render();
         final int revision = generation;
         worker.execute(() -> {
             try {
@@ -796,12 +840,12 @@ public final class MainActivity extends Activity {
                 String directory = authKey != null ? Androidnet.authStateDir(base, authKey) : networkDirectory != null ? networkDirectory : base;
                 Client client = testControl != null ? Androidnet.newTestClient(directory, testControl) : authKey != null ? Androidnet.newEnrolledClient(directory, authKey) : Androidnet.newClient(directory);
                 main.post(() -> {
-                    if (revision != generation || !visible) { closeClient(client); return; }
+                    if (revision != generation || !visible || hasWebFailure()) { closeClient(client); return; }
                     networkDirectory = directory; node = client; busy = false; refreshNetwork();
                 });
             } catch (Exception e) { main.post(() -> { if (revision == generation) {
                 enrolling = null; busy = false; enabled = false; networkState.setText("Tailscale：未启动");
-                fail(revision, "网络启动失败，请重新生成一次性 Key 后重试");
+                fail(revision, "无法启动 Tailscale，请重试。", FailureKind.CONNECTION);
             } }); }
         });
     }
@@ -813,12 +857,15 @@ public final class MainActivity extends Activity {
                 JSONObject status = new JSONObject(client.status());
                 String state = status.getString("state"); String auth = status.optString("loginURL");
                 main.post(() -> {
-                    if (revision != generation) return;
+                    if (revision != generation || hasWebFailure()) return;
                     online = "Running".equals(state); loginURL = safeLogin(auth);
                     networkState.setText("Tailscale：" + (online ? "已连接" : "NeedsMachineAuth".equals(state) ? "等待网络管理员批准" : loginURL != null ? "等待网络登录" : "正在连接"));
                     if (online) connectionRoute = "内嵌 Tailscale";
                     if (restoring && online) { busy = false; verify(); return; }
-                    if (restoring && loginURL != null) { fail(revision, "网络授权需更新，请在电脑重新生成配对码"); return; }
+                    if (restoring && loginURL != null) {
+                        fail(revision, "Tailscale 入网授权需更新，请在电脑生成包含 Key 的配对码，再扫码更新连接。", FailureKind.CONNECTION);
+                        return;
+                    }
                     if (enrolling != null) {
                         if (online) {
                             Invitation link = enrolling; enrolling = null;
@@ -829,7 +876,8 @@ public final class MainActivity extends Activity {
                             return;
                         }
                         if (SystemClock.elapsedRealtime() >= enrollmentDeadline || System.currentTimeMillis() >= enrolling.expiresAt || loginURL != null || "NeedsMachineAuth".equals(state)) {
-                            stopNetwork(true); error.setText("入网未完成，请检查 Key 是否已使用、过期或需要管理员批准，再重新生成邀请"); return;
+                            stopNetwork(true); showFailure(rememberedComputer ? FailureKind.CONNECTION : FailureKind.PAIRING,
+                                "入网未完成，请检查 Key 是否已使用、过期或需要管理员批准，再重新生成邀请。"); return;
                         }
                         busy = true;
                     }
@@ -876,7 +924,7 @@ public final class MainActivity extends Activity {
         closeWeb();
         generation++;
         main.removeCallbacks(approvalPoll); endpoint = null; token = null; fingerprint = null; connectionRoutes = null; claimID = null; paired = false; restoring = false; updatingConnection = false;
-        computerState.setText("未配对"); detail.setText(""); error.setText(""); busy = false;
+        computerVerified = false; failure = null; busy = false;
     }
     private void pair() {
         if (busy) return;
@@ -891,13 +939,14 @@ public final class MainActivity extends Activity {
             if (link.fingerprint != null) { startDirect(link.endpoint, link.fingerprint, () -> claim(link)); return; }
             if (link.authKey != null) {
                 if (testControl != null) throw new Exception("测试网络不接受正式入网密钥");
-                        if (!visible || link.expiresAt <= System.currentTimeMillis()) { invitation.setText(""); error.setText("邀请已过期，请重新生成"); return; }
+                        if (!visible || link.expiresAt <= System.currentTimeMillis()) { invitation.setText(""); showFailure(FailureKind.PAIRING, "邀请已过期，请重新生成。"); return; }
                         stopNetwork(true); enabled = true; enrolling = link; enrollmentDeadline = SystemClock.elapsedRealtime() + 45000;
                         startNetwork(link.authKey);
                 return;
             }
             claim(link);
-        } catch (Exception e) { error.setText("配对链接无效或已过期，请重新生成；旧版邀请需先连接网络"); render(); }
+        } catch (Exception e) { showFailure(rememberedComputer ? FailureKind.VERIFICATION : FailureKind.PAIRING,
+            "配对链接无效或已过期，请重新生成；旧版邀请需先连接网络。"); }
     }
     private void beginRoute() {
         if (webGateway == null || !restoring) { stopNetwork(true); return; }
@@ -913,10 +962,10 @@ public final class MainActivity extends Activity {
             try {
                 Client client = Androidnet.newDirectClient(address, pin);
                 main.post(() -> {
-                    if (revision != generation || (!visible && webGateway == null)) { closeClient(client); return; }
+                    if (revision != generation || hasWebFailure() || (!visible && webGateway == null)) { closeClient(client); return; }
                     node = client; fingerprint = pin; online = true; busy = false; connectionRoute = "系统网络（HTTPS）"; next.run();
                 });
-            } catch (Exception e) { fail(revision, "无法创建连接，请重新扫描二维码"); }
+            } catch (Exception e) { fail(revision, "无法创建连接，请重试。", FailureKind.CONNECTION); }
         });
     }
     private void startMulti(String routes, String pin, String authKey, String token, Runnable next) {
@@ -932,14 +981,14 @@ public final class MainActivity extends Activity {
                 if (revision != generation || !visible) return;
                 Client client = Androidnet.newPendingMultiClient(directory, routes, pin, authKey == null ? "" : authKey, token);
                 main.post(() -> {
-                    if (revision != generation || (!visible && webGateway == null)) { closeClient(client); return; }
+                    if (revision != generation || hasWebFailure() || (!visible && webGateway == null)) { closeClient(client); return; }
                     node = client;
                     worker.execute(() -> {
                         try {
                             client.connectRoutes();
                             boolean embedded = client.usesEmbeddedNetwork();
                             main.post(() -> {
-                                if (revision != generation || (!visible && webGateway == null)) return;
+                                if (revision != generation || hasWebFailure() || (!visible && webGateway == null)) return;
                                 if (embedded) {
                                     networkDirectory = directory;
                                     if (authKey != null) getPreferences(MODE_PRIVATE).edit().putString("networkState", new java.io.File(directory).getName()).apply();
@@ -948,10 +997,10 @@ public final class MainActivity extends Activity {
                                 networkState.setText(embedded ? "Tailscale：已连接" : "Tailscale：未使用（系统网络）");
                                 fingerprint = pin; connectionRoutes = routes; online = true; busy = false; next.run();
                             });
-                        } catch (Exception e) { fail(revision, routeFailureMessage(e)); }
+                        } catch (Exception e) { failRoute(revision, e); }
                     });
                 });
-            } catch (Exception e) { fail(revision, routeFailureMessage(e)); }
+            } catch (Exception e) { failRoute(revision, e); }
         });
     }
     private void updateConnection(Invitation link) throws Exception {
@@ -983,12 +1032,13 @@ public final class MainActivity extends Activity {
         }
         updatingConnection = true;
     }
-    private String routeFailureMessage(Exception e) {
+    private void failRoute(int revision, Exception e) {
         // 选路探测已包含鉴权状态读取，撤销授权要在建连阶段直接清凭据，而不是当成普通网络失败。
         String message = e.getMessage();
-        if (message != null && message.contains("设备未授权")) return "设备未授权或授权已被撤销，请重新配对";
-        if (message != null && message.contains("certificate changed")) return "电脑证书已变化，请删除电脑后重新配对";
-        return "无法连接电脑，请检查局域网、Tailscale 服务或重新生成包含 Key 的配对码";
+        if (message != null && message.contains("设备未授权")) fail(revision, AUTHORIZATION_REJECTED);
+        else if (message != null && message.contains("certificate changed"))
+            fail(revision, "电脑证书已变化。请核对电脑后扫码更新连接。", FailureKind.VERIFICATION);
+        else fail(revision, "请确认电脑上的 WeQ 正在运行，且手机能访问电脑。", FailureKind.CONNECTION);
     }
     private boolean restoreComputer() {
         if (reconnectPaused || busy || testControl != null || invitation.length() > 0) return false;
@@ -996,6 +1046,8 @@ public final class MainActivity extends Activity {
             JSONObject saved = ConnectionStore.load(this);
             if (saved == null) return false;
             rememberedComputer = true;
+            failure = null;
+            computerVerified = false;
             String address = saved.getString("endpoint"), credential = saved.getString("token"), pin = saved.optString("fingerprint", "");
             if (!credential.matches("[a-f0-9]{64}")) throw new Exception("电脑凭据无效");
             String localSecret = Invitation.credential();
@@ -1018,15 +1070,15 @@ public final class MainActivity extends Activity {
             else { endpoint = address; token = credential; paired = true; restoring = true; enabled = true; startNetwork(); }
             if (showCached) showWeb(webGateway.origin(), localSecret, generation);
             return true;
-        } catch (Exception e) { error.setText("无法读取保存的电脑凭据，请重新配对"); render(); return false; }
+        } catch (Exception e) { showFailure(FailureKind.VERIFICATION, "无法读取已保存的电脑凭据。"); return false; }
     }
     private void claim(Invitation link) {
-        if (!online || node == null) { error.setText("此邀请不含入网密钥，请先连接电脑所在的网络"); return; }
+        if (!online || node == null) { showFailure(FailureKind.PAIRING, "此邀请不含入网密钥，请先连接电脑所在的网络。"); return; }
         try {
             endpoint = link.endpoint; token = Invitation.credential();
             invitation.setText("");
             JSONObject body = new JSONObject().put("invitation", link.secret).put("name", "WeQ Remote Android").put("tokenHash", Invitation.hash(token)).put("scope", "web:access");
-            busy = true; error.setText(""); render();
+            busy = true; failure = null; render();
             final Client client = node; final int revision = generation; final String address = endpoint;
             worker.execute(() -> {
                 try {
@@ -1041,25 +1093,25 @@ public final class MainActivity extends Activity {
                     });
                 } catch (Exception e) { fail(revision, e.getMessage()); }
             });
-        } catch (Exception e) { error.setText("配对失败，请重试"); }
+        } catch (Exception e) { showFailure(FailureKind.PAIRING, "请重试配对。"); }
     }
     private void pollApproval() {
         if (claimID == null || node == null || paired) return;
-        if (System.currentTimeMillis() >= expiresAt) { clearComputer(); error.setText("配对确认已超时，请重新生成邀请"); render(); return; }
+        if (System.currentTimeMillis() >= expiresAt) { clearComputer(); showFailure(FailureKind.PAIRING, "配对确认已超时，请重新生成邀请。"); return; }
         final Client client = node; final int revision = generation; final String id = claimID, address = endpoint, credential = token;
         worker.execute(() -> {
             try {
                 JSONObject approval = response(client.request(address, "/v1/pair/" + id, "GET", credential, ""));
                 if (!id.equals(approval.getString("id")) || !"web:access".equals(approval.getString("scope"))) throw new Exception("电脑返回了不兼容的数据，请升级电脑端");
                 main.post(() -> { if (revision != generation || !id.equals(claimID)) return; if (approval.optBoolean("approved")) {
-                    try { if (!BuildConfig.TESTING || fingerprint != null) { ConnectionStore.save(this, endpoint, token, fingerprint, connectionRoutes); rememberedComputer = true; } claimID = null; paired = true; openWeb(); }
+                    try { if (!BuildConfig.TESTING || fingerprint != null) { ConnectionStore.save(this, endpoint, token, fingerprint, connectionRoutes); rememberedComputer = true; } claimID = null; paired = true; computerVerified = true; openWeb(); }
                     catch (Exception e) { fail(revision, "无法保存电脑凭据，请重试"); }
                 } else main.postDelayed(approvalPoll, 1500); });
             } catch (Exception e) { fail(revision, e.getMessage()); }
         });
     }
     private void verify() {
-        if (node == null || !paired || busy || !visible) return;
+        if (node == null || !paired || busy || !visible || hasWebFailure()) return;
         main.removeCallbacks(reconnectPoll);
         final Client client = node; final int revision = generation; final String address = endpoint, credential = token;
         final long timeout = health.requestTimeout();
@@ -1068,21 +1120,33 @@ public final class MainActivity extends Activity {
         final WebGateway gateway = webGateway;
         final int epoch = healthEpoch;
         if (webLoaded) { health.beginCheck(SystemClock.elapsedRealtime()); scheduleConnectionWarning(); }
-        busy = true; error.setText(""); render();
+        busy = true; failure = null; render();
         worker.execute(() -> {
+            FailureKind failureKind = FailureKind.CONNECTION;
             try {
                 Androidnet.setInterfaces(interfaceSnapshot());
                 long started = SystemClock.elapsedRealtime();
-                JSONObject status = response(liveCheck ? client.checkConnection(address, credential, timeout, recoverRoutes) : client.request(address, "/v1/status", "GET", credential, ""));
+                String raw = liveCheck ? client.checkConnection(address, credential, timeout, recoverRoutes) : client.request(address, "/v1/status", "GET", credential, "");
+                failureKind = FailureKind.VERIFICATION;
+                JSONObject status = response(raw);
                 long milliseconds = SystemClock.elapsedRealtime() - started;
                 if (!"WeQ Remote".equals(status.getString("product")) || status.getInt("protocol") != 1 || !"status:read".equals(status.getString("scope")) || !status.getBoolean("online")) throw new Exception("电脑返回了不兼容的数据");
-                if (gateway != null) client.attachWeb(gateway, address);
+                if (gateway != null) {
+                    try { client.attachWeb(gateway, address); }
+                    catch (Exception e) {
+                        if (liveCheck) throw e;
+                        failWebGateway(revision);
+                        return;
+                    }
+                }
                 boolean webReady = gateway != null;
                 boolean embedded = client.usesEmbeddedNetwork();
                 String tailnet = liveCheck ? (embedded ? "Running" : "Stopped") : tailnetState(client, embedded);
                 main.post(() -> {
                     if (revision != generation || !credential.equals(token)) return;
                     if (liveCheck && epoch != healthEpoch) { busy = false; requestConnectionCheck(true); return; }
+                    if (hasWebFailure()) return;
+                    computerVerified = true;
                     if (updatingConnection) {
                         try { ConnectionStore.save(this, endpoint, credential, fingerprint, connectionRoutes); updatingConnection = false; }
                         catch (Exception e) { fail(revision, "无法保存新的电脑地址，请重试"); return; }
@@ -1103,11 +1167,15 @@ public final class MainActivity extends Activity {
                     restoring = false;
                     if (open && visible && webGateway == null) openWeb();
                 });
-            } catch (Exception e) { main.post(() -> {
-                if (revision != generation) return;
-                if (liveCheck && epoch != healthEpoch) { busy = false; requestConnectionCheck(true); return; }
-                fail(revision, e.getMessage());
-            }); }
+            } catch (Exception e) {
+                final FailureKind kind = failureKind;
+                main.post(() -> {
+                    if (revision != generation) return;
+                    if (liveCheck && epoch != healthEpoch) { busy = false; requestConnectionCheck(true); return; }
+                    computerVerified = false;
+                    fail(revision, e.getMessage(), kind);
+                });
+            }
         });
     }
     private void openWeb() {
@@ -1128,7 +1196,7 @@ public final class MainActivity extends Activity {
                 });
             } catch (Exception e) {
                 if (candidate != null) candidate.close();
-                fail(revision, "无法打开 WeQ Web，请检查电脑上的 Web 服务");
+                failWebGateway(revision);
             }
         });
     }
@@ -1157,6 +1225,7 @@ public final class MainActivity extends Activity {
                     @Override public void onPageStarted(android.webkit.WebView view, String url, android.graphics.Bitmap icon) {
                         if (webView != page) return;
                         webStartupRevision++;
+                        webStartupProblem = null;
                         webDownload = null; webDevelopmentProgress = null;
                         if (!webLoaded) { webLoadingStage = WebDownloadProgress.LOADING_MESSAGE; render(); }
                         main.removeCallbacks(webStartupTimeout);
@@ -1171,12 +1240,12 @@ public final class MainActivity extends Activity {
                         if (webFeatures != null) webFeatures.pageReady();
                     }
                     @Override public void onReceivedError(android.webkit.WebView view, android.webkit.WebResourceRequest request, android.webkit.WebResourceError error) {
-                        if (webView == page && request.isForMainFrame() && !webLoaded) failWebLoad("无法加载 WeQ 页面，请检查电脑与网络后重试。");
+                        if (webView == page && request.isForMainFrame() && !webLoaded) failWebLoad(FailureKind.WEB_LOAD, webRecovery());
                         else if (webView == page && allowed(request.getUrl()) && !webLoaded) recordWebResourceFailure(page, request.getUrl().getPath(), 0);
                     }
                     @Override public void onReceivedHttpError(android.webkit.WebView view, android.webkit.WebResourceRequest request, android.webkit.WebResourceResponse response) {
                         if (webView == page && request.isForMainFrame() && !webLoaded && response.getStatusCode() >= 400)
-                            failWebLoad("无法加载 WeQ 页面，请检查电脑与网络后重试。");
+                            failWebLoad(FailureKind.WEB_LOAD, webRecovery());
                         else if (webView == page && allowed(request.getUrl()) && !webLoaded && response.getStatusCode() >= 400)
                             recordWebResourceFailure(page, request.getUrl().getPath(), response.getStatusCode());
                     }
@@ -1213,7 +1282,15 @@ public final class MainActivity extends Activity {
             webLoadingStage = message.substring(0, Math.min(message.length(), 100));
             renderSetupProgress();
         } else if ("ready".equals(state) || "action-required".equals(state)) showWebPage();
-        else if ("error".equals(state)) failWebLoad(message == null || message.isEmpty() ? "WeQ 页面启动失败，请重试。" : message.substring(0, Math.min(message.length(), 500)));
+        else if ("error".equals(state)) {
+            // 旧网页用文案区分资源与渲染异常；有具体诊断的其他消息仍原样显示。
+            if ("WeQ 界面资源加载失败，自动重试一次后仍未成功，请检查电脑与网络后重试。".equals(message)) {
+                failWebLoad(FailureKind.WEB_LOAD, "网页资源自动重试后仍未加载完成。");
+            } else {
+                boolean hasDetail = message != null && !message.isEmpty() && !"WeQ 界面启动异常，请重新连接。".equals(message);
+                failWebLoad(FailureKind.WEB_STARTUP, hasDetail ? message.substring(0, Math.min(message.length(), 500)) : webRecovery());
+            }
+        }
     }
     void receiveWebDownload(android.webkit.WebView page, WebDownloadProgress value) {
         if (webView != page || webLoaded) return;
@@ -1238,7 +1315,7 @@ public final class MainActivity extends Activity {
         // 新电脑网页负责一次资源重试及最终错误；旧网页仍沿用原生失败提示。
         page.evaluateJavascript("window.weqRemoteStartupRecovery === true", managed -> {
             if (webView != page || webLoaded || webStartupRevision != revision) return;
-            if (!"true".equals(managed)) failWebLoad(problem);
+            if (!"true".equals(managed)) failWebLoad(FailureKind.WEB_LOAD, problem);
         });
     }
     private void showWebPage() {
@@ -1259,14 +1336,37 @@ public final class MainActivity extends Activity {
         }
         render();
     }
-    private void failWebLoad(String message) {
-        final android.webkit.WebView failedPage = webView;
+    private String webRecovery() {
+        return computerVerified ? "本次已连到电脑，无需重新扫码。" : "可使用已保存的配对重试，无需重新扫码。";
+    }
+
+    private void failWebGateway(int revision) {
         main.post(() -> {
-            if (webView == null || webView != failedPage || webLoaded) return;
-            busy = false; paired = false; restoring = false; webLoaded = false;
-            closeWeb();
-            error.setText(message); render();
+            if (revision != generation || hasWebFailure()) return;
+            if (webLoaded) { fail(revision, "无法准备网页连接。"); return; }
+            computerVerified = true;
+            finishWebFailure(FailureKind.WEB_LOAD, webRecovery());
         });
+    }
+
+    private void failWebLoad(FailureKind kind, String detail) {
+        final android.webkit.WebView failedPage = webView;
+        final int revision = webStartupRevision;
+        main.post(() -> {
+            if (webView == null || webView != failedPage || webLoaded || webStartupRevision != revision) return;
+            finishWebFailure(kind, detail);
+        });
+    }
+
+    private void finishWebFailure(FailureKind kind, String detail) {
+        reconnectPaused = true;
+        enabled = false;
+        main.removeCallbacks(reconnectPoll);
+        main.removeCallbacks(networkPoll);
+        busy = false; paired = false; restoring = false; webLoaded = false;
+        failure = new HomeFailure(kind, detail);
+        closeWeb();
+        render();
     }
     private int webBackgroundColor() {
         boolean dark = (getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES;
@@ -1318,14 +1418,20 @@ public final class MainActivity extends Activity {
     }
     private JSONObject response(String raw) throws Exception {
         JSONObject envelope = new JSONObject(raw); int status = envelope.getInt("status");
-        if (status == 401) throw new Exception("设备未授权或授权已被撤销，请重新配对");
-        if (status < 200 || status >= 300) throw new Exception("电脑返回 HTTP " + status + "，请检查邀请是否有效");
+        if (status == 401) throw new Exception(AUTHORIZATION_REJECTED);
+        if (status < 200 || status >= 300) throw new Exception("电脑返回 HTTP " + status + "。");
         return new JSONObject(envelope.getString("body"));
     }
-    private void fail(int revision, String message) { main.post(() -> {
+    private void fail(int revision, String message) { fail(revision, message, FailureKind.VERIFICATION); }
+
+    private void fail(int revision, String message, FailureKind kind) { main.post(() -> {
         if (revision != generation) return;
-        boolean revoked = "设备未授权或授权已被撤销，请重新配对".equals(message);
-        if (!revoked && webGateway != null) {
+        boolean rejected = AUTHORIZATION_REJECTED.equals(message);
+        boolean updateFailed = updatingConnection;
+        boolean wasPaired = rememberedComputer || (paired && claimID == null);
+        boolean revoked = rejected && wasPaired && !updateFailed;
+        if (!revoked && hasWebFailure()) return;
+        if (!rejected && webGateway != null) {
             busy = false;
             if (restoring && !paired && node != null) {
                 Client previous = node;
@@ -1337,9 +1443,11 @@ public final class MainActivity extends Activity {
             if (visible) main.postDelayed(reconnectPoll, webLoaded ? health.checkInterval() : 5000);
             return;
         }
-        if (revoked && !updatingConnection) { closeWeb(); ConnectionStore.delete(this); rememberedComputer = false; Androidnet.clearWebCache(); }
-        boolean updateFailed = updatingConnection;
-        stopNetwork(true); error.setText(message == null ? "连接失败，请重试" : message); render();
+        if (revoked) { closeWeb(); ConnectionStore.delete(this); rememberedComputer = false; Androidnet.clearWebCache(); }
+        stopNetwork(true);
+        if (revoked) showFailure(FailureKind.AUTHORIZATION, AUTHORIZATION_REJECTED);
+        else if (rejected && updateFailed) showFailure(FailureKind.VERIFICATION, "新入口未接受现有授权，原连接已保留。");
+        else showFailure(wasPaired ? kind : FailureKind.PAIRING, rejected ? "电脑未接受本次配对，请生成新的配对码。" : message == null ? "请重试。" : message);
         if (updateFailed) { reconnectPaused = true; return; }
         if (!BuildConfig.TESTING && visible) main.postDelayed(reconnectPoll, 5000);
     }); }

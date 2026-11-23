@@ -3,6 +3,29 @@ import Foundation
 import UIKit
 import Network
 
+struct RemoteHomeFailure {
+    enum Kind {
+        case pairing, connection, verification, authorization, webLoad, webStartup, webTimeout
+
+        var title: String {
+            switch self {
+            case .pairing: "配对未完成"
+            case .connection: "暂时连不上电脑"
+            case .verification: "无法验证电脑连接"
+            case .authorization: "电脑未授权这台手机"
+            case .webLoad: "WeQ 页面加载失败"
+            case .webStartup: "WeQ 界面启动失败"
+            case .webTimeout: "WeQ 页面加载超时"
+            }
+        }
+
+        var retriesWeb: Bool { self == .webLoad || self == .webStartup || self == .webTimeout }
+    }
+
+    let kind: Kind
+    let detail: String
+}
+
 @MainActor
 final class RemoteModel: ObservableObject {
     @Published var invitationText = ""
@@ -14,7 +37,8 @@ final class RemoteModel: ObservableObject {
     @Published private(set) var message = "未配对"
     @Published private(set) var latency: Int?
     @Published private(set) var checkedAt: Date?
-    @Published private(set) var error: String?
+    @Published private(set) var failure: RemoteHomeFailure?
+    var error: String? { failure?.detail }
     @Published private(set) var webSession: RemoteWebSession?
     @Published private(set) var webReady = false
     @Published private(set) var webLoadingStage = WebDownloadProgress.loadingMessage
@@ -231,7 +255,11 @@ final class RemoteModel: ObservableObject {
         // 已配对的网页与节点留在内存；前台恢复只验证，不重建页面。
         guard webSession == nil else { return }
         let wasPaused = reconnectPaused
+        let previousFailure = failure
         disconnect()
+        if let previousFailure, previousFailure.kind.retriesWeb || previousFailure.kind == .authorization {
+            failure = previousFailure
+        }
         if !wasPaused { resumeReconnect() }
     }
 
@@ -247,8 +275,10 @@ final class RemoteModel: ObservableObject {
         }
     }
 
-    func reconnect() async {
+    func reconnect(manually: Bool = false) async {
         guard !reconnectPaused, !busy, polling == nil else { return }
+        guard manually || failure?.kind.retriesWeb != true else { return }
+        if !webReady { failure = nil; checkedAt = nil }
         if api != nil { await refresh(); return }
         let generation = revision
         busy = true
@@ -279,7 +309,10 @@ final class RemoteModel: ObservableObject {
         } catch {
             if generation == revision, !Task.isCancelled {
                 if case RemoteError.unauthorized = error { fail(error) }
-                else { api?.session.invalidateAndCancel(); api = nil; self.error = error.localizedDescription }
+                else {
+                    api?.session.invalidateAndCancel(); api = nil
+                    if failure?.kind.retriesWeb != true { showConnectionFailure(error) }
+                }
             }
         }
     }
@@ -374,7 +407,7 @@ final class RemoteModel: ObservableObject {
             self.publishConnectionHealth()
             self.webDownload = nil
             self.webDevelopmentProgress = nil
-            self.error = nil
+            self.failure = nil
         }
         session.onFailure = { [weak self, weak session] error in
             guard let self, self.webSession === session else { return }
@@ -393,13 +426,32 @@ final class RemoteModel: ObservableObject {
             guard let self, self.webSession === session, !self.webReady else { return }
             self.webDownload = nil
             self.webDevelopmentProgress = nil
-            self.error = nil
+            self.failure = nil
         }
         session.onMenu = { [weak self] in self?.showingDetails = true }
         webSession = session
     }
 
     private func failWebLoad(_ error: Error) {
+        let recovery = checkedAt != nil
+            ? "本次已连到电脑，无需重新扫码。"
+            : "可使用已保存的配对重试，无需重新扫码。"
+        switch error as? RemoteWebStartupError {
+        case .reported(let detail)?:
+            // 旧网页用文案区分资源与渲染异常；有具体诊断的其他消息仍原样显示。
+            switch detail {
+            case "WeQ 界面资源加载失败，自动重试一次后仍未成功，请检查电脑与网络后重试。":
+                failure = .init(kind: .webLoad, detail: "网页资源自动重试后仍未加载完成。")
+            case "WeQ 界面启动异常，请重新连接。", nil:
+                failure = .init(kind: .webStartup, detail: recovery)
+            default:
+                failure = .init(kind: .webStartup, detail: detail ?? recovery)
+            }
+        case .timeout?:
+            failure = .init(kind: .webTimeout, detail: "最后进度：\(webLoadingStage)。\(recovery)")
+        default:
+            failure = .init(kind: .webLoad, detail: recovery)
+        }
         webDownload = nil
         webDevelopmentProgress = nil
         webSession?.close()
@@ -407,8 +459,7 @@ final class RemoteModel: ObservableObject {
         webSession = nil
         webReady = false
         connected = false
-        message = "网页加载失败"
-        self.error = (error as NSError).domain == "WeQRemoteStartup" ? error.localizedDescription : "无法加载 WeQ 页面，请检查电脑与网络后重试。"
+        message = failure?.kind.title ?? "网页加载失败"
     }
 
     func forget() {
@@ -456,7 +507,7 @@ final class RemoteModel: ObservableObject {
         }
         preparePairing()
         guard !busy, polling == nil else { return }
-        error = nil
+        failure = nil
         busy = true
         let generation = revision
         defer { if generation == revision { busy = false } }
@@ -505,7 +556,7 @@ final class RemoteModel: ObservableObject {
             message = "等待电脑确认"
             polling = Task { [weak self] in await self?.waitForApproval(claim, generation: generation) }
         } catch is CancellationError {} catch {
-            if generation == revision { self.error = error.localizedDescription }
+            if generation == revision { failure = .init(kind: .pairing, detail: error.localizedDescription) }
         }
     }
 
@@ -543,7 +594,11 @@ final class RemoteModel: ObservableObject {
             reconnectPaused = false
             await refresh(verified: selection)
         } catch is CancellationError {} catch {
-            if generation == revision { self.error = error.localizedDescription }
+            if generation == revision {
+                if case RemoteError.unauthorized = error {
+                    failure = .init(kind: .verification, detail: "新入口未接受现有授权，原连接已保留。")
+                } else { showConnectionFailure(error) }
+            }
         }
     }
 
@@ -574,7 +629,7 @@ final class RemoteModel: ObservableObject {
         } catch is CancellationError {} catch {
             if generation == revision {
                 disconnect()
-                self.error = error.localizedDescription
+                failure = .init(kind: .pairing, detail: error.localizedDescription)
             }
         }
     }
@@ -582,6 +637,23 @@ final class RemoteModel: ObservableObject {
     func refresh() async {
         guard !busy else { return }
         await refresh(verified: nil)
+    }
+
+    private func prepareWeb(api: RemoteAPI, token: String, pin: String?, generation: Int) async throws {
+        guard !testMode, failure?.kind.retriesWeb != true else { return }
+        do {
+            if webSession != nil {
+                try await network.attachWeb(endpoint: api.endpoint, token: token, fingerprint: pin)
+            } else if let session = try await network.webSession(token: token, endpoint: api.endpoint, fingerprint: pin) {
+                guard generation == revision, !Task.isCancelled else {
+                    session.close()
+                    network.closeWeb()
+                    throw CancellationError()
+                }
+                adoptWebSession(session)
+            }
+        } catch is CancellationError { throw CancellationError() }
+        catch { throw RemoteWebStartupError.load(error) }
     }
 
     // verified 为选路阶段已完成的鉴权状态读取；同一条入口直接沿用，避免连接时重复核验。
@@ -603,44 +675,34 @@ final class RemoteModel: ObservableObject {
                 requestMillis = elapsedMillis(ContinuousClock.now - start)
             }
             guard generation == revision, !Task.isCancelled else { return }
-            if !testMode {
-                if webSession != nil {
-                    try await network.attachWeb(endpoint: api.endpoint, token: credential.token, fingerprint: fingerprint)
-                } else if let session = try await network.webSession(token: credential.token, endpoint: api.endpoint, fingerprint: fingerprint) {
-                    guard generation == revision else { session.close(); network.closeWeb(); return }
-                    adoptWebSession(session)
-                }
-            }
-            latency = requestMillis
             checkedAt = Date()
+            try await prepareWeb(api: api, token: credential.token, pin: fingerprint, generation: generation)
+            guard generation == revision, failure?.kind.retriesWeb != true else { return }
+            latency = requestMillis
             health.succeeded(at: Date(), latency: requestMillis)
             scheduleConnectionWarning()
             connected = true
             code = nil
             message = "电脑在线"
-            error = nil
+            failure = nil
         } catch is CancellationError {} catch {
             if generation == revision, !Task.isCancelled {
                 connectionFailed()
-                if let endpoints, remoteRouteCanRetry(error) {
+                let routeError = (error as? RemoteWebStartupError)?.loadCause ?? error
+                if let endpoints, remoteRouteCanRetry(routeError) {
                     do {
                         let replacement = try await selectConnection(endpoints, pin: routeFingerprint, probe: .status, token: credential.token)
                         var adopted = false
                         defer { if !adopted { replacement.api.session.invalidateAndCancel() } }
                         guard generation == revision else { replacement.api.session.invalidateAndCancel(); return }
                         let pin = replacement.api.endpoint.scheme == "https" ? routeFingerprint : nil
-                        if !testMode {
-                            if webSession != nil {
-                                try await network.attachWeb(endpoint: replacement.api.endpoint, token: credential.token, fingerprint: pin)
-                            } else if let web = try await network.webSession(token: credential.token, endpoint: replacement.api.endpoint, fingerprint: pin) {
-                                guard generation == revision else { web.close(); network.closeWeb(); return }
-                                adoptWebSession(web)
-                            }
-                        }
+                        checkedAt = Date()
+                        try await prepareWeb(api: replacement.api, token: credential.token, pin: pin, generation: generation)
+                        guard generation == revision, failure?.kind.retriesWeb != true else { return }
                         api.session.invalidateAndCancel(); self.api = replacement.api
                         adopted = true
                         fingerprint = pin; computerAddress = replacement.api.endpoint.host
-                        latency = replacement.latencyMillis; connected = true; message = "电脑在线"; self.error = nil; checkedAt = Date()
+                        latency = replacement.latencyMillis; connected = true; message = "电脑在线"; failure = nil
                         health.succeeded(at: Date(), latency: replacement.latencyMillis)
                         scheduleConnectionWarning()
                         return
@@ -697,23 +759,39 @@ final class RemoteModel: ObservableObject {
             scheduleConnectionWarning()
             connected = true
             message = "电脑在线"
-            error = nil
+            failure = nil
         } catch {
             guard generation == revision, epoch == healthEpoch, !Task.isCancelled else { return }
             if case RemoteError.unauthorized = error { fail(error); return }
             health.checkFailed()
             scheduleConnectionWarning()
             connected = false
-            self.error = error.localizedDescription
+            showConnectionFailure(error)
         }
     }
 
-    private func fail(_ failure: Error) {
+    private func showConnectionFailure(_ error: Error) {
+        if case RemoteError.http(let code) = error {
+            failure = .init(kind: .verification, detail: "电脑返回 HTTP \(code)。")
+        } else if remoteRouteCanRetry(error) {
+            failure = .init(kind: .connection, detail: "请确认电脑上的 WeQ 正在运行，且手机能访问电脑。")
+        } else {
+            failure = .init(kind: .verification, detail: error.localizedDescription)
+        }
+    }
+
+    private func fail(_ error: Error) {
         connectionFailed()
         connected = false
-        message = "连接未通过"
-        error = failure.localizedDescription
-        if case RemoteError.unauthorized = failure { forget(); error = failure.localizedDescription }
+        if case RemoteError.unauthorized = error {
+            forget()
+            failure = .init(kind: .authorization, detail: error.localizedDescription)
+        } else if error is RemoteWebStartupError {
+            failWebLoad(error)
+        } else if failure?.kind.retriesWeb != true {
+            showConnectionFailure(error)
+        }
+        message = failure?.kind.title ?? "连接失败"
     }
 
     func disconnect() {
@@ -752,7 +830,7 @@ final class RemoteModel: ObservableObject {
         checkedAt = nil
         computerAddress = nil
         message = "未配对"
-        error = nil
+        failure = nil
         invitationText = ""
     }
 }

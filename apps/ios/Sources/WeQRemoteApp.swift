@@ -62,6 +62,7 @@ struct RemoteView: View {
 
     // 网页加载出来之前留在连接页，用原生进度替代空白的全屏网页。
     private var loadingStage: String? {
+        if model.failure?.kind.retriesWeb == true { return nil }
         if model.webSession != nil, !model.webReady { return model.webLoadingStage }
         if model.code != nil { return "等待电脑确认" }
         if model.busy { return model.paired ? "正在验证电脑授权" : "正在连接电脑" }
@@ -98,7 +99,9 @@ struct RemoteView: View {
                 Section("连接详情") {
                     Text(model.connectionDetails).font(.subheadline).textSelection(.enabled)
                     if model.paired {
-                        Button("立即检查") { Task { await model.reconnect() } }.disabled(model.busy)
+                        Button(model.failure?.kind.retriesWeb == true ? "重试打开" : "立即检查") {
+                            Task { await model.reconnect(manually: true) }
+                        }.disabled(model.busy)
                     }
                     if let session = model.webSession, model.webReady {
                         Button("重新加载") { model.showingDetails = false; session.reload() }
@@ -205,18 +208,18 @@ struct RemoteView: View {
 
     private var statusText: String {
         if model.code != nil { return "等待批准" }
-        if model.busy || loadingStage != nil { return model.paired ? "正在进入" : "连接中" }
-        if model.paired { return "已连接" }
-        return "未连接"
+        if model.rememberedComputer || model.paired { return "已配对" }
+        if loadingStage != nil { return "连接中" }
+        return "未配对"
     }
 
     private var statusTint: Color {
-        (model.code != nil || model.busy || loadingStage != nil || model.paired) ? accent : Color(uiColor: .tertiaryLabel)
+        (statusText == "连接中" || model.code != nil) ? accent : Color(uiColor: .tertiaryLabel)
     }
 
     private var heroTitle: String {
         if let stage = loadingStage { return stage }
-        if model.error != nil { return "连接未通过" }
+        if let failure = model.failure { return failure.kind.title }
         if model.rememberedComputer { return "我的电脑" }
         return "连接电脑"
     }
@@ -229,7 +232,7 @@ struct RemoteView: View {
             return model.computerAddress ?? "页面准备好后自动进入"
         }
         if model.busy { return model.computerAddress ?? "正在准备与电脑的连接" }
-        if model.error != nil { return model.rememberedComputer ? (model.computerAddress ?? "电脑暂时不可用") : "请确认电脑在线后重试" }
+        if model.error != nil { return model.computerAddress ?? "" }
         if model.rememberedComputer { return model.computerAddress ?? "打开后会自动连接上次的电脑" }
         return "在电脑上的 WeQ 生成配对码，扫码或粘贴链接即可连接"
     }
@@ -360,10 +363,11 @@ struct RemoteView: View {
     }
 
     private var scanButton: some View {
-        Button { Task { await scan() } } label: {
+        let needsAuthorization = model.failure?.kind == .authorization
+        return Button { Task { await scan() } } label: {
             HStack(spacing: 12) {
                 Image(systemName: "qrcode.viewfinder").font(.system(size: 21, weight: .medium))
-                Text("扫码连接").font(.headline)
+                Text(needsAuthorization ? "重新配对" : "扫码连接").font(.headline)
             }
             .foregroundStyle(actionInk)
             .padding(.horizontal, 20)
@@ -373,7 +377,7 @@ struct RemoteView: View {
             .contentShape(RoundedRectangle(cornerRadius: 16))
         }
         .buttonStyle(PressableButtonStyle(reduceMotion: reduceMotion))
-        .accessibilityLabel("扫码")
+        .accessibilityLabel(needsAuthorization ? "重新配对" : "扫码")
         .disabled(model.busy)
         .opacity(model.busy ? 0.55 : 1)
     }
@@ -422,18 +426,19 @@ struct RemoteView: View {
                 .accessibilityIdentifier("updateConnection")
             }
             Button {
-                if model.isConnecting { stopConnection() }
-                else { model.resumeReconnect(); pairingTask = Task { await model.reconnect() } }
+                if model.isConnecting && model.failure?.kind.retriesWeb != true { stopConnection() }
+                else { model.resumeReconnect(); pairingTask = Task { await model.reconnect(manually: true) } }
             } label: {
                 HStack(spacing: 8) {
-                    Image(systemName: model.isConnecting ? "stop.fill" : "arrow.right").font(.system(size: 15, weight: .semibold))
-                    Text(model.isConnecting ? "停止" : "连接").font(.headline)
+                    Image(systemName: reconnectIcon).font(.system(size: 15, weight: .semibold))
+                    Text(reconnectTitle).font(.headline)
                 }
                 .foregroundStyle(accent)
                 .frame(maxWidth: .infinity, minHeight: 52)
                 .background(accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 14))
             }
             .buttonStyle(PressableButtonStyle(reduceMotion: reduceMotion))
+            .disabled(model.busy && model.failure?.kind.retriesWeb == true)
             .accessibilityIdentifier("connectComputer")
             Button(role: .destructive) { confirmingDelete = true } label: {
                 Image(systemName: "trash").font(.system(size: 16, weight: .medium))
@@ -444,6 +449,17 @@ struct RemoteView: View {
             }
             .accessibilityLabel("删除电脑")
         }
+    }
+
+    private var reconnectTitle: String {
+        if model.failure?.kind.retriesWeb == true { return "重试打开" }
+        if model.isConnecting { return "停止" }
+        return model.failure == nil ? "连接" : "重新连接"
+    }
+
+    private var reconnectIcon: String {
+        if model.failure?.kind.retriesWeb == true { return "arrow.clockwise" }
+        return model.isConnecting ? "stop.fill" : "arrow.right"
     }
 
     private func pair() { pairingTask = Task { await model.pair() } }
