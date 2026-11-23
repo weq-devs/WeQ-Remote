@@ -7,7 +7,6 @@ import java.net.HttpURLConnection;
 import java.net.URI;
 import java.net.URLDecoder;
 import java.util.Arrays;
-import java.util.Base64;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
@@ -53,7 +52,14 @@ final class QqImageRequest {
         return null;
     }
 
-    static String[] fetch(URI url, BooleanSupplier canceled) throws IOException {
+    static final class Image {
+        final String type;
+        final byte[] bytes;
+
+        Image(String type, byte[] bytes) { this.type = type; this.bytes = bytes; }
+    }
+
+    static Image fetch(URI url, BooleanSupplier canceled) throws IOException {
         HttpURLConnection request = (HttpURLConnection) url.toURL().openConnection();
         request.setInstanceFollowRedirects(false);
         request.setConnectTimeout(2500);
@@ -73,7 +79,7 @@ final class QqImageRequest {
                         image.size() > LIMIT - count) return null;
                     image.write(buffer, 0, count);
                 }
-                return image.size() == 0 ? null : new String[]{type, Base64.getEncoder().encodeToString(image.toByteArray())};
+                return image.size() == 0 ? null : new Image(type, image.toByteArray());
             }
         } finally { request.disconnect(); }
     }

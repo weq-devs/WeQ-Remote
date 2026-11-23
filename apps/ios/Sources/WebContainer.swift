@@ -1,4 +1,5 @@
 import SwiftUI
+import TailscaleKit
 import WebKit
 
 final class RemoteWebView: WKWebView {
@@ -83,27 +84,42 @@ private final class RemoteQqImageHandler: NSObject, WKScriptMessageHandlerWithRe
     weak var owner: RemoteWebSession?
     private var active = 0
     private let images = RemoteQqImageDownload()
+    private let gateway: Int32
+
+    init(gateway: Int32) { self.gateway = gateway }
 
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage,
                                replyHandler: @escaping (Any?, String?) -> Void) {
+        let binary = message.body as? [String: String]
+        let id = binary?["id"]
+        let raw = binary?["url"] ?? message.body as? String
         guard message.frameInfo.isMainFrame, let owner, message.webView === owner.view,
               let source = message.frameInfo.request.url, RemoteWebPolicy.sameOrigin(source, endpoint: owner.endpoint),
-              let raw = message.body as? String, let url = RemoteWebPolicy.qqImage(raw), active < 4 else {
+              let raw, let url = RemoteWebPolicy.qqImage(raw), active < 4,
+              binary == nil || (gateway != 0 && id?.range(of: "^[0-9a-f]{32}$", options: .regularExpression) != nil) else {
             replyHandler(nil, "Image unavailable"); return
         }
         active += 1
         Task {
             defer { active -= 1 }
             do {
-                replyHandler(try await Self.legacyReply(images, url: url), nil)
+                replyHandler(try await Self.loadReply(images, url: url, id: id, gateway: gateway), nil)
             } catch {
                 replyHandler(nil, "Image unavailable")
             }
         }
     }
 
-    private nonisolated static func legacyReply(_ images: RemoteQqImageDownload, url: URL) async throws -> [String: String] {
+    private nonisolated static func loadReply(_ images: RemoteQqImageDownload, url: URL, id: String?, gateway: Int32) async throws -> [String: String] {
         let image = try await images.load(url)
+        if let id {
+            let stored = image.bytes.withUnsafeBytes { bytes in
+                WeQStoreGatewayImage(gateway, id, image.type,
+                                     bytes.bindMemory(to: UInt8.self).baseAddress, Int32(bytes.count))
+            }
+            guard stored == 1 else { throw URLError(.resourceUnavailable) }
+            return ["path": "/_weq-remote-local/image/" + id]
+        }
         return ["type": image.type, "base64": image.bytes.base64EncodedString()]
     }
 
@@ -234,7 +250,7 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
         view.evaluateJavaScript(cost.script, completionHandler: nil)
     }
 
-    init(configuration: WKWebViewConfiguration, endpoint: URL, fingerprint: String? = nil, networkCost: RemoteNetworkCost = .unknown, businessCache: RemoteBusinessCache? = nil) {
+    init(configuration: WKWebViewConfiguration, endpoint: URL, fingerprint: String? = nil, networkCost: RemoteNetworkCost = .unknown, businessCache: RemoteBusinessCache? = nil, imageGateway: Int32 = 0) {
         self.endpoint = endpoint
         self.fingerprint = fingerprint
         // 网页背景已有 playsinline；iPhone 还需在创建 WebView 前允许页内播放。
@@ -259,12 +275,13 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
             cache.owner = self
             configuration.userContentController.addScriptMessageHandler(cache, contentWorld: .page, name: "weqBusinessCache")
         }
-        let images = RemoteQqImageHandler()
+        let images = RemoteQqImageHandler(gateway: imageGateway)
         images.owner = self
         qqImages = images
         configuration.userContentController.addScriptMessageHandler(images, contentWorld: .page, name: "weqQqImage")
         configuration.userContentController.addUserScript(WKUserScript(
-            source: "window.weqRemoteDressImages=true;", injectionTime: .atDocumentStart, forMainFrameOnly: true))
+            source: "window.weqRemoteDressImages=true;window.weqRemoteBinaryImages=\(imageGateway != 0);",
+            injectionTime: .atDocumentStart, forMainFrameOnly: true))
         configuration.userContentController.addUserScript(WKUserScript(
             source: Self.externalLinksScript, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         let startup = RemoteStartupHandler()

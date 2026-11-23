@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"sync"
 	"time"
+	"unsafe"
 
 	"github.com/tailscale/libtailscale/webgateway"
 )
@@ -101,6 +102,19 @@ func WeQAttachGateway(id, node C.int, endpoint, fingerprint *C.char) C.int {
 	}
 	gateway.Attach(target, transport)
 	return 1
+}
+
+//export WeQStoreGatewayImage
+func WeQStoreGatewayImage(id C.int, key, media *C.char, data *C.uchar, count C.int) C.int {
+	gateway := weqGateway(id)
+	if gateway == nil || key == nil || media == nil || data == nil || count <= 0 || count > webgateway.MaxImageBytes {
+		return 0
+	}
+	body := unsafe.Slice((*byte)(unsafe.Pointer(data)), int(count))
+	if gateway.StoreImage(C.GoString(key), C.GoString(media), body) {
+		return 1
+	}
+	return 0
 }
 
 //export WeQCloseGateway

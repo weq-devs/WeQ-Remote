@@ -1151,7 +1151,7 @@ public final class MainActivity extends Activity {
                 settings.setAllowFileAccess(false); settings.setAllowContentAccess(false);
                 settings.setMixedContentMode(android.webkit.WebSettings.MIXED_CONTENT_NEVER_ALLOW);
                 cookies.setAcceptThirdPartyCookies(webView, false);
-                webFeatures = new WebFeatures(this, webView, origin);
+                webFeatures = new WebFeatures(this, webView, origin, webGateway);
                 webView.setWebViewClient(new android.webkit.WebViewClient() {
                     private boolean allowed(Uri url) { return "http".equals(url.getScheme()) && "127.0.0.1".equals(url.getHost()) && url.getPort() == Uri.parse(origin).getPort(); }
                     @Override public void onPageStarted(android.webkit.WebView view, String url, android.graphics.Bitmap icon) {

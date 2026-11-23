@@ -38,6 +38,7 @@
 ## 网页与手机壳的本地接口
 
 - 新版手机壳按需提供 QQ 图片桥：iOS 使用 `webkit.messageHandlers.weqQqImage.postMessage(url)` 的回复；Android 使用 `weqRemoteLinks.loadQqImage(id, url)` 和 `weq-remote-qq-image` 事件，事件详情为 `{id,image}`。成功图片为 `{type,base64}`，失败走原电脑路径。只接收当前连接网页发来的指定 HTTPS 头像和聊天缩略图请求，最多并行四张、单张最多 2 MiB，不跟随重定向或转发 WebView 凭据。图片走手机系统网络，电脑网页和 WebSocket 仍经原连接。设置独立于普通浏览器和桌面，默认关闭；旧壳不提供该桥，不影响配对和聊天。
+- 支持二进制交付的手机壳额外提供 iOS `window.weqRemoteBinaryImages === true` 或 Android `weqRemoteLinks.supportsBinaryImages()`。iOS 的图片桥接收 `{id,url}`，Android 用 `loadQqImageBinary(id,url)`；成功回复 `{path}`。网页从当前已认证的环回来源一次性 GET `/_weq-remote-local/image/<id>`，直接读图片原始字节。ID 为 32 位小写十六进制，环回只交付已经由手机验证并下载完成的图片。暂存和正在交付合计最多四张，未读取的图片 5 秒后清除，连接关闭时清除暂存。旧网页与旧手机壳仍可使用 Base64 回复。
 - 支持公开装扮图的手机壳额外提供 iOS `window.weqRemoteDressImages === true` 或 Android `weqRemoteLinks.supportsDressImages()`。复用同一图片桥，仅允许 `tianquan.gtimg.cn` 的 `card/item` 和 `faceAddon/item` 图片，不取默认款、带参数地址、视频或资源包。旧壳无此能力标记时，网页继续使用电脑路径，不改变头像和聊天缩略图的行为。
 
 - iOS 壳提供可选 `window.weqRemoteWindowLayout = {width,height,topLeft:{width,height},topRight:{width,height}}`，坐标为与全屏 WebView 对齐的容器点坐标；iPadOS 26 起取自公开 `GeometryProxy.containerCornerInsets`，按当前布局方向转换为物理左右，旧系统和全屏无角部占位时为零。角部也可能包含系统圆角，不把非零值当作某一种窗口模式。主文档开始时请求当前快照，几何变化后发送 `weq-remote-window-layout`；存在角部占位时，首屏准备好后再同步并等待两帧绘制才显示，无占位时不新增等待。网页根据布局视口换算、只调整相交操作区，普通安全区不重复累加。仅本地布局桥接，无新增网络请求、持久设置或版本协议要求；旧网页忽略该值，旧壳和 Android 不提供时维持原布局。

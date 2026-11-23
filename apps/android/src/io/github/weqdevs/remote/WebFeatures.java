@@ -21,6 +21,7 @@ import java.util.concurrent.Executors;
 
 /** 当前 WebView 的文件选择、媒体授权和下载；随页面销毁而取消。 */
 final class WebFeatures extends WebChromeClient {
+    private final androidnet.WebGateway imageGateway;
     static final int FILE = 21, SAVE = 22, MEDIA = 23;
     private final Activity activity;
     private final WebView view;
@@ -47,6 +48,11 @@ final class WebFeatures extends WebChromeClient {
     private int fullscreenVisibleBars;
 
     WebFeatures(Activity activity, WebView view, String origin) {
+        this(activity, view, origin, null);
+    }
+
+    WebFeatures(Activity activity, WebView view, String origin, androidnet.WebGateway imageGateway) {
+        this.imageGateway = imageGateway;
         this.activity = activity; this.view = view; this.origin = origin;
         String script = "";
         try (InputStream input = activity.getAssets().open("web-startup-progress.js"); java.io.ByteArrayOutputStream output = new java.io.ByteArrayOutputStream()) {
@@ -102,21 +108,43 @@ final class WebFeatures extends WebChromeClient {
     public final class ExternalLinks {
         @android.webkit.JavascriptInterface public boolean supportsDressImages() { return true; }
 
+        @android.webkit.JavascriptInterface public boolean supportsBinaryImages() { return imageGateway != null; }
+
         @android.webkit.JavascriptInterface public void loadQqImage(String id, String address) {
+            loadQqImage(id, address, false);
+        }
+
+        @android.webkit.JavascriptInterface public void loadQqImageBinary(String id, String address) {
+            if (id == null || !id.matches("[0-9a-f]{32}")) return;
+            loadQqImage(id, address, true);
+        }
+
+        private void loadQqImage(String id, String address, boolean binary) {
             if (closed || id == null || !id.matches("[a-zA-Z0-9-]{1,64}")) return;
             java.net.URI target = QqImageRequest.allowed(address);
             activity.runOnUiThread(() -> {
                 if (closed || !WebAccess.sameOrigin(origin, view.getUrl())) return;
-                if (target == null) { imageResult(id, null); return; }
+                if (target == null) { imageResult(id, "null"); return; }
                 try {
                     images.execute(() -> {
-                        String[] result = null;
-                        try { result = QqImageRequest.fetch(target, () -> closed || Thread.currentThread().isInterrupted()); }
-                        catch (java.io.IOException | RuntimeException ignored) { }
-                        String[] reply = result;
+                        String payload = "null";
+                        try {
+                            QqImageRequest.Image image = QqImageRequest.fetch(target,
+                                () -> closed || Thread.currentThread().isInterrupted());
+                            if (image != null && !closed) {
+                                if (binary) {
+                                    if (imageGateway != null && imageGateway.storeImage(id, image.type, image.bytes))
+                                        payload = "{path:" + org.json.JSONObject.quote("/_weq-remote-local/image/" + id) + "}";
+                                } else {
+                                    payload = "{type:" + org.json.JSONObject.quote(image.type) + ",base64:" +
+                                        org.json.JSONObject.quote(java.util.Base64.getEncoder().encodeToString(image.bytes)) + "}";
+                                }
+                            }
+                        } catch (java.io.IOException | RuntimeException ignored) { }
+                        String reply = payload;
                         activity.runOnUiThread(() -> imageResult(id, reply));
                     });
-                } catch (java.util.concurrent.RejectedExecutionException ignored) { imageResult(id, null); }
+                } catch (java.util.concurrent.RejectedExecutionException ignored) { imageResult(id, "null"); }
             });
         }
         @android.webkit.JavascriptInterface public void networkPreference(String mode) {
@@ -235,10 +263,8 @@ final class WebFeatures extends WebChromeClient {
         }
     }
 
-    private void imageResult(String id, String[] image) {
+    private void imageResult(String id, String payload) {
         if (closed || !WebAccess.sameOrigin(origin, view.getUrl())) return;
-        String payload = image == null ? "null" : "{type:" + org.json.JSONObject.quote(image[0]) +
-            ",base64:" + org.json.JSONObject.quote(image[1]) + "}";
         view.evaluateJavascript("window.dispatchEvent(new CustomEvent('weq-remote-qq-image',{detail:{id:" +
             org.json.JSONObject.quote(id) + ",image:" + payload + "}}))", null);
     }

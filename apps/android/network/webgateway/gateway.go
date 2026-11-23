@@ -22,6 +22,8 @@ type Gateway struct {
 	token            string
 	mu               sync.Mutex
 	connections      map[net.Conn]struct{}
+	images           map[string]*localImage
+	imageReads       int
 	closed           bool
 	base             *http.Transport
 	proxy            *httputil.ReverseProxy
@@ -75,6 +77,10 @@ func (g *Gateway) Origin() string { return g.origin }
 func (g *Gateway) Close() {
 	g.mu.Lock()
 	g.closed = true
+	for _, image := range g.images {
+		image.timer.Stop()
+	}
+	g.images = nil
 	g.detachLocked()
 	for conn := range g.connections {
 		_ = conn.Close()
@@ -159,6 +165,10 @@ func (g *Gateway) serve(w http.ResponseWriter, r *http.Request) {
 	cookie, err := r.Cookie("weq_remote_local")
 	if r.Host != g.listener.Addr().String() || err != nil || subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(g.secret)) != 1 || (r.Header.Get("Origin") != "" && r.Header.Get("Origin") != g.origin) {
 		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	if id, found := strings.CutPrefix(r.URL.Path, imagePath); found {
+		g.serveImage(w, r, id)
 		return
 	}
 	g.mu.Lock()

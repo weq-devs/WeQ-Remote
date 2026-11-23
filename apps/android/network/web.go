@@ -29,6 +29,10 @@ func (g *WebGateway) Origin() string   { return g.gateway.Origin() }
 func (g *WebGateway) HasRelease() bool { return g.gateway.HasRelease() }
 func (g *WebGateway) Close()           { g.gateway.Close() }
 
+func (g *WebGateway) StoreImage(id, media string, body []byte) bool {
+	return g.gateway.StoreImage(id, media, body)
+}
+
 func (c *Client) AttachWeb(g *WebGateway, endpoint string) error {
 	if g == nil {
 		return errors.New("missing gateway")
