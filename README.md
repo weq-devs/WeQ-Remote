@@ -9,7 +9,7 @@ WeQ Remote 是 WeQ 的 iOS／Android 客户端。手机负责扫码、连接和�
 
 下载 [GitHub 最新正式版](https://github.com/weq-devs/WeQ-Remote/releases/latest)。当前开发内容见 [更新记录](CHANGELOG.md)。
 
-1. 在电脑的「设置 → WeQ 服务 → Web 与 Remote」开启「允许远程连接」，生成配对码。
+1. 在电脑的「设置 → 服务 → Web 与 Remote」开启「允许远程连接」，生成配对码。
 2. 手机扫码或粘贴配对链接，在电脑核对校验码并批准。后续可用已保存的授权连接。
 3. 跨网络连接可使用 WeQ 内嵌的 Tailscale。电脑侧的入网、配对与撤销步骤见 [Web 服务与手机连接](https://weq-devs.github.io/WeqDocs/guide/remote-web)。
 
