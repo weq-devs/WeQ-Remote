@@ -41,10 +41,10 @@ class ConnectionLayoutTests(unittest.TestCase):
 
     def test_android_content_can_outgrow_viewport(self):
         source = (ANDROID / 'MainActivity.java').read_text()
-        self.assertIn('scroll.setFillViewport(true)', source)
-        self.assertIn('scroll.addView(content, new android.widget.ScrollView.LayoutParams(-1, -2))', source)
-        self.assertIn('content.addView(hero, new LinearLayout.LayoutParams(-1, -2, 1f))', source)
-        self.assertIn('input.addView(pairButton, new LinearLayout.LayoutParams(dp(48), dp(48)))', source)
+        home = source.split('private void buildUI()', 1)[1].split('private TextView text(', 1)[0]
+        self.assertIn('column.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1f))', home)
+        self.assertIn('scroll.addView(heroColumn, new android.widget.ScrollView.LayoutParams(-1, -2))', home)
+        self.assertIn('input.addView(pairButton, new LinearLayout.LayoutParams(dp(48), dp(48)))', home)
 
     def test_ios_scroll_type_and_hit_target(self):
         source = (ROOT / 'apps/ios/Sources/WeQRemoteApp.swift').read_text()
@@ -65,7 +65,7 @@ class ConnectionLayoutTests(unittest.TestCase):
         self.assertLess(row.index('qrcode.viewfinder'), row.index('Text(reconnectTitle)'))
         self.assertLess(row.index('Text(reconnectTitle)'), row.index('"trash"'))
         self.assertIn('stopConnection()', row)
-        self.assertIn('model.reconnect(manually: true)', row)
+        self.assertIn('model.connectFromHome()', row)
         model = (ROOT / 'apps/ios/Sources/RemoteModel.swift').read_text()
         update = model.split('private func updateConnection()', 1)[1].split('private func waitForApproval', 1)[0]
         self.assertIn('probe: .status, token: saved.token', update)
