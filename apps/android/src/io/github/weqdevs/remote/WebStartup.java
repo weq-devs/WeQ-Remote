@@ -4,6 +4,10 @@ import java.util.Locale;
 
 /** 初始化失败只展示固定诊断，不把控制台中的凭据或业务原文带到连接首页。 */
 final class WebStartup {
+    static String onlinePath(Object accountEntry) {
+        return Boolean.TRUE.equals(accountEntry) ? "/_weq/connect" : "/";
+    }
+
     static boolean shouldOpenWeb(boolean restoring, boolean hasPage, boolean hasProxy) {
         return restoring || hasPage && !hasProxy;
     }

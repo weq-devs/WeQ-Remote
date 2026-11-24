@@ -213,7 +213,7 @@ final class EmbeddedNetwork: ObservableObject {
         webRouteRevision = revision
     }
 
-    func webSession(token: String, endpoint: URL? = nil, fingerprint: String? = nil, release: String = "", themeAccent: String = "") async throws -> RemoteWebSession? {
+    func webSession(token: String, endpoint: URL? = nil, fingerprint: String? = nil, release: String = "", accountEntry: Bool = false, themeAccent: String = "") async throws -> RemoteWebSession? {
         let generation = revision
         let localSecret = try DeviceCredential().token
         let handle = try localGateway(token: token, localSecret: localSecret)
@@ -241,10 +241,11 @@ final class EmbeddedNetwork: ObservableObject {
         webRoute = endpoint
         webRouteRevision = revision
         adopted = true
-        let session = RemoteWebSession(configuration: configuration, endpoint: origin,
+        let startupURL = endpoint != nil && accountEntry ? origin.appending(path: "_weq/connect") : origin
+        let session = RemoteWebSession(configuration: configuration, endpoint: origin, startupURL: startupURL,
             networkCost: networkCost, businessCache: webDataStore.businessCache(token: token), imageGateway: handle,
             localCache: RemoteLocalCache(origin: origin, cookie: cookie), themeAccent: themeAccent)
-        session.view.load(URLRequest(url: origin))
+        session.view.load(URLRequest(url: startupURL))
         return session
     }
 

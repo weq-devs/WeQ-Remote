@@ -2,6 +2,10 @@ package io.github.weqdevs.remote;
 
 public final class WebStartupTest {
     public static void main(String[] args) {
+        check(WebStartup.onlinePath(Boolean.TRUE).equals("/_weq/connect"));
+        check(WebStartup.onlinePath(null).equals("/"));
+        check(WebStartup.onlinePath(Boolean.FALSE).equals("/"));
+        check(WebStartup.onlinePath("true").equals("/"));
         check(WebStartup.shouldOpenWeb(true, false, false));
         check(WebStartup.shouldOpenWeb(false, true, false));
         // 页面是否就绪与代理是否存在是两件事；初始化中返回前台仍应保留原页。

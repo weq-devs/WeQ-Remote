@@ -1298,7 +1298,7 @@ public final class MainActivity extends Activity {
             String localSecret = Invitation.credential();
             webGateway = Androidnet.newWebGateway(saved.getString("token"), localSecret);
             if (!webGateway.hasRelease()) throw new Exception("missing cache");
-            showWeb(webGateway.origin(), localSecret, generation, false);
+            showWeb(webGateway.origin(), localSecret, generation, false, "/");
         } catch (Exception e) {
             closeWeb();
             showFailure(FailureKind.WEB_LOAD, "无法打开本机缓存界面。");
@@ -1394,6 +1394,7 @@ public final class MainActivity extends Activity {
                 long milliseconds = SystemClock.elapsedRealtime() - started;
                 if (!"WeQ Remote".equals(status.getString("product")) || status.getInt("protocol") != 1 || !"status:read".equals(status.getString("scope")) || !status.getBoolean("online")) throw new Exception("电脑返回了不兼容的数据");
                 String webRelease = status.optString("webRelease", "");
+                String startupPath = WebStartup.onlinePath(status.opt("webAccountEntry"));
                 String themeAccent = ThemeAccent.fromStatus(status.opt("themeAccent"));
                 if (gateway != null) {
                     client.attachWebRelease(gateway, address, webRelease);
@@ -1425,7 +1426,7 @@ public final class MainActivity extends Activity {
                     }
                     boolean open = WebStartup.shouldOpenWeb(restoring, webView != null, webReady);
                     restoring = false;
-                    if (open && visible && webGateway == null) openWeb(webRelease);
+                    if (open && visible && webGateway == null) openWeb(webRelease, startupPath);
                 });
             } catch (Exception e) {
                 final FailureKind kind = failureKind;
@@ -1438,7 +1439,7 @@ public final class MainActivity extends Activity {
             }
         });
     }
-    private void openWeb(String webRelease) {
+    private void openWeb(String webRelease, String startupPath) {
         final Client client = node; final int revision = generation;
         final String address = endpoint, credential = token, localSecret = Invitation.credential();
         busy = true; webLoadingStage = "正在准备网页连接"; render();
@@ -1452,7 +1453,7 @@ public final class MainActivity extends Activity {
                     if (revision != generation || !visible) { gateway.close(); return; }
                     webGateway = gateway;
                     busy = false;
-                    showWeb(gateway.origin(), localSecret, revision, true);
+                    showWeb(gateway.origin(), localSecret, revision, true, startupPath);
                 });
             } catch (Exception e) {
                 if (candidate != null) candidate.close();
@@ -1461,7 +1462,7 @@ public final class MainActivity extends Activity {
         });
     }
 
-    private void showWeb(String origin, String localSecret, int revision, boolean showProgress) {
+    private void showWeb(String origin, String localSecret, int revision, boolean showProgress, String startupPath) {
         webLoaded = false;
         webMenuReady = false;
         webStartupProblem = null;
@@ -1541,7 +1542,7 @@ public final class MainActivity extends Activity {
                 if (showProgress) showSetup();
                 else surface.removeView(setupView);
                 render();
-                webView.loadUrl(origin + "/");
+                webView.loadUrl(origin + startupPath);
             });
         });
     }

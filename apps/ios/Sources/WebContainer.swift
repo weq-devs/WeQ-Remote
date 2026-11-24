@@ -264,6 +264,7 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
     """
     let view: WKWebView
     let endpoint: URL
+    private let startupURL: URL
     let localCache: RemoteLocalCache?
     var onNetworkPreference: ((String) -> Void)?
     private let fingerprint: String?
@@ -334,8 +335,9 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
         view.evaluateJavaScript(script, completionHandler: nil)
     }
 
-    init(configuration: WKWebViewConfiguration, endpoint: URL, fingerprint: String? = nil, networkCost: RemoteNetworkCost = .unknown, businessCache: RemoteBusinessCache? = nil, imageGateway: Int32 = 0, localCache: RemoteLocalCache? = nil, themeAccent: String = "") {
+    init(configuration: WKWebViewConfiguration, endpoint: URL, startupURL: URL? = nil, fingerprint: String? = nil, networkCost: RemoteNetworkCost = .unknown, businessCache: RemoteBusinessCache? = nil, imageGateway: Int32 = 0, localCache: RemoteLocalCache? = nil, themeAccent: String = "") {
         self.endpoint = endpoint
+        self.startupURL = startupURL ?? endpoint
         self.fingerprint = fingerprint
         self.localCache = localCache
         self.themeAccent = themeAccent
@@ -513,7 +515,7 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
         guard !closed else { return }
         navigationGeneration += 1
         onLoading?()
-        if view.reload() == nil { view.load(URLRequest(url: endpoint)) }
+        if view.reload() == nil { view.load(URLRequest(url: startupURL)) }
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {

@@ -717,15 +717,17 @@ final class RemoteModel: ObservableObject {
         await refresh(verified: nil)
     }
 
-    private func prepareWeb(api: RemoteAPI, token: String, pin: String?, release: String, generation: Int) async throws {
+    private func prepareWeb(api: RemoteAPI, token: String, pin: String?, status: ComputerStatus?, generation: Int) async throws {
         guard !testMode, failure?.kind.retriesWeb != true else { return }
+        let release = status?.webRelease ?? ""
         if webSession != nil {
             // A route failure must not discard a locally usable document.
             try await network.attachWeb(endpoint: api.endpoint, token: token, fingerprint: pin, release: release)
             return
         }
         do {
-            if let session = try await network.webSession(token: token, endpoint: api.endpoint, fingerprint: pin, release: release, themeAccent: webThemeAccent) {
+            if let session = try await network.webSession(token: token, endpoint: api.endpoint, fingerprint: pin,
+                release: release, accountEntry: status?.webAccountEntry == true, themeAccent: webThemeAccent) {
                 guard generation == revision, !Task.isCancelled else {
                     session.close()
                     network.closeWeb()
@@ -761,7 +763,7 @@ final class RemoteModel: ObservableObject {
             guard generation == revision, !Task.isCancelled else { return }
             checkedAt = Date()
             acceptThemeAccent(status)
-            try await prepareWeb(api: api, token: credential.token, pin: fingerprint, release: status.webRelease ?? "", generation: generation)
+            try await prepareWeb(api: api, token: credential.token, pin: fingerprint, status: status, generation: generation)
             guard generation == revision, failure?.kind.retriesWeb != true else { return }
             latency = requestMillis
             health.succeeded(at: Date(), latency: requestMillis)
@@ -783,7 +785,7 @@ final class RemoteModel: ObservableObject {
                         let pin = replacement.api.endpoint.scheme == "https" ? routeFingerprint : nil
                         checkedAt = Date()
                         acceptThemeAccent(replacement.status)
-                        try await prepareWeb(api: replacement.api, token: credential.token, pin: pin, release: replacement.status?.webRelease ?? "", generation: generation)
+                        try await prepareWeb(api: replacement.api, token: credential.token, pin: pin, status: replacement.status, generation: generation)
                         guard generation == revision, failure?.kind.retriesWeb != true else { return }
                         api.session.invalidateAndCancel(); self.api = replacement.api
                         adopted = true

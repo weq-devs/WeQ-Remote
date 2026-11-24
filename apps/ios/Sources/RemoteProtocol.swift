@@ -341,6 +341,7 @@ struct ComputerStatus: Decodable {
     let scope: String
     let online: Bool
     let webRelease: String?
+    let webAccountEntry: Bool
     let themeAccent: String?
 
     init(from decoder: Decoder) throws {
@@ -350,11 +351,12 @@ struct ComputerStatus: Decodable {
         scope = try fields.decode(String.self, forKey: .scope)
         online = try fields.decode(Bool.self, forKey: .online)
         webRelease = try fields.decodeIfPresent(String.self, forKey: .webRelease)
+        webAccountEntry = (try? fields.decode(Bool.self, forKey: .webAccountEntry)) == true
         let accent = try? fields.decode(String.self, forKey: .themeAccent)
         themeAccent = accent == "" ? "" : RemoteThemeAccent.normalized(accent)
     }
 
-    private enum CodingKeys: String, CodingKey { case product, `protocol`, scope, online, webRelease, themeAccent }
+    private enum CodingKeys: String, CodingKey { case product, `protocol`, scope, online, webRelease, webAccountEntry, themeAccent }
 
     func validate() throws {
         guard product == "WeQ Remote", self.protocol == 1, scope == "status:read", online else { throw RemoteError.response }

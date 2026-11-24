@@ -312,6 +312,17 @@ final class RemoteProtocolTests: XCTestCase {
         }
     }
 
+    func testAccountEntryRequiresExplicitBooleanSupport() throws {
+        let payload = #"{"product":"WeQ Remote","protocol":1,"scope":"status:read","online":true"#
+        let cases = [("", false), (#", "webAccountEntry":true"#, true),
+                     (#", "webAccountEntry":false"#, false), (#", "webAccountEntry":"true""#, false)]
+        for (field, expected) in cases {
+            let status = try JSONDecoder().decode(ComputerStatus.self, from: Data((payload + field + "}").utf8))
+            try status.validate()
+            XCTAssertEqual(status.webAccountEntry, expected)
+        }
+    }
+
     func testOptionalThemeAccentDoesNotBreakConnectionValidation() throws {
         let payload = #"{"product":"WeQ Remote","protocol":1,"scope":"status:read","online":true"#
         let cases: [(String, String?)] = [
