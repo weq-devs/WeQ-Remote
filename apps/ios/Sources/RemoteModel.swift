@@ -49,6 +49,11 @@ final class RemoteModel: ObservableObject {
     @Published private(set) var rememberedComputer = false
     @Published private(set) var hasCachedWeb = false
     @Published private(set) var autoConnectOnLaunch = UserDefaults.standard.object(forKey: "autoConnectOnLaunch") as? Bool ?? true
+    @Published private(set) var syncComputerThemeAccent = UserDefaults.standard.object(forKey: "syncComputerThemeAccent") as? Bool ?? true
+    @Published private(set) var localThemeAccent = RemoteThemeAccent.preset(UserDefaults.standard.string(forKey: "localThemeAccent"))
+    @Published private(set) var computerThemeAccent: String?
+    var themeAccent: String { syncComputerThemeAccent ? (computerThemeAccent ?? localThemeAccent) : localThemeAccent }
+    private var webThemeAccent: String { syncComputerThemeAccent ? "" : localThemeAccent }
     @Published private(set) var health = ConnectionHealth()
     @Published private(set) var checkingUpdates = false
     @Published private(set) var updateMessage = "尚未检查"
@@ -257,6 +262,23 @@ final class RemoteModel: ObservableObject {
         autoConnectOnLaunch = enabled
     }
 
+    func setSyncComputerThemeAccent(_ enabled: Bool) {
+        UserDefaults.standard.set(enabled, forKey: "syncComputerThemeAccent")
+        syncComputerThemeAccent = enabled
+        webSession?.updateThemeAccent(webThemeAccent)
+    }
+
+    func setLocalThemeAccent(_ value: String) {
+        guard !syncComputerThemeAccent || computerThemeAccent == nil else { return }
+        localThemeAccent = RemoteThemeAccent.preset(value)
+        UserDefaults.standard.set(localThemeAccent, forKey: "localThemeAccent")
+        webSession?.updateThemeAccent(webThemeAccent)
+    }
+
+    private func acceptThemeAccent(_ status: ComputerStatus?) {
+        if computerThemeAccent != status?.themeAccent { computerThemeAccent = status?.themeAccent }
+    }
+
     private func updateCachedWebAvailability() {
         hasCachedWeb = rememberedComputer && (try? SavedConnection.load()).map { network.hasCachedWeb(token: $0.token) } == true
     }
@@ -274,7 +296,7 @@ final class RemoteModel: ObservableObject {
         busy = true
         defer { if generation == revision { busy = false } }
         do {
-            guard let saved = try SavedConnection.load(), let session = try await network.webSession(token: saved.token) else {
+            guard let saved = try SavedConnection.load(), let session = try await network.webSession(token: saved.token, themeAccent: webThemeAccent) else {
                 throw RemoteError.response
             }
             guard generation == revision, !Task.isCancelled else {
@@ -418,6 +440,7 @@ final class RemoteModel: ObservableObject {
     }
 
     func adoptWebSession(_ session: RemoteWebSession, cached: Bool = false) {
+        session.updateThemeAccent(webThemeAccent)
         session.onNetworkPreference = { [weak self] mode in self?.network.dataSaverMode = mode }
         openingCachedWeb = cached
         webReady = false
@@ -702,7 +725,7 @@ final class RemoteModel: ObservableObject {
             return
         }
         do {
-            if let session = try await network.webSession(token: token, endpoint: api.endpoint, fingerprint: pin, release: release) {
+            if let session = try await network.webSession(token: token, endpoint: api.endpoint, fingerprint: pin, release: release, themeAccent: webThemeAccent) {
                 guard generation == revision, !Task.isCancelled else {
                     session.close()
                     network.closeWeb()
@@ -737,6 +760,7 @@ final class RemoteModel: ObservableObject {
             }
             guard generation == revision, !Task.isCancelled else { return }
             checkedAt = Date()
+            acceptThemeAccent(status)
             try await prepareWeb(api: api, token: credential.token, pin: fingerprint, release: status.webRelease ?? "", generation: generation)
             guard generation == revision, failure?.kind.retriesWeb != true else { return }
             latency = requestMillis
@@ -758,6 +782,7 @@ final class RemoteModel: ObservableObject {
                         guard generation == revision else { replacement.api.session.invalidateAndCancel(); return }
                         let pin = replacement.api.endpoint.scheme == "https" ? routeFingerprint : nil
                         checkedAt = Date()
+                        acceptThemeAccent(replacement.status)
                         try await prepareWeb(api: replacement.api, token: credential.token, pin: pin, release: replacement.status?.webRelease ?? "", generation: generation)
                         guard generation == revision, failure?.kind.retriesWeb != true else { return }
                         api.session.invalidateAndCancel(); self.api = replacement.api
@@ -805,6 +830,8 @@ final class RemoteModel: ObservableObject {
             if !testMode {
                 try await network.attachWeb(endpoint: selection.api.endpoint, token: credential.token, fingerprint: pin, release: selection.status?.webRelease ?? "")
             }
+            guard generation == revision, epoch == healthEpoch, !Task.isCancelled else { return }
+            acceptThemeAccent(selection.status)
             if selection.api.session !== api.session {
                 api.session.invalidateAndCancel()
                 self.api = selection.api
@@ -857,6 +884,7 @@ final class RemoteModel: ObservableObject {
 
     func disconnect() {
         healthEpoch += 1
+        acceptThemeAccent(nil)
         connectionRecovery = 0
         eventCheck?.cancel()
         eventCheck = nil

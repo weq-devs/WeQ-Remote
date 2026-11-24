@@ -11,9 +11,10 @@ import android.view.View;
 final class DownloadRing extends View {
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final RectF bounds = new RectF();
-    private final int accent;
+    private int accent;
     private WebDownloadProgress progress;
-    DownloadRing(Context context, int accent) { super(context); this.accent = accent; setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_NO); }
+    DownloadRing(Context context) { super(context); setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_NO); }
+    void setAccent(int value) { if (accent != value) { accent = value; invalidate(); } }
     void update(WebDownloadProgress value) {
         boolean redraw = progress == null || value == null
             ? progress != value

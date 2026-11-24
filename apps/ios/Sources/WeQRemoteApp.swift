@@ -53,14 +53,16 @@ struct RemoteView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var colorScheme
     @State private var pairingTask: Task<Void, Never>?
-    private let actionColor = Color(red: 0.02, green: 0.48, blue: 0.43)
     private let heroMarkHeight: CGFloat = 150
-    // 深色下用亮色强调色填充按钮并配深色文字，和浅色下的深青底白字互为镜像。
-    private var actionFill: Color { colorScheme == .dark ? accent : actionColor }
-    private var actionInk: Color { colorScheme == .dark ? Color(red: 0.05, green: 0.14, blue: 0.12) : .white }
+    private var themeRGB: RemoteThemeAccent.RGB { .init(hex: model.themeAccent, dark: colorScheme == .dark) }
+    private var actionFill: Color { color(themeRGB) }
+    private var actionInk: Color { themeRGB.usesDarkInk ? .black : .white }
     private var accent: Color {
-        Color(uiColor: UIColor { $0.userInterfaceStyle == .dark ? UIColor(red: 0.36, green: 0.83, blue: 0.75, alpha: 1) : UIColor(red: 0.02, green: 0.48, blue: 0.43, alpha: 1) })
+        let dark = colorScheme == .dark
+        return color(themeRGB.readable(on: .init(dark ? 0x242628 : 0xf5f7f7), dark: dark))
     }
+
+    private func color(_ rgb: RemoteThemeAccent.RGB) -> Color { Color(red: rgb.red, green: rgb.green, blue: rgb.blue) }
 
     private var loadingStage: String? {
         if model.failure?.kind.retriesWeb == true { return nil }
@@ -126,6 +128,7 @@ struct RemoteView: View {
                     LocalCacheSection(cache: cache, onChange: session.localCacheChanged)
                         .id(ObjectIdentifier(session))
                 }
+                themeAccentSection
                 Section("软件更新") {
                     Toggle("检查测试版", isOn: Binding(get: { model.includePrerelease }, set: { model.setPrerelease($0) }))
                         .disabled(model.checkingUpdates)
@@ -142,6 +145,39 @@ struct RemoteView: View {
             .navigationTitle("更多").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { model.showingDetails = false } } }
         }.tint(accent)
+    }
+
+    private var themeAccentSection: some View {
+        let following = model.syncComputerThemeAccent && model.computerThemeAccent != nil
+        let current = model.themeAccent.isEmpty ? RemoteThemeAccent.defaultColor : model.themeAccent
+        return Section("主题色") {
+            Toggle("同步电脑主题色", isOn: Binding(get: { model.syncComputerThemeAccent }, set: model.setSyncComputerThemeAccent))
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 0), count: 3), spacing: 0) {
+                ForEach(RemoteThemeAccent.presets.indices, id: \.self) { index in
+                    let (hex, name) = RemoteThemeAccent.presets[index]
+                    let rgb = RemoteThemeAccent.RGB(hex: hex)
+                    let selected = current == hex
+                    Button { model.setLocalThemeAccent(hex) } label: {
+                        Circle().fill(color(rgb))
+                            .overlay {
+                                if selected {
+                                    Image(systemName: "checkmark")
+                                        .font(.system(size: 12, weight: .bold))
+                                        .foregroundStyle(rgb.usesDarkInk ? .black : .white)
+                                }
+                            }
+                            .frame(width: 28, height: 28)
+                            .frame(maxWidth: .infinity, minHeight: 44)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(following)
+                    .opacity(following && !selected ? 0.65 : 1)
+                    .accessibilityLabel(name)
+                    .accessibilityAddTraits(selected ? .isSelected : [])
+                }
+            }
+        }
     }
 
     private var startupMenu: some View {

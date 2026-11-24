@@ -115,6 +115,10 @@ public final class MainActivity extends Activity {
     private android.widget.ImageView markIcon;
     private android.view.View statusDot;
     private int accentColor, idleDotColor;
+    private boolean syncComputerThemeAccent;
+    private String localThemeAccent, computerThemeAccent;
+    private volatile String webThemeAccent = "";
+    private Runnable repaintHomeTheme, repaintThemeSettings;
     private boolean webLoaded;
     private WebGateway webGateway;
     private String webLoadingStage = "正在准备网页连接";
@@ -235,6 +239,9 @@ public final class MainActivity extends Activity {
         try { rememberedComputer = ConnectionStore.load(this) != null; } catch (Exception ignored) { }
         updateCachedWebAvailability();
         reconnectPaused = !getPreferences(MODE_PRIVATE).getBoolean("autoConnectOnLaunch", true);
+        syncComputerThemeAccent = getPreferences(MODE_PRIVATE).getBoolean("syncComputerThemeAccent", true);
+        localThemeAccent = ThemeAccent.preset(getPreferences(MODE_PRIVATE).getString("localThemeAccent", null));
+        webThemeAccent = syncComputerThemeAccent ? "" : localThemeAccent;
         buildUI();
         // 网页与连接页都铺满整屏；系统栏透明，连接页自己按 insets 留白。
         if (android.os.Build.VERSION.SDK_INT >= 30) {
@@ -321,16 +328,13 @@ public final class MainActivity extends Activity {
 
     private void buildUI() {
         boolean dark = (getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES;
-        final int accent = dark ? Color.rgb(91, 212, 190) : Color.rgb(5, 122, 109);
         final int pageColor = dark ? Color.rgb(18, 20, 22) : Color.rgb(245, 247, 247);
         final int card = dark ? Color.rgb(30, 34, 35) : Color.WHITE;
         final int border = dark ? Color.rgb(59, 67, 68) : Color.rgb(212, 220, 220);
         final int muted = dark ? Color.rgb(170, 179, 180) : Color.rgb(98, 110, 112);
         final int ink = dark ? Color.rgb(236, 240, 240) : Color.rgb(24, 30, 31);
         final int errorColor = dark ? Color.rgb(255, 160, 150) : Color.rgb(170, 35, 30);
-        final int actionText = dark ? Color.rgb(13, 35, 31) : Color.WHITE;
         final int pad = dp(24);
-        accentColor = accent;
         idleDotColor = dark ? Color.rgb(140, 148, 149) : Color.rgb(176, 183, 184);
 
         // 全屏三段式首页：顶部状态条、居中状态区、贴近拇指的底部操作坞。
@@ -361,9 +365,7 @@ public final class MainActivity extends Activity {
         topBar.setGravity(android.view.Gravity.CENTER_VERTICAL);
         android.widget.ImageView brandMark = new android.widget.ImageView(this);
         brandMark.setImageResource(getResources().getIdentifier("ic_computer", "drawable", getPackageName()));
-        brandMark.setColorFilter(accent);
         brandMark.setPadding(dp(6), dp(6), dp(6), dp(6));
-        brandMark.setBackground(background(Color.argb(30, Color.red(accent), Color.green(accent), Color.blue(accent)), Color.TRANSPARENT, dp(9)));
         brandMark.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
         topBar.addView(brandMark, new LinearLayout.LayoutParams(dp(30), dp(30)));
         TextView brand = text("WeQ Remote", 16);
@@ -386,7 +388,7 @@ public final class MainActivity extends Activity {
         statusPill.setPadding(dp(6), 0, 0, 0);
         statusChip.addView(statusPill);
         topBar.addView(statusChip);
-        setupMenu = connectionMenuButton("更多", accent);
+        setupMenu = connectionMenuButton("更多", ink);
         topBar.addView(setupMenu, new LinearLayout.LayoutParams(dp(44), dp(44)));
         column.addView(topBar);
 
@@ -415,28 +417,24 @@ public final class MainActivity extends Activity {
         android.widget.FrameLayout markFrame = new android.widget.FrameLayout(this);
         heroColumn.addView(markFrame, markParams);
         android.view.View disc = new android.view.View(this);
-        disc.setBackground(oval(Color.argb(26, Color.red(accent), Color.green(accent), Color.blue(accent))));
+        disc.setBackground(oval(Color.TRANSPARENT));
         markFrame.addView(disc, new android.widget.FrameLayout.LayoutParams(dp(108), dp(108), android.view.Gravity.CENTER));
-        downloadRing = new DownloadRing(this, accent);
+        downloadRing = new DownloadRing(this);
         markFrame.addView(downloadRing, new android.widget.FrameLayout.LayoutParams(dp(142), dp(142), android.view.Gravity.CENTER));
         markIcon = new android.widget.ImageView(this);
         markIcon.setImageResource(getResources().getIdentifier("ic_computer", "drawable", getPackageName()));
-        markIcon.setColorFilter(accent);
         markIcon.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
         markFrame.addView(markIcon, new android.widget.FrameLayout.LayoutParams(dp(44), dp(44), android.view.Gravity.CENTER));
         progress = new android.widget.ProgressBar(this);
         progress.setIndeterminate(true);
-        progress.setIndeterminateTintList(android.content.res.ColorStateList.valueOf(accent));
         progress.setVisibility(View.GONE);
         markFrame.addView(progress, new android.widget.FrameLayout.LayoutParams(dp(44), dp(44), android.view.Gravity.CENTER));
         developmentRing = new android.widget.ProgressBar(this);
         developmentRing.setIndeterminate(true);
-        developmentRing.setIndeterminateTintList(android.content.res.ColorStateList.valueOf(accent));
         developmentRing.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
         developmentRing.setVisibility(View.GONE);
         markFrame.addView(developmentRing, new android.widget.FrameLayout.LayoutParams(dp(138), dp(138), android.view.Gravity.CENTER));
         developmentCount = text("", 18);
-        developmentCount.setTextColor(accent);
         developmentCount.setGravity(android.view.Gravity.CENTER);
         developmentCount.setMaxLines(2);
         developmentCount.setAutoSizeTextTypeUniformWithConfiguration(11, 18, 1, android.util.TypedValue.COMPLEX_UNIT_SP);
@@ -485,18 +483,15 @@ public final class MainActivity extends Activity {
         LinearLayout scan = new LinearLayout(this);
         scan.setOrientation(LinearLayout.HORIZONTAL);
         scan.setGravity(android.view.Gravity.CENTER);
-        scan.setBackground(new android.graphics.drawable.RippleDrawable(android.content.res.ColorStateList.valueOf(0x30ffffff), background(accent, accent, dp(16)), null));
         scan.setContentDescription("扫码");
         scan.setFocusable(true);
         scan.setClickable(true);
         android.widget.ImageView scanIcon = new android.widget.ImageView(this);
         scanIcon.setImageResource(getResources().getIdentifier("ic_scan", "drawable", getPackageName()));
-        scanIcon.setColorFilter(actionText);
         scanIcon.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
         scan.addView(scanIcon, new LinearLayout.LayoutParams(dp(22), dp(22)));
         scanLabel = text("扫码连接", 17);
         scanLabel.setTypeface(null, android.graphics.Typeface.BOLD);
-        scanLabel.setTextColor(actionText);
         scanLabel.setPadding(dp(12), 0, 0, 0);
         scan.addView(scanLabel);
         scan.setOnClickListener(v -> scanConnection());
@@ -534,9 +529,7 @@ public final class MainActivity extends Activity {
         pairButton.setMinWidth(0);
         pairButton.setMinimumWidth(0);
         pairButton.setPadding(0, 0, 0, 0);
-        pairButton.setBackground(new android.graphics.drawable.RippleDrawable(android.content.res.ColorStateList.valueOf(0x30ffffff), oval(accent), null));
         android.graphics.drawable.Drawable playIcon = getDrawable(getResources().getIdentifier("ic_arrow_right", "drawable", getPackageName())).mutate();
-        playIcon.setTint(actionText);
         pairButton.setCompoundDrawablesWithIntrinsicBounds(playIcon, null, null, null);
         pairButton.setOnClickListener(view -> pair());
         input.addView(pairButton, new LinearLayout.LayoutParams(dp(48), dp(48)));
@@ -548,7 +541,6 @@ public final class MainActivity extends Activity {
         dock.addView(connectionActions, actionsParams);
         updateButton = new android.widget.ImageButton(this);
         updateButton.setImageResource(getResources().getIdentifier("ic_scan", "drawable", getPackageName()));
-        updateButton.setColorFilter(accent);
         updateButton.setContentDescription("扫码更新连接");
         updateButton.setBackground(new android.graphics.drawable.RippleDrawable(android.content.res.ColorStateList.valueOf(0x22000000), background(card, border, dp(14)), null));
         updateButton.setOnClickListener(view -> scanConnection());
@@ -559,9 +551,7 @@ public final class MainActivity extends Activity {
         retryButton.setAllCaps(false);
         retryButton.setTextSize(16);
         retryButton.setTypeface(null, android.graphics.Typeface.BOLD);
-        retryButton.setTextColor(accent);
         retryButton.setGravity(android.view.Gravity.CENTER);
-        retryButton.setBackground(new android.graphics.drawable.RippleDrawable(android.content.res.ColorStateList.valueOf(0x22000000), background(Color.argb(30, Color.red(accent), Color.green(accent), Color.blue(accent)), Color.argb(30, Color.red(accent), Color.green(accent), Color.blue(accent)), dp(14)), null));
         retryButton.setVisibility(View.GONE);
         retryButton.setOnClickListener(view -> {
             if (isConnecting()) { reconnectPaused = true; stopNetwork(true); }
@@ -584,12 +574,38 @@ public final class MainActivity extends Activity {
         cachedWebButton = new Button(this);
         cachedWebButton.setText("直接进入本地缓存界面");
         cachedWebButton.setAllCaps(false);
-        cachedWebButton.setTextColor(accent);
         cachedWebButton.setMinHeight(dp(48));
         cachedWebButton.setBackground(new android.graphics.drawable.RippleDrawable(
             android.content.res.ColorStateList.valueOf(0x22000000), null, oval(Color.WHITE)));
         cachedWebButton.setOnClickListener(view -> openCachedWeb());
         dock.addView(cachedWebButton, new LinearLayout.LayoutParams(-1, -2));
+        repaintHomeTheme = () -> {
+            int fill = ThemeAccent.fill(themeAccent(), dark), actionText = ThemeAccent.onFill(fill);
+            accentColor = ThemeAccent.readable(fill, dark);
+            int tint = ThemeAccent.tint(accentColor, 30);
+            android.content.res.ColorStateList accentTint = android.content.res.ColorStateList.valueOf(accentColor);
+            android.content.res.ColorStateList ripple = android.content.res.ColorStateList.valueOf(ThemeAccent.tint(actionText, 48));
+            brandMark.setColorFilter(accentColor);
+            brandMark.setBackground(background(tint, Color.TRANSPARENT, dp(9)));
+            ((android.widget.ImageButton) setupMenu).setColorFilter(accentColor);
+            ((GradientDrawable) disc.getBackground()).setColor(ThemeAccent.tint(accentColor, 26));
+            downloadRing.setAccent(accentColor);
+            markIcon.setColorFilter(accentColor);
+            progress.setIndeterminateTintList(accentTint);
+            developmentRing.setIndeterminateTintList(accentTint);
+            developmentCount.setTextColor(accentColor);
+            scan.setBackground(new android.graphics.drawable.RippleDrawable(ripple, background(fill, fill, dp(16)), null));
+            scanIcon.setColorFilter(actionText);
+            scanLabel.setTextColor(actionText);
+            pairButton.setBackground(new android.graphics.drawable.RippleDrawable(ripple, oval(fill), null));
+            playIcon.setTint(actionText);
+            updateButton.setColorFilter(accentColor);
+            retryButton.setTextColor(accentColor);
+            retryButton.setBackground(new android.graphics.drawable.RippleDrawable(android.content.res.ColorStateList.valueOf(0x22000000), background(tint, tint, dp(14)), null));
+            cachedWebButton.setTextColor(accentColor);
+            ((GradientDrawable) statusDot.getBackground()).setColor(statusText().equals("连接中") || claimID != null ? accentColor : idleDotColor);
+        };
+        repaintHomeTheme.run();
 
         // 网络状态留作连接模型，详情在菜单呈现，不堆在首页。
         networkState = text("Tailscale：未启动", 11);
@@ -608,7 +624,7 @@ public final class MainActivity extends Activity {
     private android.graphics.drawable.Drawable background(int fill, int border, int radius) {
         GradientDrawable shape = new GradientDrawable(); shape.setColor(fill); shape.setCornerRadius(radius); shape.setStroke(dp(1), border); return shape;
     }
-    private android.graphics.drawable.Drawable oval(int fill) {
+    private GradientDrawable oval(int fill) {
         GradientDrawable shape = new GradientDrawable(); shape.setShape(GradientDrawable.OVAL); shape.setColor(fill); return shape;
     }
     private Button button(String label, Runnable action) {
@@ -849,6 +865,7 @@ public final class MainActivity extends Activity {
         if (localCacheSettings != null) {
             localCacheSettings.addRows(settingsGroup(content, "本机缓存", 16));
         }
+        addThemeSettings(settingsGroup(content, "主题色", 16), menu);
         LinearLayout updates = settingsGroup(content, "软件更新", 16);
         android.widget.Switch prerelease = new android.widget.Switch(this);
         prerelease.setText("检查测试版");
@@ -864,6 +881,88 @@ public final class MainActivity extends Activity {
         checkUpdate.setEnabled(!checkingUpdates);
         updates.addView(checkUpdate);
         menu.show();
+    }
+
+    private String themeAccent() {
+        return syncComputerThemeAccent && computerThemeAccent != null ? computerThemeAccent : localThemeAccent;
+    }
+
+    String webThemeAccent() { return webThemeAccent; }
+
+    private void updateThemeAccent() {
+        repaintHomeTheme.run();
+        if (repaintThemeSettings != null) repaintThemeSettings.run();
+        String next = syncComputerThemeAccent ? "" : localThemeAccent;
+        if (!next.equals(webThemeAccent)) {
+            webThemeAccent = next;
+            if (webFeatures != null) webFeatures.themeAccentChanged();
+        }
+    }
+
+    private void receiveThemeAccent(String value) {
+        if (java.util.Objects.equals(computerThemeAccent, value)) return;
+        computerThemeAccent = value;
+        if (syncComputerThemeAccent) updateThemeAccent();
+    }
+
+    private void addThemeSettings(LinearLayout group, android.app.AlertDialog menu) {
+        android.widget.Switch sync = new android.widget.Switch(this);
+        sync.setText("同步电脑主题色");
+        sync.setMinHeight(dp(48));
+        sync.setChecked(syncComputerThemeAccent);
+        final android.content.res.ColorStateList defaultThumb = sync.getThumbTintList();
+        group.addView(sync, new LinearLayout.LayoutParams(-1, -2));
+        android.widget.ImageButton[] buttons = new android.widget.ImageButton[ThemeAccent.PRESETS.length];
+        LinearLayout row = null;
+        for (int i = 0; i < buttons.length; i++) {
+            if (i % 3 == 0) {
+                row = new LinearLayout(this);
+                group.addView(row, new LinearLayout.LayoutParams(-1, -2));
+            }
+            final int index = i;
+            android.widget.ImageButton button = new android.widget.ImageButton(this);
+            buttons[i] = button;
+            button.setBackgroundResource(android.R.drawable.list_selector_background);
+            button.setContentDescription(ThemeAccent.NAMES[i]);
+            button.setScaleType(android.widget.ImageView.ScaleType.CENTER);
+            button.setOnClickListener(view -> {
+                localThemeAccent = ThemeAccent.PRESETS[index];
+                getPreferences(MODE_PRIVATE).edit().putString("localThemeAccent", localThemeAccent).apply();
+                updateThemeAccent();
+            });
+            row.addView(button, new LinearLayout.LayoutParams(0, dp(48), 1));
+        }
+        Runnable repaint = () -> {
+            boolean following = syncComputerThemeAccent && computerThemeAccent != null;
+            sync.setThumbTintList(syncComputerThemeAccent
+                ? android.content.res.ColorStateList.valueOf(accentColor) : defaultThumb);
+            String current = themeAccent().isEmpty() ? ThemeAccent.DEFAULT : themeAccent();
+            for (int i = 0; i < buttons.length; i++) {
+                boolean selected = ThemeAccent.PRESETS[i].equals(current);
+                int fill = ThemeAccent.fill(ThemeAccent.PRESETS[i], false);
+                GradientDrawable circle = oval(fill);
+                circle.setSize(dp(28), dp(28));
+                if (selected) {
+                    android.graphics.drawable.Drawable check = getDrawable(android.R.drawable.checkbox_on_background).mutate();
+                    check.setTint(ThemeAccent.onFill(fill));
+                    android.graphics.drawable.LayerDrawable swatch = new android.graphics.drawable.LayerDrawable(new android.graphics.drawable.Drawable[]{circle, check});
+                    swatch.setLayerSize(1, dp(16), dp(16));
+                    swatch.setLayerGravity(1, android.view.Gravity.CENTER);
+                    buttons[i].setImageDrawable(swatch);
+                } else buttons[i].setImageDrawable(circle);
+                buttons[i].setSelected(selected);
+                buttons[i].setEnabled(!following);
+                buttons[i].setAlpha(following && !selected ? 0.65f : 1);
+            }
+        };
+        repaintThemeSettings = repaint;
+        sync.setOnCheckedChangeListener((view, enabled) -> {
+            syncComputerThemeAccent = enabled;
+            getPreferences(MODE_PRIVATE).edit().putBoolean("syncComputerThemeAccent", enabled).apply();
+            updateThemeAccent();
+        });
+        menu.setOnDismissListener(dialog -> { if (repaintThemeSettings == repaint) repaintThemeSettings = null; });
+        repaint.run();
     }
 
     private LinearLayout settingsGroup(LinearLayout content, String title, int topSpace) {
@@ -1058,6 +1157,7 @@ public final class MainActivity extends Activity {
         healthEpoch++; connectionRecovery = 0;
         main.removeCallbacks(eventCheck); eventCheckPending = false; lastEventCheck = -5000;
         health = new ConnectionHealth(); connectionRoute = "未选择";
+        receiveThemeAccent(null);
         closeWeb();
         generation++;
         main.removeCallbacks(approvalPoll); endpoint = null; token = null; fingerprint = null; connectionRoutes = null; claimID = null; paired = false; restoring = false; updatingConnection = false;
@@ -1294,6 +1394,7 @@ public final class MainActivity extends Activity {
                 long milliseconds = SystemClock.elapsedRealtime() - started;
                 if (!"WeQ Remote".equals(status.getString("product")) || status.getInt("protocol") != 1 || !"status:read".equals(status.getString("scope")) || !status.getBoolean("online")) throw new Exception("电脑返回了不兼容的数据");
                 String webRelease = status.optString("webRelease", "");
+                String themeAccent = ThemeAccent.fromStatus(status.opt("themeAccent"));
                 if (gateway != null) {
                     client.attachWebRelease(gateway, address, webRelease);
                 }
@@ -1304,6 +1405,7 @@ public final class MainActivity extends Activity {
                     if (revision != generation || !credential.equals(token)) return;
                     if (liveCheck && epoch != healthEpoch) { busy = false; requestConnectionCheck(true); return; }
                     if (hasWebFailure()) return;
+                    receiveThemeAccent(themeAccent);
                     computerVerified = true;
                     if (updatingConnection) {
                         try { ConnectionStore.save(this, endpoint, credential, fingerprint, connectionRoutes); updatingConnection = false; }

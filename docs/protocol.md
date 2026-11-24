@@ -92,6 +92,8 @@
 
 ## 版本与测试
 
+鉴权后的 `GET /v1/status` 可带 `themeAccent`：`#rrggbb` 表示电脑的主题色，空字符串表示电脑使用默认色；缺失或无效时，原生连接页继续使用手机选择，不影响校验。不新增网络请求或变更协议版本。手机默认开启同步；显式断开后使用手机预设。关闭同步时，仅在当前网页通过 `window.weqRemoteThemeAccent`（iOS）或 `weqRemoteLinks.themeAccent()`（Android）提供手机预设；空字符串表示共用网页继续使用电脑设置。开关和本机选色变更通过 `weq-remote-theme-accent` 通知网页，不写入共享偏好或网页缓存。
+
 Android 本地代理按电脑授权持久保存回环端口；同一授权的连接路径变化不改变网页 origin，重连仍生成新的本地 Cookie 秘密，Host／Origin／Cookie 检查不变。端口占用不回退随机端口。端口映射属于 Android 本机存储实现，不新增电脑接口、邀请版本或同步协议，也不修改 iOS 原生端。共用 Web 的业务缓存与加载顺序由 WeQ 仓库维护。
 
 开发源码的加载优化不改变邀请与授权协议：iOS 按电脑／授权／证书标识持久 Web 数据存储；Android 对完整 immutable JS/CSS 使用跨进程代码缓存，同时流式转发响应体。电脑 HTTPS 入口与 Android 原生传输协商 HTTP/2，旧服务仍可使用 HTTP/1.1。电脑 Web 自身合并启动读取并拆分非必要模块，手机不另建业务 API 定义。

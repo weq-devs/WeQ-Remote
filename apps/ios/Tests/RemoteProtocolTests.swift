@@ -311,6 +311,19 @@ final class RemoteProtocolTests: XCTestCase {
             XCTAssertThrowsError(try JSONDecoder().decode(ComputerStatus.self, from: field).validate())
         }
     }
+
+    func testOptionalThemeAccentDoesNotBreakConnectionValidation() throws {
+        let payload = #"{"product":"WeQ Remote","protocol":1,"scope":"status:read","online":true"#
+        let cases: [(String, String?)] = [
+            ("", nil), (#", "themeAccent":"""#, ""), (##", "themeAccent":"#ABC123""##, "#abc123"),
+            (#", "themeAccent":123"#, nil), (#", "themeAccent":"invalid""#, nil),
+        ]
+        for (field, expected) in cases {
+            let status = try JSONDecoder().decode(ComputerStatus.self, from: Data((payload + field + "}").utf8))
+            try status.validate()
+            XCTAssertEqual(status.themeAccent, expected)
+        }
+    }
 }
 
 private final class DeviceInfoURLProtocol: URLProtocol {

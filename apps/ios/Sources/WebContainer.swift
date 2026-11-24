@@ -267,6 +267,7 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
     let localCache: RemoteLocalCache?
     var onNetworkPreference: ((String) -> Void)?
     private let fingerprint: String?
+    private var themeAccent: String
     private var downloads: [ObjectIdentifier: (WKDownload, URL)] = [:]
     private var closed = false
     private var startupTimeout: Task<Void, Never>?
@@ -309,18 +310,35 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
 
     func updateNetworkCost(_ cost: RemoteNetworkCost) {
         guard !closed else { return }
-        let content = view.configuration.userContentController
-        let scripts = content.userScripts.filter { !$0.source.hasPrefix("window.weqRemoteNetworkCost=") }
-        content.removeAllUserScripts()
-        content.addUserScript(WKUserScript(source: cost.script, injectionTime: .atDocumentStart, forMainFrameOnly: true))
-        for script in scripts { content.addUserScript(script) }
-        view.evaluateJavaScript(cost.script, completionHandler: nil)
+        updateDocumentSetting(prefix: "window.weqRemoteNetworkCost=", script: cost.script)
     }
 
-    init(configuration: WKWebViewConfiguration, endpoint: URL, fingerprint: String? = nil, networkCost: RemoteNetworkCost = .unknown, businessCache: RemoteBusinessCache? = nil, imageGateway: Int32 = 0, localCache: RemoteLocalCache? = nil) {
+    private static let themeAccentPrefix = "window.weqRemoteThemeAccent="
+
+    private static func themeAccentScript(_ accent: String) -> String {
+        "\(themeAccentPrefix)'\(RemoteThemeAccent.normalized(accent) ?? "")';window.dispatchEvent(new Event('weq-remote-theme-accent'));"
+    }
+
+    func updateThemeAccent(_ accent: String) {
+        guard !closed, accent != themeAccent else { return }
+        themeAccent = accent
+        updateDocumentSetting(prefix: Self.themeAccentPrefix, script: Self.themeAccentScript(accent))
+    }
+
+    private func updateDocumentSetting(prefix: String, script: String) {
+        let content = view.configuration.userContentController
+        let scripts = content.userScripts.filter { !$0.source.hasPrefix(prefix) }
+        content.removeAllUserScripts()
+        content.addUserScript(WKUserScript(source: script, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        for existing in scripts { content.addUserScript(existing) }
+        view.evaluateJavaScript(script, completionHandler: nil)
+    }
+
+    init(configuration: WKWebViewConfiguration, endpoint: URL, fingerprint: String? = nil, networkCost: RemoteNetworkCost = .unknown, businessCache: RemoteBusinessCache? = nil, imageGateway: Int32 = 0, localCache: RemoteLocalCache? = nil, themeAccent: String = "") {
         self.endpoint = endpoint
         self.fingerprint = fingerprint
         self.localCache = localCache
+        self.themeAccent = themeAccent
         // 网页背景已有 playsinline；iPhone 还需在创建 WebView 前允许页内播放。
         configuration.allowsInlineMediaPlayback = true
         configuration.applicationNameForUserAgent = "WeQRemote"
@@ -329,6 +347,8 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
         super.init()
         configuration.userContentController.addUserScript(WKUserScript(
             source: networkCost.script, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        configuration.userContentController.addUserScript(WKUserScript(
+            source: Self.themeAccentScript(themeAccent), injectionTime: .atDocumentStart, forMainFrameOnly: true))
         let capture = RemoteCaptureHandler()
         capture.owner = self
         configuration.userContentController.add(capture, name: "weqCapture")

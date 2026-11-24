@@ -154,6 +154,9 @@ final class WebFeatures extends WebChromeClient {
         @android.webkit.JavascriptInterface public String networkCost() {
             return activity instanceof MainActivity ? ((MainActivity) activity).networkCostJSON() : "null";
         }
+        @android.webkit.JavascriptInterface public String themeAccent() {
+            return activity instanceof MainActivity ? ((MainActivity) activity).webThemeAccent() : "";
+        }
         @android.webkit.JavascriptInterface public void resources(String payload) {
             if (payload == null || payload.length() > 512) return;
             try {
@@ -279,6 +282,10 @@ final class WebFeatures extends WebChromeClient {
     }
     void networkCost(String json) {
         if (!closed) view.evaluateJavascript("window.weqRemoteNetworkCost=" + json + ";window.dispatchEvent(new Event('weq-remote-network-cost'));", null);
+    }
+    void themeAccentChanged() {
+        if (!closed && WebAccess.sameOrigin(origin, view.getUrl()))
+            view.evaluateJavascript("window.dispatchEvent(new Event('weq-remote-theme-accent'));", null);
     }
     void observeStartup() {
         if (activity instanceof MainActivity) networkCost(((MainActivity) activity).networkCostJSON());
