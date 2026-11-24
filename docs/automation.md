@@ -66,7 +66,7 @@ python3 apps/ios/scripts/build_unsigned_ipa.py
 
 ## GitHub Release
 
-当前源码为 iOS／Android 1.1.0（iOS build 17、Android versionCode 12），尚未发布。详见 [1.1.0 版本说明](releases/1.1.0.md)。
+当前源码为 iOS／Android 1.1.0（iOS build 18、Android versionCode 12），尚未发布。详见 [1.1.0 版本说明](releases/1.1.0.md)。
 
 `.github/workflows/release.yml` 只支持手动触发，且必须运行在已存在的 `vMAJOR.MINOR.PATCH` 或 `vMAJOR.MINOR.PATCHbN` 标签上（N 为不带前导零的正整数）；Beta 自动标记为 Pre-release，不替换 Latest 正式版。在分支上误触发会失败，不创建标签或发布。发布前先经用户授权提交并推送版本、文档及标签，再执行：
 
