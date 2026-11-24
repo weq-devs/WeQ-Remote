@@ -173,6 +173,10 @@ final class EmbeddedNetwork: ObservableObject {
 
     private static var codeCache: URL { URL.cachesDirectory.appendingPathComponent("WeQWebCode") }
 
+    func hasCachedWeb(token: String) -> Bool {
+        WeQHasCachedWebRelease(Self.codeCache.path, token) != 0
+    }
+
     private func localGateway(token: String, localSecret: String) throws -> Int32 {
         var storage = URL.applicationSupportDirectory.appendingPathComponent("WeQWebOrigins")
         try FileManager.default.createDirectory(at: storage, withIntermediateDirectories: true)
@@ -184,13 +188,13 @@ final class EmbeddedNetwork: ObservableObject {
         return handle
     }
 
-    private func attachGateway(_ handle: Int32, endpoint: URL, fingerprint: String?, release: String) async throws {
+    private func attachGateway(_ handle: Int32, endpoint: URL, fingerprint: String?, release: String, startup: Bool = false) async throws {
         let generation = revision
         let nodeHandle = fingerprint == nil ? await node?.tailscale ?? 0 : 0
         guard generation == revision, !Task.isCancelled,
               fingerprint != nil ? PairingInvitation.isDirectEndpoint(endpoint) :
                 PairingInvitation.isTailnetEndpoint(endpoint),
-              WeQAttachGateway(handle, nodeHandle, endpoint.absoluteString, fingerprint ?? "", release) == 1
+              WeQAttachGateway(handle, nodeHandle, endpoint.absoluteString, fingerprint ?? "", release, startup ? 1 : 0) == 1
         else { throw RemoteError.network }
     }
 
@@ -216,7 +220,7 @@ final class EmbeddedNetwork: ObservableObject {
         var adopted = false
         defer { if !adopted { WeQCloseGateway(handle) } }
         if let endpoint {
-            try await attachGateway(handle, endpoint: endpoint, fingerprint: fingerprint, release: release)
+            try await attachGateway(handle, endpoint: endpoint, fingerprint: fingerprint, release: release, startup: true)
         } else if WeQGatewayHasRelease(handle) == 0 { return nil }
 
         guard let raw = WeQGatewayOrigin(handle) else { throw RemoteError.network }
@@ -249,16 +253,6 @@ final class EmbeddedNetwork: ObservableObject {
         gateway = 0
         gatewayToken = nil
         webRoute = nil
-    }
-
-    func checkWebReload() async -> Bool {
-        let handle = gateway
-        guard handle != 0 else { return false }
-        return await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
-                continuation.resume(returning: WeQReloadGateway(handle) != 0)
-            }
-        }
     }
 
     func clearWebCache() {

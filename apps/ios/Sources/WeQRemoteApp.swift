@@ -62,7 +62,6 @@ struct RemoteView: View {
     }
 
     private var loadingStage: String? {
-        if model.checkingWebReload { return "正在向电脑检查网页更新" }
         if model.failure?.kind.retriesWeb == true { return nil }
         if model.webSession != nil, !model.webReady { return model.webLoadingStage }
         if model.code != nil { return "等待电脑确认" }
@@ -74,7 +73,7 @@ struct RemoteView: View {
         model.openingCachedWeb || model.webSession != nil || model.failure?.kind.retriesWeb == true
     }
 
-    private var showsWebPage: Bool { model.webReady && !model.checkingWebReload }
+    private var showsWebPage: Bool { model.webReady }
 
     private var showsNativeMenu: Bool { hasWebRecovery && !(showsWebPage && model.webMenuReady) }
 
@@ -89,7 +88,7 @@ struct RemoteView: View {
                         .allowsHitTesting(showsWebPage)
                         .accessibilityHidden(!showsWebPage)
                 }
-                if model.checkingWebReload || (!model.webReady && !model.openingCachedWeb) { connectionPage }
+                if !model.webReady && !model.openingCachedWeb { connectionPage }
                 if showsNativeMenu { startupMenu }
             }
             .background((colorScheme == .dark ? Color(red: 0.07, green: 0.08, blue: 0.09) : Color(red: 0.96, green: 0.97, blue: 0.97)).ignoresSafeArea())
@@ -110,16 +109,21 @@ struct RemoteView: View {
                         }.disabled(model.busy)
                     }
                     if hasWebRecovery {
-                        Button(model.webReady ? "重新加载" : "重试打开") {
+                        Button("重新连接") {
                             model.showingDetails = false
-                            Task { await model.retryWebFromMenu() }
-                        }.disabled(model.checkingWebReload)
+                            Task { await model.connectFromHome() }
+                        }
                         Button("断开连接") {
                             model.showingDetails = false
                             model.disconnect()
                             Task { await network.stop() }
                         }
                     }
+                    Toggle("启动 App 时自动连接", isOn: Binding(get: { model.autoConnectOnLaunch }, set: { model.setAutoConnectOnLaunch($0) }))
+                }
+                if let session = model.webSession, let cache = session.localCache {
+                    LocalCacheSection(cache: cache, onChange: session.localCacheChanged)
+                        .id(ObjectIdentifier(session))
                 }
                 Section("软件更新") {
                     Toggle("检查测试版", isOn: Binding(get: { model.includePrerelease }, set: { model.setPrerelease($0) }))
@@ -132,10 +136,6 @@ struct RemoteView: View {
                         Link(index == 0 ? "下载更新（\(mirror.label)）" : "备用下载（\(mirror.label)）", destination: mirror.downloadURL)
                     }
                     if let url = model.releaseURL { Link("查看发布说明", destination: url) }
-                }
-                if let session = model.webSession, let cache = session.localCache {
-                    LocalCacheSection(cache: cache, onChange: session.localCacheChanged)
-                        .id(ObjectIdentifier(session))
                 }
             }
             .navigationTitle("更多").navigationBarTitleDisplayMode(.inline)
@@ -208,8 +208,6 @@ struct RemoteView: View {
         }
         .alert("相机不可用", isPresented: $cameraError) { Button("好", role: .cancel) {} }
             message: { Text("可在系统设置中允许相机访问，或粘贴电脑的配对链接。") }
-        .alert("重新加载失败", isPresented: $model.webReloadFailed) { Button("好", role: .cancel) {} }
-            message: { Text("无法从电脑检查或准备网页更新，请稍后重试。") }
         .alert("删除电脑？", isPresented: $confirmingDelete) {
             Button("取消", role: .cancel) {}
             Button("删除电脑", role: .destructive) { model.forget(); Task { await network.stop() } }
@@ -284,7 +282,7 @@ struct RemoteView: View {
         }
         if model.busy { return model.computerAddress ?? "正在准备与电脑的连接" }
         if model.error != nil { return model.computerAddress ?? "" }
-        if model.rememberedComputer { return model.computerAddress ?? "打开后会自动连接上次的电脑" }
+        if model.rememberedComputer { return model.computerAddress ?? "已保存上次配对的电脑" }
         return "在电脑上的 WeQ 生成配对码，扫码或粘贴链接即可连接"
     }
 
@@ -402,6 +400,14 @@ struct RemoteView: View {
         VStack(spacing: 12) {
             if model.rememberedComputer || model.isConnecting {
                 reconnectRow
+                if model.hasCachedWeb && !model.isConnecting {
+                    Button { Task { await model.openCachedWeb() } } label: {
+                        Text("直接进入本地缓存界面")
+                            .font(.subheadline)
+                            .multilineTextAlignment(.center)
+                            .frame(minHeight: 44)
+                    }
+                }
             } else if canPair {
                 scanButton
                 linkField
@@ -477,8 +483,9 @@ struct RemoteView: View {
                 .accessibilityIdentifier("updateConnection")
             }
             Button {
-                if model.isConnecting && model.failure?.kind.retriesWeb != true { stopConnection() }
-                else { model.resumeReconnect(); pairingTask = Task { await model.reconnect(manually: true) } }
+                if model.isConnecting { stopConnection() }
+                else if model.canReloadFailedWeb { model.reloadFailedWeb() }
+                else { pairingTask = Task { await model.connectFromHome() } }
             } label: {
                 HStack(spacing: 8) {
                     Image(systemName: reconnectIcon).font(.system(size: 15, weight: .semibold))
@@ -489,7 +496,6 @@ struct RemoteView: View {
                 .background(accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 14))
             }
             .buttonStyle(PressableButtonStyle(reduceMotion: reduceMotion))
-            .disabled(model.busy && model.failure?.kind.retriesWeb == true)
             .accessibilityIdentifier("connectComputer")
             Button(role: .destructive) { confirmingDelete = true } label: {
                 Image(systemName: "trash").font(.system(size: 16, weight: .medium))
@@ -503,13 +509,13 @@ struct RemoteView: View {
     }
 
     private var reconnectTitle: String {
-        if model.failure?.kind.retriesWeb == true { return "重试打开" }
+        if model.canReloadFailedWeb { return "重新加载" }
         if model.isConnecting { return "停止" }
         return model.failure == nil ? "连接" : "重新连接"
     }
 
     private var reconnectIcon: String {
-        if model.failure?.kind.retriesWeb == true { return "arrow.clockwise" }
+        if model.canReloadFailedWeb { return "arrow.clockwise" }
         return model.isConnecting ? "stop.fill" : "arrow.right"
     }
 

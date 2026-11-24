@@ -46,9 +46,9 @@ final class RemoteModel: ObservableObject {
     @Published private(set) var webLoadingStage = WebDownloadProgress.loadingMessage
     @Published private(set) var webDownload: WebDownloadProgress?
     @Published private(set) var webDevelopmentProgress: WebDevelopmentProgress?
-    @Published private(set) var checkingWebReload = false
-    @Published var webReloadFailed = false
     @Published private(set) var rememberedComputer = false
+    @Published private(set) var hasCachedWeb = false
+    @Published private(set) var autoConnectOnLaunch = UserDefaults.standard.object(forKey: "autoConnectOnLaunch") as? Bool ?? true
     @Published private(set) var health = ConnectionHealth()
     @Published private(set) var checkingUpdates = false
     @Published private(set) var updateMessage = "尚未检查"
@@ -180,7 +180,8 @@ final class RemoteModel: ObservableObject {
 
     var connectionCheckInterval: TimeInterval { health.checkInterval }
 
-    var isConnecting: Bool { checkingWebReload || busy || code != nil || (webSession != nil && !webReady) }
+    var canReloadFailedWeb: Bool { failure?.kind.retriesWeb == true && webSession != nil }
+    var isConnecting: Bool { busy || code != nil || (webSession != nil && !webReady && !canReloadFailedWeb) }
 
     var appVersion: String {
         Bundle.main.infoDictionary?["WeQReleaseVersion"] as? String
@@ -251,6 +252,44 @@ final class RemoteModel: ObservableObject {
 
     func resumeReconnect() { reconnectPaused = false }
 
+    func setAutoConnectOnLaunch(_ enabled: Bool) {
+        UserDefaults.standard.set(enabled, forKey: "autoConnectOnLaunch")
+        autoConnectOnLaunch = enabled
+    }
+
+    private func updateCachedWebAvailability() {
+        hasCachedWeb = rememberedComputer && (try? SavedConnection.load()).map { network.hasCachedWeb(token: $0.token) } == true
+    }
+
+    func connectFromHome() async {
+        disconnect()
+        resumeReconnect()
+        await reconnect(manually: true)
+    }
+
+    func openCachedWeb() async {
+        guard !isConnecting, hasCachedWeb else { return }
+        disconnect()
+        let generation = revision
+        busy = true
+        defer { if generation == revision { busy = false } }
+        do {
+            guard let saved = try SavedConnection.load(), let session = try await network.webSession(token: saved.token) else {
+                throw RemoteError.response
+            }
+            guard generation == revision, !Task.isCancelled else {
+                session.close()
+                if generation == revision { network.closeWeb() }
+                return
+            }
+            adoptWebSession(session, cached: true)
+        } catch {
+            guard generation == revision, !Task.isCancelled else { return }
+            updateCachedWebAvailability()
+            failure = .init(kind: .webLoad, detail: "无法打开本机缓存界面。")
+        }
+    }
+
     func suspend() {
         healthEpoch += 1
         healthDeadline?.cancel()
@@ -290,20 +329,9 @@ final class RemoteModel: ObservableObject {
         do {
             guard let saved = try SavedConnection.load() else {
                 rememberedComputer = false
-                openingCachedWeb = false
                 return
             }
             rememberedComputer = true
-            if webSession == nil, !testMode,
-               let cached = try? await network.webSession(token: saved.token) {
-                guard generation == revision, !Task.isCancelled else {
-                    cached.close()
-                    network.closeWeb()
-                    return
-                }
-                adoptWebSession(cached, cached: true)
-            }
-            if webSession == nil { openingCachedWeb = false }
             message = "正在连接电脑"
             let selection = try await selectConnection(saved.endpoints ?? [saved.endpoint], pin: saved.routeFingerprint ?? saved.fingerprint, probe: restoreProbe(for: saved.endpoints), token: saved.token)
             guard generation == revision else { selection.api.session.invalidateAndCancel(); return }
@@ -317,7 +345,6 @@ final class RemoteModel: ObservableObject {
             if !connected { api?.session.invalidateAndCancel(); api = nil }
         } catch {
             if generation == revision, !Task.isCancelled {
-                if webSession == nil { openingCachedWeb = false }
                 if case RemoteError.unauthorized = error { fail(error) }
                 else {
                     api?.session.invalidateAndCancel(); api = nil
@@ -452,32 +479,13 @@ final class RemoteModel: ObservableObject {
         webSession = session
     }
 
-    func retryWebFromMenu() async {
-        guard !checkingWebReload else { return }
-        if let session = webSession {
-            checkingWebReload = true
-            webReloadFailed = false
-            let checked = await network.checkWebReload()
-            guard webSession === session else { return }
-            checkingWebReload = false
-            if checked {
-                webLoadingStage = WebDownloadProgress.loadingMessage
-                session.reload()
-            } else if webReady {
-                webReloadFailed = true
-            } else {
-                failWebLoad(RemoteWebStartupError.reported("无法从电脑检查或准备网页更新，请稍后重试。"))
-            }
-            return
-        }
-        disconnect()
-        await network.stop()
-        resumeReconnect()
-        await reconnect(manually: true)
+    func reloadFailedWeb() {
+        guard canReloadFailedWeb else { return }
+        webLoadingStage = WebDownloadProgress.loadingMessage
+        webSession?.reload()
     }
 
     private func failWebLoad(_ error: Error) {
-        checkingWebReload = false
         let recovery = checkedAt != nil
             ? "本次已连到电脑，无需重新扫码。"
             : "可使用已保存的配对重试，无需重新扫码。"
@@ -499,13 +507,11 @@ final class RemoteModel: ObservableObject {
         }
         webDownload = nil
         webDevelopmentProgress = nil
-        webSession?.close()
-        network.closeWeb()
-        webSession = nil
         webReady = false
         webMenuReady = false
         openingCachedWeb = false
         connected = false
+        updateCachedWebAvailability()
         message = failure?.kind.title ?? "网页加载失败"
     }
 
@@ -529,8 +535,8 @@ final class RemoteModel: ObservableObject {
     init(network: EmbeddedNetwork) {
         self.network = network
         rememberedComputer = (try? SavedConnection.load()) != nil
-        openingCachedWeb = rememberedComputer && !testMode && EmbeddedNetwork.integrationControl == nil &&
-            !ProcessInfo.processInfo.arguments.contains("--remote-web-smoke-test")
+        reconnectPaused = !autoConnectOnLaunch
+        updateCachedWebAvailability()
     }
 
     // 仅模拟器 Debug 构建接受回环测试配置；真机/Release 无系统网络绕行入口。
@@ -850,8 +856,6 @@ final class RemoteModel: ObservableObject {
     }
 
     func disconnect() {
-        checkingWebReload = false
-        webReloadFailed = false
         healthEpoch += 1
         connectionRecovery = 0
         eventCheck?.cancel()
@@ -891,5 +895,6 @@ final class RemoteModel: ObservableObject {
         message = "未配对"
         failure = nil
         invitationText = ""
+        updateCachedWebAvailability()
     }
 }

@@ -164,21 +164,28 @@ final class WebContainerTests: XCTestCase {
     }
 
     @MainActor
-    func testCachedWebStartupFailureRemainsWhileAutomaticReconnectRuns() async {
+    func testFailedCachedWebReloadKeepsSessionWithoutReconnecting() async {
         let model = RemoteModel(network: EmbeddedNetwork())
         let session = RemoteWebSession(configuration: WKWebViewConfiguration(),
                                        endpoint: URL(string: "http://127.0.0.1:7691")!)
-        model.adoptWebSession(session)
+        model.adoptWebSession(session, cached: true)
+        defer { model.disconnect() }
         session.receiveStartup("error", message: "WeQ 界面启动异常，请重新连接。")
         XCTAssertEqual(model.failure?.kind, .webStartup)
         XCTAssertFalse(model.webReady)
-        XCTAssertNil(model.webSession)
+        XCTAssertTrue(model.canReloadFailedWeb)
+        XCTAssertTrue(model.webSession === session)
         XCTAssertNil(model.checkedAt)
 
         model.suspend()
         await model.reconnect()
         XCTAssertEqual(model.failure?.kind, .webStartup)
         XCTAssertFalse(model.busy)
+
+        model.reloadFailedWeb()
+        XCTAssertNil(model.failure)
+        XCTAssertTrue(model.webSession === session)
+        XCTAssertNil(model.checkedAt)
     }
 
     @MainActor

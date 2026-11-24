@@ -130,11 +130,27 @@ func (g *Gateway) Attach(target *url.URL, transport http.RoundTripper) {
 }
 
 func (g *Gateway) AttachRelease(target *url.URL, transport http.RoundTripper, version string) {
+	g.attachRelease(target, transport, version, false)
+}
+
+// AttachStartup uses an offline document only when the authenticated status confirms its version.
+func (g *Gateway) AttachStartup(target *url.URL, transport http.RoundTripper, version string) {
+	g.attachRelease(target, transport, version, true)
+}
+
+func (g *Gateway) attachRelease(target *url.URL, transport http.RoundTripper, version string, startup bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	base, _ := transport.(*http.Transport)
 	if g.closed {
 		return
+	}
+	if startup {
+		active := ""
+		if Credential(version) && version == g.release() {
+			active = version
+		}
+		g.activeRelease.Store(active)
 	}
 	if base != nil && base == g.base && g.target != nil && target.String() == g.target.String() {
 		g.setUpstreamRelease(version, false)

@@ -46,11 +46,15 @@ func releaseAsset(path string) bool {
 func releaseDirectory(token string) string {
 	sharedWebAssets.Lock()
 	defer sharedWebAssets.Unlock()
-	if sharedWebAssets.directory == "" {
+	return releaseDirectoryAt(sharedWebAssets.directory, token)
+}
+
+func releaseDirectoryAt(directory, token string) string {
+	if directory == "" {
 		return ""
 	}
 	key := sha256.Sum256([]byte("weq-web-release\n" + token))
-	return filepath.Join(sharedWebAssets.directory, "releases", hex.EncodeToString(key[:]))
+	return filepath.Join(directory, "releases", hex.EncodeToString(key[:]))
 }
 
 func readRelease(directory string) string {
@@ -70,6 +74,11 @@ func readRelease(directory string) string {
 func (g *Gateway) release() string { return g.currentRelease.Load().(string) }
 
 func (g *Gateway) HasRelease() bool { return g.release() != "" }
+
+// HasCachedRelease only checks for a published document, not its assets.
+func HasCachedRelease(directory, token string) bool {
+	return Credential(token) && readRelease(releaseDirectoryAt(directory, token)) != ""
+}
 
 // Reload 检查当前电脑的网页，只有取得可用页面才切换。手动请求优先于后台准备。
 func (g *Gateway) Reload() bool {

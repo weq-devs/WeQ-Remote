@@ -14,6 +14,9 @@ func SetWebStorageDirectory(directory string) error {
 	return webgateway.SetWebStorageDirectory(directory)
 }
 func ClearWebCache() { webgateway.ClearWebCache() }
+func HasCachedWebRelease(directory, token string) bool {
+	return webgateway.HasCachedRelease(directory, token)
+}
 
 type WebGateway struct{ gateway *webgateway.Gateway }
 
@@ -28,7 +31,6 @@ func NewWebGateway(token, secret string) (*WebGateway, error) {
 func (g *WebGateway) Origin() string   { return g.gateway.Origin() }
 func (g *WebGateway) HasRelease() bool { return g.gateway.HasRelease() }
 func (g *WebGateway) Close()           { g.gateway.Close() }
-func (g *WebGateway) Reload() bool     { return g.gateway.Reload() }
 
 func (g *WebGateway) StoreImage(id, media string, body []byte) bool {
 	return g.gateway.StoreImage(id, media, body)
@@ -39,6 +41,14 @@ func (c *Client) AttachWeb(g *WebGateway, endpoint string) error {
 }
 
 func (c *Client) AttachWebRelease(g *WebGateway, endpoint, version string) error {
+	return c.attachWebRelease(g, endpoint, version, false)
+}
+
+func (c *Client) AttachStartupWeb(g *WebGateway, endpoint, version string) error {
+	return c.attachWebRelease(g, endpoint, version, true)
+}
+
+func (c *Client) attachWebRelease(g *WebGateway, endpoint, version string, startup bool) error {
 	if g == nil {
 		return errors.New("missing gateway")
 	}
@@ -49,7 +59,7 @@ func (c *Client) AttachWebRelease(g *WebGateway, endpoint, version string) error
 		if r.closed || endpoint != r.endpoints[0] || r.active == nil {
 			return errors.New("invalid connection")
 		}
-		return r.active.AttachWebRelease(g, r.endpoint, version)
+		return r.active.attachWebRelease(g, r.endpoint, version, startup)
 	}
 	if !c.accepts(endpoint) {
 		return errors.New("invalid web destination")
@@ -60,7 +70,11 @@ func (c *Client) AttachWebRelease(g *WebGateway, endpoint, version string) error
 		return errors.New("network closed")
 	}
 	target, _ := url.Parse(endpoint)
-	g.gateway.AttachRelease(target, c.http.Transport, version)
+	if startup {
+		g.gateway.AttachStartup(target, c.http.Transport, version)
+	} else {
+		g.gateway.AttachRelease(target, c.http.Transport, version)
+	}
 	return nil
 }
 

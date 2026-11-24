@@ -67,8 +67,16 @@ func WeQGatewayHasRelease(id C.int) C.int {
 	return 0
 }
 
+//export WeQHasCachedWebRelease
+func WeQHasCachedWebRelease(directory, token *C.char) C.int {
+	if webgateway.HasCachedRelease(C.GoString(directory), C.GoString(token)) {
+		return 1
+	}
+	return 0
+}
+
 //export WeQAttachGateway
-func WeQAttachGateway(id, node C.int, endpoint, fingerprint, release *C.char) C.int {
+func WeQAttachGateway(id, node C.int, endpoint, fingerprint, release *C.char, startup C.int) C.int {
 	gateway := weqGateway(id)
 	target, err := url.Parse(C.GoString(endpoint))
 	if gateway == nil || err != nil || target.Host == "" {
@@ -100,7 +108,11 @@ func WeQAttachGateway(id, node C.int, endpoint, fingerprint, release *C.char) C.
 	default:
 		return 0
 	}
-	gateway.AttachRelease(target, transport, C.GoString(release))
+	if startup != 0 {
+		gateway.AttachStartup(target, transport, C.GoString(release))
+	} else {
+		gateway.AttachRelease(target, transport, C.GoString(release))
+	}
 	return 1
 }
 
@@ -109,14 +121,6 @@ func WeQSetGatewayRelease(id C.int, release *C.char) {
 	if gateway := weqGateway(id); gateway != nil {
 		gateway.SetUpstreamRelease(C.GoString(release))
 	}
-}
-
-//export WeQReloadGateway
-func WeQReloadGateway(id C.int) C.int {
-	if gateway := weqGateway(id); gateway != nil && gateway.Reload() {
-		return 1
-	}
-	return 0
 }
 
 //export WeQStoreGatewayImage

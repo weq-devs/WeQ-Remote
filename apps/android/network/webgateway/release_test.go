@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -334,9 +336,10 @@ func TestStableReleaseDoesNotRequestCodeAgainOnReconnect(t *testing.T) {
 		t.Fatalf("candidate = %q", got)
 	}
 	for range 3 {
-		gateway.AttachRelease(target, &http.Transport{}, version)
+		gateway.AttachStartup(target, &http.Transport{}, version)
 		gateway.SetUpstreamRelease(version)
 		gateway.checkRelease(false, false)
+		get("/")
 		get(updatePath + "?notice=1")
 		get(lazy + "?query=1")
 		if got := get("/trpc/read"); got != "live" {
@@ -345,6 +348,73 @@ func TestStableReleaseDoesNotRequestCodeAgainOnReconnect(t *testing.T) {
 	}
 	if codeRequests.Load() != 3 || dataRequests.Load() != 3 {
 		t.Fatalf("upstream code/data requests: %d/%d", codeRequests.Load(), dataRequests.Load())
+	}
+}
+
+func TestOnlineStartupNeverFallsBackToAnUnconfirmedCachedDocument(t *testing.T) {
+	root := t.TempDir()
+	if err := SetWebCacheDirectory(root); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		sharedWebAssets.Lock()
+		sharedWebAssets.directory = ""
+		sharedWebAssets.Unlock()
+	})
+	token, secret, old := strings.Repeat("a", 64), strings.Repeat("b", 64), strings.Repeat("c", 64)
+	directory := releaseDirectory(token)
+	if err := os.MkdirAll(filepath.Join(directory, old), 0700); err != nil {
+		t.Fatal(err)
+	}
+	for path, value := range map[string]string{"current": old, filepath.Join(old, "index.html"): "cached page"} {
+		if err := os.WriteFile(filepath.Join(directory, path), []byte(value), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !HasCachedRelease(root, token) || HasCachedRelease(root, secret) {
+		t.Fatal("cache discovery must use only this authorization's published document")
+	}
+	for _, kind := range []struct {
+		name, release, body string
+		status              int
+		attach              bool
+	}{
+		{"changed", strings.Repeat("d", 64), "current page", 200, true},
+		{"legacy", "", "current page", 200, true},
+		{"failed", strings.Repeat("e", 64), "unavailable", 503, true},
+		{"cached after failure", "", "cached page", 200, false},
+	} {
+		t.Run(kind.name, func(t *testing.T) {
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				if !kind.attach {
+					t.Error("cache-only startup contacted the upstream")
+				}
+				w.Header().Set("Content-Type", "text/html")
+				w.WriteHeader(kind.status)
+				io.WriteString(w, kind.body)
+			}))
+			defer upstream.Close()
+			gateway, err := Open(token, secret)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer gateway.Close()
+			if kind.attach {
+				target, _ := url.Parse(upstream.URL)
+				gateway.AttachStartup(target, &http.Transport{}, kind.release)
+			}
+			req, _ := http.NewRequest(http.MethodGet, gateway.Origin()+"/", nil)
+			req.AddCookie(&http.Cookie{Name: "weq_remote_local", Value: secret})
+			response, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer response.Body.Close()
+			body, err := io.ReadAll(response.Body)
+			if err != nil || response.StatusCode != kind.status || string(body) != kind.body {
+				t.Fatalf("got %d %q, read error %v", response.StatusCode, body, err)
+			}
+		})
 	}
 }
 
