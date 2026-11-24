@@ -242,7 +242,7 @@ public final class MainActivity extends Activity {
             getWindow().setStatusBarColor(Color.TRANSPARENT);
             getWindow().setNavigationBarColor(Color.TRANSPARENT);
             boolean dark = (getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES;
-            android.view.WindowInsetsController controller = getWindow().getInsetsController();
+            android.view.WindowInsetsController controller = getWindow().getDecorView().getWindowInsetsController();
             if (controller != null) {
                 int mask = android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS | android.view.WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS;
                 controller.setSystemBarsAppearance(dark ? 0 : mask, mask);
@@ -337,16 +337,19 @@ public final class MainActivity extends Activity {
         android.widget.FrameLayout page = new android.widget.FrameLayout(this);
         page.setBackgroundColor(pageColor);
         setupView = page;
+        LinearLayout column = new LinearLayout(this);
+        column.setOrientation(LinearLayout.VERTICAL);
+        page.addView(column, new android.widget.FrameLayout.LayoutParams(Math.min(getResources().getDisplayMetrics().widthPixels, dp(496)), -1, android.view.Gravity.TOP | android.view.Gravity.CENTER_HORIZONTAL));
         android.widget.ScrollView scroll = new android.widget.ScrollView(this);
         scroll.setFillViewport(true);
-        page.addView(scroll, new android.widget.FrameLayout.LayoutParams(Math.min(getResources().getDisplayMetrics().widthPixels, dp(496)), -1, android.view.Gravity.TOP | android.view.Gravity.CENTER_HORIZONTAL));
+        column.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1f));
         final LinearLayout content = new LinearLayout(this);
         content.setOrientation(LinearLayout.VERTICAL);
-        content.setPadding(pad, dp(8), pad, dp(10));
+        content.setPadding(pad, dp(8), pad, 0);
         scroll.addView(content, new android.widget.ScrollView.LayoutParams(-1, -2));
         page.setOnApplyWindowInsetsListener((view, insets) -> {
             android.graphics.Rect bars = WindowInsetsHelper.contentInsets(insets);
-            scroll.setPadding(bars.left, bars.top, bars.right, bars.bottom);
+            column.setPadding(bars.left, bars.top, bars.right, bars.bottom + dp(10));
             return insets;
         });
         page.requestApplyInsets();
@@ -456,7 +459,8 @@ public final class MainActivity extends Activity {
 
         LinearLayout dock = new LinearLayout(this);
         dock.setOrientation(LinearLayout.VERTICAL);
-        content.addView(dock, new LinearLayout.LayoutParams(-1, -2));
+        dock.setPadding(pad, 0, pad, 0);
+        column.addView(dock, new LinearLayout.LayoutParams(-1, -2));
 
         pairSection = new LinearLayout(this);
         pairSection.setOrientation(LinearLayout.VERTICAL);
@@ -689,7 +693,8 @@ public final class MainActivity extends Activity {
         updateButton.setVisibility(rememberedComputer ? View.VISIBLE : View.GONE);
         retryButton.setVisibility(rememberedComputer || loading ? View.VISIBLE : View.GONE);
         setTextIfChanged(retryButton, loading ? "停止" : canReloadFailedWeb() ? "重新加载" : failure == null ? "连接" : "重新连接");
-        cachedWebButton.setVisibility(rememberedComputer && hasCachedWeb && !loading ? View.VISIBLE : View.GONE);
+        // 为缓存入口保留位置，连接与停止使用同一行。
+        cachedWebButton.setVisibility(!rememberedComputer ? View.GONE : hasCachedWeb && !loading ? View.VISIBLE : View.INVISIBLE);
         retryButton.setEnabled(true);
         disconnectButton.setVisibility(paired || claimID != null || rememberedComputer ? View.VISIBLE : View.GONE);
         codeView.setVisibility(claimID != null ? View.VISIBLE : View.GONE);

@@ -176,23 +176,24 @@ struct RemoteView: View {
 
     // 首页是三段式：顶部状态条、居中状态区、底部操作坞。内容不再全挤在顶部。
     private var connectionPage: some View {
-        GeometryReader { proxy in
-            ScrollView {
-                VStack(spacing: 0) {
-                    topBar.padding(.top, 8)
-                    Spacer(minLength: 28)
-                    hero
-                    Spacer(minLength: 32)
-                    dock
+        VStack(spacing: 0) {
+            GeometryReader { proxy in
+                ScrollView {
+                    VStack(spacing: 0) {
+                        topBar.padding(.top, 8)
+                        Spacer(minLength: 28)
+                        hero
+                        Spacer(minLength: 32)
+                    }
+                    .frame(minHeight: proxy.size.height)
                 }
-                .padding(.horizontal, 24)
-                .padding(.bottom, 10)
-                .frame(minHeight: proxy.size.height - 18)
-                .frame(maxWidth: 496)
-                .frame(maxWidth: .infinity)
+                .scrollDismissesKeyboard(.interactively)
             }
-            .scrollDismissesKeyboard(.interactively)
+            dock.padding(.bottom, 28)
         }
+        .padding(.horizontal, 24)
+        .frame(maxWidth: 496)
+        .frame(maxWidth: .infinity)
         .background(Color(uiColor: .systemGroupedBackground).ignoresSafeArea())
         .toolbar(.hidden, for: .navigationBar)
         .onChange(of: scenePhase) { _, phase in if phase == .background { pairingTask?.cancel() } }
@@ -397,16 +398,21 @@ struct RemoteView: View {
 
     // 主操作贴近拇指：底部操作坞随状态切换扫码、链接或已保存电脑的入口。
     @ViewBuilder private var dock: some View {
+        let showsCachedWeb = model.hasCachedWeb && !model.isConnecting
         VStack(spacing: 12) {
             if model.rememberedComputer || model.isConnecting {
                 reconnectRow
-                if model.hasCachedWeb && !model.isConnecting {
+                if model.rememberedComputer {
+                    // 为缓存入口保留位置，连接与停止使用同一行。
                     Button { Task { await model.openCachedWeb() } } label: {
                         Text("直接进入本地缓存界面")
                             .font(.subheadline)
                             .multilineTextAlignment(.center)
                             .frame(minHeight: 44)
                     }
+                    .opacity(showsCachedWeb ? 1 : 0)
+                    .allowsHitTesting(showsCachedWeb)
+                    .accessibilityHidden(!showsCachedWeb)
                 }
             } else if canPair {
                 scanButton
