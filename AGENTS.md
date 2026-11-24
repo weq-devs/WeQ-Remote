@@ -1,12 +1,11 @@
 # WeQ Remote 开发约定
 
-- 本仓库只维护 iOS / Android 手机连接壳、协议客户端、网络与原生 WebView；聊天页面、业务 API、数据库、电脑端授权和网络入口仍由 WeQ 维护。
-- 默认留在当前分支，本地提交，不自动创建远端、推送或发布。未获用户授权不委派、不联系其他 Agent。
-- 修改前先读根 README、对应平台 README 和 `docs/protocol.md`，复用已有实现；中文文档与提交信息，Conventional Commits。
-- 每次生成新的安装构建（含本机测试、候选和发布包）前，将本次构建的平台构建号加一：iOS 为 `apps/ios/project.yml` 的 `CURRENT_PROJECT_VERSION`，Android 为 `apps/android/AndroidManifest.xml` 的 `versionCode`；构建后核对实际产物。只构建一端不动另一端；只做不产出安装包的编译检查、复用或重传已有产物时不递增。版本号仍只按用户明确指令修改。
-- 日常选择最小充分验证，不把 Swift 单测、Go 单测／竞态检查、Java 协议测试及双端构建当作每次必跑清单：只选受影响语言／模块的已有用例；Go 并发变化再查竞态，平台集成变化再做对应构建。文案、图标、局部样式和入口增删默认不新增自动化、不启动模拟器或浏览器；复杂状态、协议与失败恢复按风险补回归。证据充分即停止，不得把编译、安装或合成协议测试冒称真实网络及性能验收。
-- 使用项目命名空间 `io.github.weqdevs.remote`，不引入个人域名或本机绝对路径。旧身份安装不自动迁移；不为测试删除用户凭据或重置应用。
-- 签名证书、描述文件、私有配置、运行身份、设备数据、构建目录不入 Git。原生产物及环境复用现有依赖，不复制整个依赖工程。
-- 模拟器 / SDK 外盘约定继续有效，使用 `android-sdk-run`、`ios-simulator-run`、`ios-simctl` 及 external_disk_guard；不启动默认 SSD 设备，不关闭其他任务设备。
-- 集成测试通过 `WEQ_DESKTOP_REPO` 选择桌面仓库，仅调用其明确的夹具入口，不从手机代码直接导入桌面私有源码。产品构建不依赖桌面仓库。
-
+- 本仓库维护 iOS／Android 客户端、协议、网络与原生 WebView。聊天页面、业务 API、数据库、电脑授权与网络入口由 WeQ 维护。
+- 修改前读[根 README](README.md)、[协议](docs/protocol.md)和对应平台说明（[iOS](apps/ios/README.md)／[Android](apps/android/README.md)）。优先复用现有实现。使用中文文档和 Conventional Commits 中文提交。
+- 默认在当前分支本地提交。创建远端、推送、发布、委派或联系其他 Agent 需要用户授权。
+- 每次生成新安装包前递增对应平台构建号。iOS 改 [project.yml](apps/ios/project.yml) 的 `CURRENT_PROJECT_VERSION`，Android 改 [AndroidManifest.xml](apps/android/AndroidManifest.xml) 的 `versionCode`。构建后核对产物。仅编译检查、复用或重传已有产物不递增。版本号只按用户明确指令修改。
+- 按改动范围选最小充分验证。优先受影响模块的已有用例，Go 并发改动查竞态，平台集成改动做对应构建，复杂状态、协议与失败恢复按风险补回归。文案、图标、局部样式与入口增删通常检查差异即可。区分编译、安装、合成测试、真实网络及性能验收。
+- 应用命名空间使用 `io.github.weqdevs.remote`。不引入个人域名或本机绝对路径。旧身份安装不自动迁移，测试不删除用户凭据或重置应用。
+- 签名证书、描述文件、私有配置、运行身份、设备数据和构建目录不入 Git。原生依赖复用已有环境，避免复制整套依赖工程。
+- 沿用外盘 SDK／模拟器及 `external_disk_guard`，通过 `android-sdk-run`、`ios-simulator-run` 或 `ios-simctl` 使用。使用外盘专用设备，结束后只关闭本轮设备。
+- 联调用 `WEQ_DESKTOP_REPO` 指定 WeQ，通过明确的夹具入口调用。产品构建独立于桌面仓库，手机源码不导入桌面私有模块。
