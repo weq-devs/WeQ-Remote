@@ -2,7 +2,7 @@
 
 ## 1.1.0 - 未发布
 
-- iOS／Android 版本统一为 1.1.0（iOS build 14、Android versionCode 12）。[版本说明](docs/releases/1.1.0.md)
+- iOS／Android 版本统一为 1.1.0（iOS build 15、Android versionCode 12）。[版本说明](docs/releases/1.1.0.md)
 - **连接首页**：「连接」使用电脑当前网页版本；有缓存时可单独进入，不连电脑。失败保留缓存。
 - **连接进度**：只显示实测下载量，资源圆环到 100% 后保留到页面就绪。
 - **启动设置**：连接菜单可关闭启动时自动连接，软件更新移到最后；已打开网页掉线时保留界面。
