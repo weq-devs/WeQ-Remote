@@ -54,6 +54,7 @@ struct RemoteView: View {
     @Environment(\.colorScheme) private var colorScheme
     @State private var pairingTask: Task<Void, Never>?
     private let actionColor = Color(red: 0.02, green: 0.48, blue: 0.43)
+    private let heroMarkHeight: CGFloat = 150
     // 深色下用亮色强调色填充按钮并配深色文字，和浅色下的深青底白字互为镜像。
     private var actionFill: Color { colorScheme == .dark ? accent : actionColor }
     private var actionInk: Color { colorScheme == .dark ? Color(red: 0.05, green: 0.14, blue: 0.12) : .white }
@@ -176,21 +177,23 @@ struct RemoteView: View {
 
     // 首页是三段式：顶部状态条、居中状态区、底部操作坞。内容不再全挤在顶部。
     private var connectionPage: some View {
-        VStack(spacing: 0) {
-            GeometryReader { proxy in
-                ScrollView {
-                    VStack(spacing: 0) {
-                        topBar.padding(.top, 8)
-                        Spacer(minLength: 28)
-                        hero
-                        Spacer(minLength: 32)
+        GeometryReader { page in
+            VStack(spacing: 0) {
+                topBar.padding(.top, 8)
+                GeometryReader { viewport in
+                    ScrollView {
+                        HomeStatusLayout(
+                            viewportHeight: viewport.size.height,
+                            preferredInset: page.size.height * 0.36 - 52 - heroMarkHeight / 2
+                        ) {
+                            hero
+                        }
                     }
-                    .frame(minHeight: proxy.size.height)
+                    .scrollBounceBehavior(.basedOnSize)
+                    .scrollDismissesKeyboard(.interactively)
                 }
-                .scrollBounceBehavior(.basedOnSize)
-                .scrollDismissesKeyboard(.interactively)
+                dock.padding(.bottom, 28)
             }
-            dock.padding(.bottom, 28)
         }
         .padding(.horizontal, 24)
         .frame(maxWidth: 496)
@@ -393,7 +396,7 @@ struct RemoteView: View {
                     .foregroundStyle(accent)
             }
         }
-        .frame(height: 150)
+        .frame(height: heroMarkHeight)
         .accessibilityHidden(loadingStage == nil || !(model.webDownload?.showsRing ?? (model.webDevelopmentProgress != nil)))
     }
 
@@ -543,6 +546,28 @@ struct RemoteView: View {
         let allowed = await AVCaptureDevice.requestAccess(for: .video)
         if allowed && DataScannerViewController.isSupported && DataScannerViewController.isAvailable { scanning = true }
         else { cameraError = true }
+    }
+}
+
+private struct HomeStatusLayout: Layout {
+    let viewportHeight: CGFloat
+    let preferredInset: CGFloat
+
+    private func topInset(for contentHeight: CGFloat) -> CGFloat {
+        max(0, min(preferredInset, viewportHeight - contentHeight))
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard let content = subviews.first else { return .zero }
+        let size = content.sizeThatFits(ProposedViewSize(width: proposal.width, height: nil))
+        return CGSize(width: size.width, height: size.height + topInset(for: size.height))
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard let content = subviews.first else { return }
+        let contentProposal = ProposedViewSize(width: bounds.width, height: nil)
+        let size = content.sizeThatFits(contentProposal)
+        content.place(at: CGPoint(x: bounds.minX, y: bounds.minY + topInset(for: size.height)), anchor: .topLeading, proposal: contentProposal)
     }
 }
 

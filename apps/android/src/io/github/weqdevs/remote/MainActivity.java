@@ -337,20 +337,21 @@ public final class MainActivity extends Activity {
         android.widget.FrameLayout page = new android.widget.FrameLayout(this);
         page.setBackgroundColor(pageColor);
         setupView = page;
-        LinearLayout column = new LinearLayout(this);
+        class HomeColumn extends LinearLayout {
+            int safeHeight;
+            HomeColumn() { super(MainActivity.this); }
+            @Override protected void onMeasure(int widthSpec, int heightSpec) {
+                safeHeight = Math.max(0, View.MeasureSpec.getSize(heightSpec) - getPaddingTop() - getPaddingBottom());
+                super.onMeasure(widthSpec, heightSpec);
+            }
+        }
+        HomeColumn column = new HomeColumn();
         column.setOrientation(LinearLayout.VERTICAL);
+        column.setPadding(pad, dp(8), pad, dp(10));
         page.addView(column, new android.widget.FrameLayout.LayoutParams(Math.min(getResources().getDisplayMetrics().widthPixels, dp(496)), -1, android.view.Gravity.TOP | android.view.Gravity.CENTER_HORIZONTAL));
-        android.widget.ScrollView scroll = new android.widget.ScrollView(this);
-        scroll.setFillViewport(true);
-        scroll.setOverScrollMode(View.OVER_SCROLL_IF_CONTENT_SCROLLS);
-        column.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1f));
-        final LinearLayout content = new LinearLayout(this);
-        content.setOrientation(LinearLayout.VERTICAL);
-        content.setPadding(pad, dp(8), pad, 0);
-        scroll.addView(content, new android.widget.ScrollView.LayoutParams(-1, -2));
         page.setOnApplyWindowInsetsListener((view, insets) -> {
             android.graphics.Rect bars = WindowInsetsHelper.contentInsets(insets);
-            column.setPadding(bars.left, bars.top, bars.right, bars.bottom + dp(10));
+            column.setPadding(bars.left + pad, bars.top + dp(8), bars.right + pad, bars.bottom + dp(10));
             return insets;
         });
         page.requestApplyInsets();
@@ -387,16 +388,32 @@ public final class MainActivity extends Activity {
         topBar.addView(statusChip);
         setupMenu = connectionMenuButton("更多", accent);
         topBar.addView(setupMenu, new LinearLayout.LayoutParams(dp(44), dp(44)));
-        content.addView(topBar);
+        column.addView(topBar);
 
-        android.widget.FrameLayout hero = new android.widget.FrameLayout(this);
-        content.addView(hero, new LinearLayout.LayoutParams(-1, -2, 1f));
+        final int markHeight = dp(150);
+        LinearLayout.LayoutParams markParams = new LinearLayout.LayoutParams(-1, markHeight);
         LinearLayout heroColumn = new LinearLayout(this);
         heroColumn.setOrientation(LinearLayout.VERTICAL);
         heroColumn.setGravity(android.view.Gravity.CENTER_HORIZONTAL);
-        hero.addView(heroColumn, new android.widget.FrameLayout.LayoutParams(-1, -2, android.view.Gravity.CENTER));
+        android.widget.ScrollView scroll = new android.widget.ScrollView(this) {
+            @Override protected void onMeasure(int widthSpec, int heightSpec) {
+                super.onMeasure(widthSpec, heightSpec);
+                // 优先固定圆心；内容放不下时先让顶部留白让位。
+                int preferredInset = Math.round(column.safeHeight * 0.36f) - topBar.getMeasuredHeight() - markHeight / 2;
+                int contentHeight = heroColumn.getMeasuredHeight() - markParams.topMargin;
+                int inset = Math.max(0, Math.min(preferredInset, getMeasuredHeight() - contentHeight));
+                if (inset != markParams.topMargin) {
+                    markParams.topMargin = inset;
+                    heroColumn.forceLayout();
+                    super.onMeasure(widthSpec, heightSpec);
+                }
+            }
+        };
+        scroll.setOverScrollMode(View.OVER_SCROLL_IF_CONTENT_SCROLLS);
+        column.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1f));
+        scroll.addView(heroColumn, new android.widget.ScrollView.LayoutParams(-1, -2));
         android.widget.FrameLayout markFrame = new android.widget.FrameLayout(this);
-        heroColumn.addView(markFrame, new LinearLayout.LayoutParams(-1, dp(150)));
+        heroColumn.addView(markFrame, markParams);
         android.view.View disc = new android.view.View(this);
         disc.setBackground(oval(Color.argb(26, Color.red(accent), Color.green(accent), Color.blue(accent))));
         markFrame.addView(disc, new android.widget.FrameLayout.LayoutParams(dp(108), dp(108), android.view.Gravity.CENTER));
@@ -460,7 +477,6 @@ public final class MainActivity extends Activity {
 
         LinearLayout dock = new LinearLayout(this);
         dock.setOrientation(LinearLayout.VERTICAL);
-        dock.setPadding(pad, 0, pad, 0);
         column.addView(dock, new LinearLayout.LayoutParams(-1, -2));
 
         pairSection = new LinearLayout(this);
