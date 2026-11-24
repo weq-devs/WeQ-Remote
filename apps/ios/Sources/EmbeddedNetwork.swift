@@ -238,7 +238,8 @@ final class EmbeddedNetwork: ObservableObject {
         webRouteRevision = revision
         adopted = true
         let session = RemoteWebSession(configuration: configuration, endpoint: origin,
-            networkCost: networkCost, businessCache: webDataStore.businessCache(token: token), imageGateway: handle)
+            networkCost: networkCost, businessCache: webDataStore.businessCache(token: token), imageGateway: handle,
+            localCache: RemoteLocalCache(origin: origin, cookie: cookie))
         session.view.load(URLRequest(url: origin))
         return session
     }

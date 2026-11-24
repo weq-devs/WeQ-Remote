@@ -46,6 +46,7 @@ public final class MainActivity extends Activity {
 
     final Handler main = new Handler(Looper.getMainLooper());
     final ExecutorService worker = Executors.newSingleThreadExecutor();
+    final ExecutorService cacheWorker = Executors.newSingleThreadExecutor();
     private final ExecutorService closer = Executors.newSingleThreadExecutor();
     private Client node;
     private volatile int generation;
@@ -71,6 +72,7 @@ public final class MainActivity extends Activity {
     private boolean setupProgressFramePending;
     android.webkit.WebView webView;
     private WebFeatures webFeatures;
+    private LocalCacheSettings localCacheSettings;
     TextView networkState, computerState, detail, error, codeView, statusPill;
     private TextView scanLabel;
     private HomeFailure failure;
@@ -302,7 +304,7 @@ public final class MainActivity extends Activity {
     @Override protected void onDestroy() {
         stopNetwork(true);
         main.removeCallbacksAndMessages(null);
-        worker.shutdownNow(); closer.shutdown();
+        worker.shutdownNow(); cacheWorker.shutdownNow(); closer.shutdown();
         super.onDestroy();
     }
     @Override protected void onNewIntent(Intent intent) {
@@ -764,59 +766,70 @@ public final class MainActivity extends Activity {
     }
     private void showDetailsMenu() {
         if (!visible || isFinishing() || isDestroyed() || !getWindow().getDecorView().isAttachedToWindow()) return;
-        String[] actions = hasWebRecovery() ? new String[]{"立即检查", "检查更新", webLoaded ? "重新加载" : "重试打开", "断开连接"}
-            : paired ? new String[]{"立即检查", "检查更新"} : new String[]{"检查更新"};
         LinearLayout content = new LinearLayout(this);
         content.setOrientation(LinearLayout.VERTICAL);
         content.setPadding(dp(24), dp(12), dp(24), dp(8));
+        android.widget.ScrollView scroll = new android.widget.ScrollView(this);
+        scroll.addView(content);
+        android.app.AlertDialog menu = new android.app.AlertDialog.Builder(this).setTitle("更多")
+            .setView(scroll).setNegativeButton("完成", null).create();
+        LinearLayout connection = settingsGroup(content, "连接详情", 0);
         TextView details = text(connectionDetails(), 14);
         details.setTextIsSelectable(true);
-        content.addView(details, new LinearLayout.LayoutParams(-1, -2));
+        connection.addView(details, new LinearLayout.LayoutParams(-1, -2));
+        if (hasWebRecovery() || paired) {
+            connection.addView(button("立即检查", () -> {
+                menu.dismiss();
+                if (node != null && paired) verify(); else retryComputer();
+            }));
+        }
+        if (hasWebRecovery()) {
+            if (!checkingWebReload) connection.addView(button(webLoaded ? "重新加载" : "重试打开", () -> {
+                menu.dismiss();
+                if (webView != null) reloadWeb();
+                else { stopNetwork(true); retryComputer(); }
+            }));
+            connection.addView(button("断开连接", () -> {
+                menu.dismiss();
+                reconnectPaused = true;
+                stopNetwork(true);
+                if (android.animation.ValueAnimator.areAnimatorsEnabled()) {
+                    setupView.setAlpha(0);
+                    setupView.animate().alpha(1).setDuration(180).start();
+                }
+            }));
+        }
+        LinearLayout updates = settingsGroup(content, "软件更新", 16);
         android.widget.Switch prerelease = new android.widget.Switch(this);
         prerelease.setText("检查测试版");
         prerelease.setMinHeight(dp(48));
         prerelease.setChecked(getPreferences(MODE_PRIVATE).getBoolean("checkPrerelease", false));
         prerelease.setEnabled(!checkingUpdates);
         prerelease.setOnCheckedChangeListener((view, enabled) -> getPreferences(MODE_PRIVATE).edit().putBoolean("checkPrerelease", enabled).apply());
-        content.addView(prerelease, new LinearLayout.LayoutParams(-1, -2));
-        android.widget.ScrollView scroll = new android.widget.ScrollView(this);
-        scroll.addView(content);
-        android.app.AlertDialog menu = new android.app.AlertDialog.Builder(this).setTitle("连接详情")
-            .setView(scroll).setNegativeButton("完成", null).create();
-        if (webLoaded && webView != null) {
-            content.addView(button("本机缓存", () -> {
-                menu.dismiss();
-                android.webkit.WebView page = webView;
-                if (page == null) return;
-                page.evaluateJavascript(
-                    "(function(){if(!window.weqOpenLocalCache)return false;window.weqOpenLocalCache();return true;})()",
-                    result -> {
-                        if (page == webView && !"true".equals(result))
-                            android.widget.Toast.makeText(this, "打开新版 WeQ 网页后即可管理本机缓存。", android.widget.Toast.LENGTH_SHORT).show();
-                    });
-            }), new LinearLayout.LayoutParams(-1, -2));
-        }
-        for (String action : actions) {
-            if (checkingWebReload && ("重新加载".equals(action) || "重试打开".equals(action))) continue;
-            content.addView(button(action, () -> {
-                menu.dismiss();
-                if ("立即检查".equals(action)) { if (node != null && paired) verify(); else retryComputer(); }
-                else if ("检查更新".equals(action)) checkUpdates();
-                else if ("重新加载".equals(action) || "重试打开".equals(action)) {
-                    if (webView != null) reloadWeb();
-                    else { stopNetwork(true); retryComputer(); }
-                }
-                else {
-                    reconnectPaused = true;
-                    stopNetwork(true);
-                    if (android.animation.ValueAnimator.areAnimatorsEnabled()) {
-                        setupView.setAlpha(0);
-                        setupView.animate().alpha(1).setDuration(180).start();
-                    }
-                }
-            }), new LinearLayout.LayoutParams(-1, -2));
+        updates.addView(prerelease, new LinearLayout.LayoutParams(-1, -2));
+        Button checkUpdate = button("检查更新", () -> {
+            menu.dismiss();
+            checkUpdates();
+        });
+        checkUpdate.setEnabled(!checkingUpdates);
+        updates.addView(checkUpdate);
+        if (localCacheSettings != null) {
+            localCacheSettings.addRows(settingsGroup(content, "本机缓存", 16));
         }
         menu.show();
+    }
+
+    private LinearLayout settingsGroup(LinearLayout content, String title, int topSpace) {
+        LinearLayout group = new LinearLayout(this);
+        group.setOrientation(LinearLayout.VERTICAL);
+        group.setPadding(0, dp(topSpace), 0, 0);
+        TextView heading = text(title, 14);
+        heading.setTypeface(null, android.graphics.Typeface.BOLD);
+        heading.setPadding(0, 0, 0, dp(4));
+        if (android.os.Build.VERSION.SDK_INT >= 28) heading.setAccessibilityHeading(true);
+        group.addView(heading);
+        content.addView(group, new LinearLayout.LayoutParams(-1, -2));
+        return group;
     }
 
     private void checkUpdates() {
@@ -1330,6 +1343,7 @@ public final class MainActivity extends Activity {
                 disposeWebPage(false);
                 webView = new android.webkit.WebView(this);
                 final android.webkit.WebView page = webView;
+                localCacheSettings = new LocalCacheSettings(this, page, origin, localSecret);
                 android.webkit.WebSettings settings = webView.getSettings();
                 settings.setJavaScriptEnabled(true); settings.setDomStorageEnabled(true);
                 settings.setUserAgentString(settings.getUserAgentString() + " WeQRemote");
@@ -1543,6 +1557,7 @@ public final class MainActivity extends Activity {
     }
 
     private void disposeWebPage(boolean rendererGone) {
+        localCacheSettings = null;
         if (webFeatures != null) { webFeatures.close(rendererGone); webFeatures = null; }
         if (webView != null) {
             android.webkit.WebView page = webView;

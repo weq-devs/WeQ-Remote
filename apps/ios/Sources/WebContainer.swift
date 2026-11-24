@@ -264,6 +264,7 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
     """
     let view: WKWebView
     let endpoint: URL
+    let localCache: RemoteLocalCache?
     var onNetworkPreference: ((String) -> Void)?
     private let fingerprint: String?
     private var downloads: [ObjectIdentifier: (WKDownload, URL)] = [:]
@@ -316,9 +317,10 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
         view.evaluateJavaScript(cost.script, completionHandler: nil)
     }
 
-    init(configuration: WKWebViewConfiguration, endpoint: URL, fingerprint: String? = nil, networkCost: RemoteNetworkCost = .unknown, businessCache: RemoteBusinessCache? = nil, imageGateway: Int32 = 0) {
+    init(configuration: WKWebViewConfiguration, endpoint: URL, fingerprint: String? = nil, networkCost: RemoteNetworkCost = .unknown, businessCache: RemoteBusinessCache? = nil, imageGateway: Int32 = 0, localCache: RemoteLocalCache? = nil) {
         self.endpoint = endpoint
         self.fingerprint = fingerprint
+        self.localCache = localCache
         // 网页背景已有 playsinline；iPhone 还需在创建 WebView 前允许页内播放。
         configuration.allowsInlineMediaPlayback = true
         configuration.applicationNameForUserAgent = "WeQRemote"
@@ -393,6 +395,17 @@ final class RemoteWebSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKDo
         view.isInspectable = false
         // 全屏网页由页面自己的 env(safe-area-inset-*) 处理系统区域，WebView 不再额外内缩。
         view.scrollView.contentInsetAdjustmentBehavior = .never
+    }
+
+    func localCacheChanged(cleared: Bool) {
+        guard !closed, let url = view.url, RemoteWebPolicy.sameOrigin(url, endpoint: endpoint) else { return }
+        view.evaluateJavaScript("""
+            if (typeof window.weqLocalCacheChanged === 'function') { window.weqLocalCacheChanged(\(cleared)); true } else { false }
+            """) { [weak self] result, _ in
+            guard cleared, (result as? Bool) != true, let self, !self.closed,
+                  self.view.url == url else { return }
+            self.view.reload()
+        }
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {

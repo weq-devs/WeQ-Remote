@@ -49,7 +49,6 @@ struct RemoteView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var scanning = false
     @State private var cameraError = false
-    @State private var cacheMenuUnavailable = false
     @State private var confirmingDelete = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var colorScheme
@@ -98,11 +97,6 @@ struct RemoteView: View {
         }
         .tint(accent)
         .sheet(isPresented: $model.showingDetails) { detailsSheet }
-        .alert("本机缓存暂不可用", isPresented: $cacheMenuUnavailable) {
-            Button("好", role: .cancel) {}
-        } message: {
-            Text("打开新版 WeQ 网页后即可管理本机缓存。")
-        }
     }
 
     private var detailsSheet: some View {
@@ -114,16 +108,6 @@ struct RemoteView: View {
                         Button("立即检查") {
                             Task { await model.reconnect(manually: true) }
                         }.disabled(model.busy)
-                    }
-                    if model.webReady, let session = model.webSession {
-                        Button("本机缓存") {
-                            model.showingDetails = false
-                            session.view.evaluateJavaScript("""
-                                if (window.weqOpenLocalCache) { window.weqOpenLocalCache(); true } else { false }
-                                """) { result, _ in
-                                if (result as? Bool) != true { cacheMenuUnavailable = true }
-                            }
-                        }
                     }
                     if hasWebRecovery {
                         Button(model.webReady ? "重新加载" : "重试打开") {
@@ -148,6 +132,10 @@ struct RemoteView: View {
                         Link(index == 0 ? "下载更新（\(mirror.label)）" : "备用下载（\(mirror.label)）", destination: mirror.downloadURL)
                     }
                     if let url = model.releaseURL { Link("查看发布说明", destination: url) }
+                }
+                if let session = model.webSession, let cache = session.localCache {
+                    LocalCacheSection(cache: cache, onChange: session.localCacheChanged)
+                        .id(ObjectIdentifier(session))
                 }
             }
             .navigationTitle("更多").navigationBarTitleDisplayMode(.inline)
