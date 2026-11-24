@@ -187,6 +187,7 @@ struct RemoteView: View {
                     }
                     .frame(minHeight: proxy.size.height)
                 }
+                .scrollBounceBehavior(.basedOnSize)
                 .scrollDismissesKeyboard(.interactively)
             }
             dock.padding(.bottom, 28)

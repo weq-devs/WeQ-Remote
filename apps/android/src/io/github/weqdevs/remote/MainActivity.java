@@ -342,6 +342,7 @@ public final class MainActivity extends Activity {
         page.addView(column, new android.widget.FrameLayout.LayoutParams(Math.min(getResources().getDisplayMetrics().widthPixels, dp(496)), -1, android.view.Gravity.TOP | android.view.Gravity.CENTER_HORIZONTAL));
         android.widget.ScrollView scroll = new android.widget.ScrollView(this);
         scroll.setFillViewport(true);
+        scroll.setOverScrollMode(View.OVER_SCROLL_IF_CONTENT_SCROLLS);
         column.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1f));
         final LinearLayout content = new LinearLayout(this);
         content.setOrientation(LinearLayout.VERTICAL);
