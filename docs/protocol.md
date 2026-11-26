@@ -75,6 +75,7 @@ iOS 在当前 HTTP 主文档提供 `window.weqRemoteMedia`，HTTPS 继续用 `ge
 
 两端为已配对授权提供带本机 Cookie 的固定环回来源。切换同一授权的连接路径时保留 origin，Android 持久保存端口映射，端口占用时提示重试。重连生成新的本机 Cookie 秘密，继续校验 Host／Origin／Cookie。
 
+- **外部媒体。** 手机本机网关和电脑提供的 Remote 网页均允许通过 HTTPS 直连图片和音视频。外部脚本、内嵌页面及外站业务请求的策略不变；这与原生 QQ 图片桥的能力无关。
 - **在线启动。** 首页「连接」与菜单「重新连接」走同一流程。状态带 `webAccountEntry: true` 时先打开 `/_weq/connect`，由电脑确认本机记住的账号或展示账号选择，再加载完整网页。旧电脑及旧手机壳从 `/` 启动。鉴权获得的 `webRelease` 若匹配已发布的本机构建，则直接复用。摘要不同或缺失时使用电脑当前网页。
 - **缓存直开。** 首页根据本机已发布 HTML 提供入口，仅启动环回代理，未附加电脑路线，也不会自动重连。离线工作区使用已保存的账号、数据源和启动设置。后台用 `startup.snapshot` 核对账号与数据源，确认前业务 RPC 等待连接。核验失败保留已有数据。撤销、主动退出账号、启用隐私模式或应用锁会结束对应缓存启动资格。无完整网页或无缓存工作区时沿用在线启动。
 - **准备离线包。** 以 `webRelease` 核对 HTML 摘要，通过 `weq-offline-code` 准备按需模块及打包静态资源。旧电脑和开发版兼容 `weq-offline-bundle` 或 `weq-startup-resources`。首次无完整包且 `waitForWorkspace: true` 时，进入账号后通过本机查询参数 `workspace=1` 启动准备。相同构建无需重新取 HTML 或分包。旧电脑可用 ETag `weq-release-<HTML SHA-256>` 检查。资源齐备后原子发布候选，失败保留已发布包。

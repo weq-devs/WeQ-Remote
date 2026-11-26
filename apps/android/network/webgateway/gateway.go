@@ -220,7 +220,7 @@ func (g *Gateway) setUpstreamRelease(version string, attached bool) {
 }
 
 func (g *Gateway) secure(header http.Header) {
-	header.Set("Content-Security-Policy", "default-src 'self' blob: data:; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' "+strings.Replace(g.origin, "http:", "ws:", 1)+"; frame-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+	header.Set("Content-Security-Policy", "default-src 'self' blob: data:; img-src 'self' blob: data: https:; media-src 'self' blob: data: https:; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' "+strings.Replace(g.origin, "http:", "ws:", 1)+"; frame-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 	header.Set("Referrer-Policy", "no-referrer")
 }
 

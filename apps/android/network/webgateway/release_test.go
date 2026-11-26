@@ -119,6 +119,14 @@ func TestReleaseStartsOfflineAndSwitchesOnlyAfterCompleteUpdate(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer res.Body.Close()
+		if res.StatusCode == http.StatusOK && strings.HasPrefix(res.Header.Get("Content-Type"), "text/html") {
+			policy := res.Header.Get("Content-Security-Policy")
+			for _, directive := range []string{"img-src 'self' blob: data: https:;", "media-src 'self' blob: data: https:;", "script-src 'self' 'unsafe-inline';", "frame-src 'none';"} {
+				if !strings.Contains(policy, directive) {
+					t.Errorf("HTML policy lacks %q: %s", directive, policy)
+				}
+			}
+		}
 		body, err := io.ReadAll(res.Body)
 		if err != nil {
 			t.Fatal(err)
