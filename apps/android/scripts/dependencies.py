@@ -13,7 +13,7 @@ ZXING_VERSION = '3.5.3'
 ZXING_HASH = '8d8064c1636fdaef7189dd9055c7d59950a8940a12f2293956446ec3c109fd82'
 ZXING_ARTIFACT = f'com/google/zxing/core/{ZXING_VERSION}/core-{ZXING_VERSION}.jar'
 ZXING_URL = f'https://repo.maven.apache.org/maven2/{ZXING_ARTIFACT}'
-ZXING_FALLBACK_URL = f'https://repo1.maven.org/maven2/{ZXING_ARTIFACT}'
+ZXING_FALLBACK_URL = f'https://maven-central.storage-download.googleapis.com/maven2/{ZXING_ARTIFACT}'
 MAX_DOWNLOAD = 1_048_576
 
 
